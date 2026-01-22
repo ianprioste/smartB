@@ -85,8 +85,25 @@ class PlanBuilderNew:
         # Load template payloads from Bling for merging
         await self._load_template_payloads()
 
-        # Generate all plan items
-        items = await self._generate_items(request)
+        # First, detect and verify if any seeds were manually created in Bling
+        # This needs to happen BEFORE generating items so that VARIATION_PRINTED
+        # items don't get marked as BLOCKED due to missing dependencies
+        verified_manual_seeds = []
+        if not request.options.auto_seed_base_plain:
+            # Try to detect and verify manually created seeds
+            all_possible_seeds = await self._get_all_possible_seeds(request)
+            verified_manual_seeds = await self._verify_manually_created_seeds(all_possible_seeds)
+            
+            # Pre-populate items with verified seeds so they're available during generation
+            items = []
+            for verified_seed in verified_manual_seeds:
+                items.append(verified_seed)
+        else:
+            items = []
+
+        # Generate all plan items (including VARIATION_PRINTED which will see verified seeds)
+        generated_items = await self._generate_items(request)
+        items.extend(generated_items)
 
         # Always detect missing base seeds (to populate seed_summary for UI toggle)
         detected_seeds = await self._detect_missing_base_seeds(request, items)
@@ -94,28 +111,9 @@ class PlanBuilderNew:
         # Initialize seed_summary with detected missing seeds
         seed_summary = SeedSummary()
         
-        # If auto-seed disabled, check if user created seeds manually in Bling
+        # If auto-seed disabled, only show remaining missing seeds (after manual verification)
         if not request.options.auto_seed_base_plain:
-            # Try to find manually created seeds in Bling
-            verified_seeds = await self._verify_manually_created_seeds(detected_seeds)
-            
-            # Add verified seeds to plan as UPDATE items
-            for verified_seed in verified_seeds:
-                items.append(verified_seed)
-            
-            # Update VARIATION_PRINTED dependencies for verified seeds
-            verified_skus = {v.sku for v in verified_seeds}
-            for item in items:
-                if item.entity != "VARIATION_PRINTED":
-                    continue
-                
-                # If any of the soft dependencies are now verified, upgrade to hard
-                for dep_sku in list(item.soft_dependencies):
-                    if dep_sku in verified_skus:
-                        item.hard_dependencies.append(dep_sku)
-                        item.soft_dependencies.remove(dep_sku)
-            
-            # Update seed_summary to only show truly missing seeds
+            verified_skus = {v.sku for v in verified_manual_seeds}
             remaining_missing = [s for s in detected_seeds if s.sku not in verified_skus]
             seed_summary.base_parent_missing = [
                 item.sku for item in remaining_missing if item.entity == "BASE_PARENT"
@@ -123,7 +121,6 @@ class PlanBuilderNew:
             seed_summary.base_variation_missing = [
                 item.sku for item in remaining_missing if item.entity == "BASE_VARIATION"
             ]
-        else:
             # Auto-seed mode: show all detected missing seeds
             seed_summary.base_parent_missing = [
                 item.sku for item in detected_seeds if item.entity == "BASE_PARENT"
@@ -238,6 +235,63 @@ class PlanBuilderNew:
         
         detected_seeds.extend(created_seeds.values())
         return detected_seeds
+
+    async def _get_all_possible_seeds(
+        self, request: PlanNewRequest
+    ) -> List[PlanItem]:
+        """
+        Generate list of all possible seeds that COULD be created for this plan.
+        This is used to check if user manually created them in Bling.
+        
+        Args:
+            request: Plan creation request
+            
+        Returns:
+            List of possible seed items (not yet verified in Bling)
+        """
+        possible_seeds = []
+        created_seeds: Dict[str, PlanItem] = {}
+        
+        # For each model/color/size combination, generate possible BASE_PARENT and BASE_VARIATION seeds
+        for model_req in request.models:
+            model_code = model_req.code
+            
+            # Generate BASE_PARENT
+            base_parent_sku = model_code.upper()
+            if base_parent_sku not in created_seeds:
+                base_parent_seed = await self._create_seed_item(
+                    sku=base_parent_sku,
+                    entity="BASE_PARENT",
+                    model_code=model_code,
+                    request=request,
+                    included=False,
+                )
+                if base_parent_seed:
+                    created_seeds[base_parent_sku] = base_parent_seed
+            
+            # Generate BASE_VARIATION for each color/size
+            for color_code in request.colors:
+                if model_req.sizes:
+                    sizes = model_req.sizes
+                else:
+                    model_info = self.models_data.get(model_code, {})
+                    sizes = model_info.get("allowed_sizes", [])
+                
+                for size in sizes:
+                    base_variation_sku = self.sku_engine.base_plain(model_code, color_code, size)
+                    if base_variation_sku not in created_seeds:
+                        base_variation_seed = await self._create_seed_item(
+                            sku=base_variation_sku,
+                            entity="BASE_VARIATION",
+                            model_code=model_code,
+                            request=request,
+                            included=False,
+                        )
+                        if base_variation_seed:
+                            created_seeds[base_variation_sku] = base_variation_seed
+        
+        possible_seeds.extend(created_seeds.values())
+        return possible_seeds
 
     async def _verify_manually_created_seeds(
         self, detected_seeds: List[PlanItem]
