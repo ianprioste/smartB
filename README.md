@@ -1,47 +1,54 @@
-# smartBling v2 - Backend SaaS com Bling ERP 🚀
+# smartBling v2 - SaaS com Bling ERP 🚀
 
-Integração SaaS com Bling ERP (API v3) desenvolvida em **Sprint 1** com FastAPI, OAuth2, Job infrastructure e observabilidade estruturada.
+Integração SaaS com Bling ERP (API v3) com **Sprint 1 (Foundation) + Sprint 2 (Governance)** completos.
+
+**Stack:** FastAPI + PostgreSQL + Redis + Celery + React (Admin UI)
 
 ## 📚 Documentação
 
 ### 🏃 Comece Aqui
-- **[QUICKSTART.md](doc/QUICKSTART.md)** ⭐ - 5 minutos para rodar (passo-a-passo)
-- **[README.md](doc/README.md)** - Visão geral completa do projeto
+- **[QUICKSTART.md](doc/QUICKSTART.md)** ⭐ - 5 minutos para rodar
+
+### 📖 Documentação por Sprint
+- **[SPRINT1_SUMMARY.md](doc/SPRINT1_SUMMARY.md)** - OAuth2, Jobs, Foundation ✅
+- **[SPRINT2_SUMMARY.md](doc/SPRINT2_SUMMARY.md)** - Modelos, Cores, Templates ✅
 
 ### 📖 Documentação Técnica
-- **[DEVELOPMENT.md](doc/DEVELOPMENT.md)** - Arquitetura, decisões técnicas
-- **[PROJECT_STRUCTURE.md](doc/PROJECT_STRUCTURE.md)** - Detalhes de cada camada
-- **[EXAMPLES.md](doc/EXAMPLES.md)** - Exemplos práticos de uso
-- **[SPRINT1_SUMMARY.md](doc/SPRINT1_SUMMARY.md)** - O que foi entregue no Sprint 1
-- **[CODE_REVIEW.md](doc/CODE_REVIEW.md)** - Análise de código e melhorias futuras
-
-### ⚙️ Setup e Troubleshooting
-- **[WINDOWS_SETUP.md](doc/WINDOWS_SETUP.md)** - Guia específico para Windows
+- **[README.md](doc/README.md)** - Visão geral completa
+- **[DEVELOPMENT.md](doc/DEVELOPMENT.md)** - Arquitetura
+- **[PROJECT_STRUCTURE.md](doc/PROJECT_STRUCTURE.md)** - Estrutura de código
+- **[EXAMPLES.md](doc/EXAMPLES.md)** - Exemplos práticos
+- **[CODE_REVIEW.md](doc/CODE_REVIEW.md)** - Análise e melhorias
+- **[WINDOWS_SETUP.md](doc/WINDOWS_SETUP.md)** - Windows específico
 
 ---
 
 ## 🚀 Quick Start
 
 ```bash
-# 1. Configure
+# Backend
 cd backend
 cp .env.example .env
-# Edite .env com suas credenciais Bling
+# Edite .env com credenciais Bling
 
-# 2. Inicie serviços
-docker-compose up -d
-
-# 3. Instale dependências
+docker-compose up -d              # PostgreSQL + Redis
 pip install -r requirements.txt
+alembic upgrade head              # Sprint 2 migrations
 
-# 4. Server (Terminal 1)
+# Terminal 1: Server
 python run.py
 
-# 5. Worker (Terminal 2)
-python celery_worker_windows.py  # ou celery -A app.workers.celery_app worker
+# Terminal 2: Worker
+python celery_worker_windows.py
+
+# Frontend
+cd ../frontend
+npm install
+npm run dev
 ```
 
-🎉 Acesse: http://localhost:8000/docs
+🎉 API: http://localhost:8000/docs  
+🎨 Admin UI: http://localhost:5173
 
 ---
 
@@ -49,55 +56,127 @@ python celery_worker_windows.py  # ou celery -A app.workers.celery_app worker
 
 ```
 .
-├── doc/                          # 📚 Documentação
-├── scripts/                      # 🔧 Scripts de inicialização
-├── backend/
+├── doc/                          # 📚 Documentação (9 files)
+├── scripts/                      # 🔧 Inicialização
+├── project/                      # 📋 Status docs
+├── backend/                      # 🚀 FastAPI
 │   ├── app/
-│   │   ├── main.py              # FastAPI app
-│   │   ├── api/                 # Endpoints (auth, jobs)
-│   │   ├── infra/               # Infrastructure (DB, Bling client, logging)
-│   │   ├── models/              # ORM + Schemas
-│   │   ├── repositories/        # Data access layer
-│   │   └── workers/             # Celery tasks
-│   ├── requirements.txt
-│   ├── run.py                   # Entry point
-│   ├── docker-compose.yml
-│   └── alembic/                 # DB migrations
-└── README.md                     # Este arquivo
+│   │   ├── api/                  # Endpoints (auth, jobs, config, bling)
+│   │   ├── infra/                # DB, Bling, Logging
+│   │   ├── models/               # ORM + Schemas + Enums
+│   │   ├── repositories/         # Data access
+│   │   └── workers/              # Celery
+│   ├── alembic/versions/         # 002_sprint2_governance
+│   └── run.py
+└── frontend/                     # ⚛️ React + Vite
+    ├── src/
+    │   ├── pages/admin/          # 3 páginas (Models, Colors, Templates)
+    │   └── styles/
+    └── package.json
 ```
 
 ---
 
 ## ✨ Features
 
-| Feature | Status | Detalhes |
-|---------|--------|----------|
-| 🔐 OAuth2 Bling | ✅ | Autenticação completa com Bling |
-| 🧠 BlingClient | ✅ | Retry automático, logging estruturado |
-| 📦 Jobs | ✅ | API + DB + Worker async |
-| 📊 Logging | ✅ | JSON estruturado, rastreamento |
-| 🗄️ PostgreSQL | ✅ | ORM SQLAlchemy + Migrations |
-| 🔄 Redis | ✅ | Cache + Message broker |
-| 📡 Celery | ✅ | Worker async (configurable pool) |
-| 🧪 Tests | ❌ | Sprint 2 |
-| 🛡️ JWT Auth | ❌ | Sprint 2 |
-| 📦 Produtos | ❌ | Sprint 2 |
+| Feature | Status | Sprint |
+|---------|--------|--------|
+| 🔐 OAuth2 + Bling | ✅ | Sprint 1 |
+| 🤖 BlingClient robusto | ✅ | Sprint 1 |
+| 📦 Jobs async | ✅ | Sprint 1 |
+| 📊 Logging JSON | ✅ | Sprint 1 |
+| 🛢️ PostgreSQL + Alembic | ✅ | Sprint 1 |
+| 📋 Modelos (CRUD) | ✅ | Sprint 2 |
+| 🎨 Cores (CRUD) | ✅ | Sprint 2 |
+| 🎯 Templates (Bling lookup) | ✅ | Sprint 2 |
+| 💻 Admin UI (React) | ✅ | Sprint 2 |
+| 🧪 Tests | ❌ | Sprint 3 |
+| 🛡️ JWT API Auth | ❌ | Sprint 3 |
+| 📦 Produtos (criar/sync) | ❌ | Sprint 3 |
 
 ---
 
 ## 🏗️ Arquitetura
 
-**7-Layer Clean Architecture:**
+**7-Layer Clean + Multi-tenant:**
 
-1. **API** - FastAPI endpoints (auth, jobs)
-2. **Services** - Lógica de negócio (Sprint 2)
-3. **Domain** - Entidades e regras
-4. **Infrastructure** - DB, Bling client, logging
-5. **Models** - ORM (SQLAlchemy) + Schemas (Pydantic)
-6. **Repositories** - Data access layer
-7. **Workers** - Celery async tasks
+```
+API Layer (FastAPI)
+    ↓
+Repositories (Data Access)
+    ↓
+Models (ORM + Validation)
+    ↓
+Infrastructure (DB, HTTP, Logging)
+    ↓
+Workers (Async Tasks)
+```
 
 ---
+
+## 🔌 Endpoints
+
+### Autenticação (Sprint 1)
+- `POST /auth/bling/connect` - OAuth2 URL
+- `GET /auth/bling/callback` - Callback + token storage
+
+### Jobs (Sprint 1)
+- `POST/GET /jobs` - CRUD
+- `GET /jobs/{id}/detail` - Com items
+
+### Config - Modelos (Sprint 2)
+- `GET/POST /config/models`
+- `PUT/DELETE /config/models/{code}`
+
+### Config - Cores (Sprint 2)
+- `GET/POST /config/colors`
+- `PUT/DELETE /config/colors/{code}`
+
+### Config - Templates (Sprint 2)
+- `GET/POST /config/templates`
+- `DELETE /config/templates/{id}`
+
+### Bling Products (Sprint 2)
+- `GET /bling/products/search?q=...`
+- `GET /bling/products/{id}`
+
+---
+
+## 🎯 DoD Sprint 2 (Completo)
+
+✅ Modelos: cadastro com allowed_sizes, validação  
+✅ Cores: cadastro CRUD  
+✅ Templates: busca Bling + persistência  
+✅ Admin UI: 3 páginas funcionais  
+✅ Multi-tenant: todos endpoints salvam tenant_id  
+✅ Migrations: 002_sprint2_governance.py  
+✅ Logs: request_id + tenant_id (sem tokens)  
+✅ Validações: conforme escopo  
+
+---
+
+## 🚀 Próximos Passos
+
+**Sprint 3: Products**
+- Criar/atualizar produtos no Bling
+- Sincronizar atributos (tamanho, cor, preço)
+- Mapeamento SKU
+
+**Sprint 4: Inventory**
+- Sync de estoque
+- Webhooks Bling
+- Alertas
+
+**Sprint 5: UI Dashboard**
+- React dashboard com charts
+- Logs em tempo real
+
+---
+
+**Versão:** 0.2.0  
+**Status:** ✅ Sprint 1 + 2 completo  
+**Branches:** `main` (protected) | `dev` (work)  
+**Repo:** github.com/ianprioste/smartB
 
 ## 🔗 Endpoints Principais
 

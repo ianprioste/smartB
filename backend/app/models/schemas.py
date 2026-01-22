@@ -1,5 +1,5 @@
 """Pydantic schemas for API requests/responses."""
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Any, Dict, List
 from datetime import datetime
 from uuid import UUID
@@ -90,3 +90,165 @@ class HealthResponse(BaseModel):
     """Health check response."""
     status: str = "healthy"
     version: str
+
+
+# ============ Sprint 2: Governance Schemas ============
+
+# Models
+class ModelCreateRequest(BaseModel):
+    """Create model request."""
+    code: str = Field(min_length=1, max_length=50, description="Model code (e.g., CAM)")
+    name: str = Field(min_length=1, max_length=255, description="Model name (e.g., Camiseta)")
+    allowed_sizes: List[str] = Field(min_items=1, description="Allowed sizes (e.g., ['P', 'M', 'G'])")
+    size_order: Optional[List[str]] = Field(None, description="Optional size order (must be subset of allowed_sizes)")
+
+    @field_validator("allowed_sizes")
+    @classmethod
+    def validate_allowed_sizes(cls, v):
+        if len(v) != len(set(v)):
+            raise ValueError("allowed_sizes must not have duplicates")
+        return v
+
+    @field_validator("size_order")
+    @classmethod
+    def validate_size_order(cls, v, info):
+        if v is None:
+            return v
+        allowed = info.data.get("allowed_sizes", [])
+        if not all(size in allowed for size in v):
+            raise ValueError("size_order must be a subset of allowed_sizes")
+        return v
+
+
+class ModelUpdateRequest(BaseModel):
+    """Update model request."""
+    name: Optional[str] = Field(None, max_length=255)
+    allowed_sizes: Optional[List[str]] = Field(None, min_items=1)
+    size_order: Optional[List[str]] = None
+    is_active: Optional[bool] = None
+
+    @field_validator("allowed_sizes")
+    @classmethod
+    def validate_allowed_sizes(cls, v):
+        if v is not None and len(v) != len(set(v)):
+            raise ValueError("allowed_sizes must not have duplicates")
+        return v
+
+    @field_validator("size_order")
+    @classmethod
+    def validate_size_order(cls, v, info):
+        if v is None:
+            return v
+        allowed = info.data.get("allowed_sizes", [])
+        if allowed and not all(size in allowed for size in v):
+            raise ValueError("size_order must be a subset of allowed_sizes")
+        return v
+
+
+class ModelResponse(BaseModel):
+    """Model response."""
+    id: UUID
+    tenant_id: UUID
+    code: str
+    name: str
+    allowed_sizes: List[str]
+    size_order: Optional[List[str]]
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# Colors
+class ColorCreateRequest(BaseModel):
+    """Create color request."""
+    code: str = Field(min_length=1, max_length=50, description="Color code (e.g., BR)")
+    name: str = Field(min_length=1, max_length=255, description="Color name (e.g., Branca)")
+
+
+class ColorUpdateRequest(BaseModel):
+    """Update color request."""
+    name: Optional[str] = Field(None, max_length=255)
+    is_active: Optional[bool] = None
+
+
+class ColorResponse(BaseModel):
+    """Color response."""
+    id: UUID
+    tenant_id: UUID
+    code: str
+    name: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# Model Templates
+class ModelTemplateCreateRequest(BaseModel):
+    """Create model template request."""
+    model_code: str = Field(min_length=1, max_length=50, description="Model code")
+    template_kind: str = Field(description="Template kind (BASE_PLAIN, STAMP, PARENT_PRINTED, VARIATION_PRINTED)")
+    bling_product_id: int = Field(description="Bling product ID")
+
+
+class ModelTemplateResponse(BaseModel):
+    """Model template response."""
+    id: UUID
+    tenant_id: UUID
+    model_code: str
+    template_kind: str
+    bling_product_id: int
+    bling_product_sku: str
+    bling_product_name: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# Bling Product Search
+class BlingProductSearchItem(BaseModel):
+    """Search result item for Bling product."""
+    id: int
+    codigo: str  # SKU
+    nome: str
+    formato: Optional[str] = None
+    situacao: Optional[str] = None
+
+
+class BlingProductSearchResponse(BaseModel):
+    """Search response for Bling products."""
+    total: int
+    page: int
+    limit: int
+    items: List[BlingProductSearchItem]
+
+
+class BlingProductDetailResponse(BaseModel):
+    """Detailed Bling product response."""
+    id: int
+    codigo: str
+    nome: str
+    formato: Optional[str]
+    situacao: Optional[str]
+    descricao: Optional[str]
+    preco: Optional[float]
+    categoria_id: Optional[int]
+    
+    class Config:
+        from_attributes = True
+
+
+# Error Response
+class ErrorResponse(BaseModel):
+    """Standard error response."""
+    code: str = Field(description="Error code (e.g., VALIDATION_ERROR, NOT_FOUND)")
+    message: str = Field(description="User-friendly message")
+    details: Optional[str] = Field(None, description="Technical details (safe to display)")
+
