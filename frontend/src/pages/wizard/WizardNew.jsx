@@ -714,6 +714,8 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan })
                   <div className="motivo-cell">
                     {item.reason === 'MANUALLY_CREATED' ? (
                       <div className="warning-item">ℹ️ Criado manualmente no Bling</div>
+                    ) : item.reason === 'AUTO_SEED' ? (
+                      <div className="warning-item">🌱 Base criada automaticamente para garantir integridade</div>
                     ) : item.reason ? (
                       <div className="reason-tag">{item.reason}</div>
                     ) : null}

@@ -176,15 +176,8 @@ class PlanBuilderNew:
             # Extract model, color, size from the variation item
             for model_req in request.models:
                 model_code = model_req.code
-                
+                sizes = self._get_model_sizes(model_req)
                 for color_code in request.colors:
-                    # Determine sizes
-                    if model_req.sizes:
-                        sizes = model_req.sizes
-                    else:
-                        model_info = self.models_data.get(model_code, {})
-                        sizes = model_info.get("allowed_sizes", [])
-                    
                     for size in sizes:
                         # Generate expected variation SKU to match
                         expected_variation_sku = self.sku_engine.variation_printed(
@@ -244,6 +237,7 @@ class PlanBuilderNew:
         # For each model/color/size combination, generate possible BASE_PARENT and BASE_VARIATION seeds
         for model_req in request.models:
             model_code = model_req.code
+            sizes = self._get_model_sizes(model_req)
             
             # Generate BASE_PARENT
             base_parent_sku = model_code.upper()
@@ -260,12 +254,6 @@ class PlanBuilderNew:
             
             # Generate BASE_VARIATION for each color/size
             for color_code in request.colors:
-                if model_req.sizes:
-                    sizes = model_req.sizes
-                else:
-                    model_info = self.models_data.get(model_code, {})
-                    sizes = model_info.get("allowed_sizes", [])
-                
                 for size in sizes:
                     base_variation_sku = self.sku_engine.base_plain(model_code, color_code, size)
                     if base_variation_sku not in created_seeds:
@@ -369,14 +357,8 @@ class PlanBuilderNew:
             # Extract model, color, size
             for model_req in request.models:
                 model_code = model_req.code
-                
+                sizes = self._get_model_sizes(model_req)
                 for color_code in request.colors:
-                    if model_req.sizes:
-                        sizes = model_req.sizes
-                    else:
-                        model_info = self.models_data.get(model_code, {})
-                        sizes = model_info.get("allowed_sizes", [])
-                    
                     for size in sizes:
                         expected_variation_sku = self.sku_engine.variation_printed(
                             model_code, request.print.code, color_code, size
@@ -442,54 +424,13 @@ class PlanBuilderNew:
         else:
             return None
         
-        # If template not found - mark as BLOCKED
+        # If template not found, still create seed using empty payload and BASE_PLAIN
         if template_kind is None:
-            template_ref = {
-                "model_code": model_code,
-                "template_kind": None,
-                "bling_product_id": None,
-                "bling_product_sku": None,
-            }
-            
-            return PlanItem(
-                sku=sku,
-                entity=entity,
-                action=PlanItemActionEnum.BLOCKED,
-                hard_dependencies=[],
-                soft_dependencies=[],
-                template=PlanItemTemplate(model=model_code, kind="UNKNOWN"),
-                status=PlanItemActionEnum.BLOCKED,
-                reason="MISSING_TEMPLATE",
-                message=f"Template não disponível para {entity} no modelo {model_code}",
-                template_ref=template_ref,
-                autoseed_candidate=True,
-                included=included,
-            )
+            template_kind = TemplateKindEnum.BASE_PLAIN
+            logger.warning(f"Template ausente para {entity}/{model_code}; usando payload vazio")
         
-        template_payload = self._get_template_payload(model_code, template_kind)
-        
-        if template_payload is None:
-            template_ref = {
-                "model_code": model_code,
-                "template_kind": template_kind.value,
-                "bling_product_id": self.templates_data.get(model_code, {}).get(template_kind.value),
-                "bling_product_sku": None,
-            }
-            
-            return PlanItem(
-                sku=sku,
-                entity=entity,
-                action=PlanItemActionEnum.BLOCKED,
-                hard_dependencies=[],
-                soft_dependencies=[],
-                template=PlanItemTemplate(model=model_code, kind=template_kind.value, fallback_used=fallback_used),
-                status=PlanItemActionEnum.BLOCKED,
-                reason="MISSING_TEMPLATE_PAYLOAD",
-                message=f"Payload do template indisponível para {model_code}/{template_kind.value}",
-                template_ref=template_ref,
-                autoseed_candidate=True,
-                included=included,
-            )
+        # Get template payload; if missing, use empty payload so creation still proceeds
+        template_payload = self._get_template_payload(model_code, template_kind) or {}
         
         # Get model info for naming
         model_info = self.models_data[model_code]
@@ -589,6 +530,13 @@ class PlanBuilderNew:
                 raise PlanBuilderError(
                     f"Color {color_code} not found in configuration"
                 )
+
+    def _get_model_sizes(self, model_req) -> List[str]:
+        """Return requested sizes or fall back to allowed sizes configured for the model."""
+        if model_req.sizes:
+            return model_req.sizes
+        model_info = self.models_data.get(model_req.code, {})
+        return model_info.get("allowed_sizes", [])
 
     async def _check_bling_product_cached(self, sku: str) -> Optional[Dict[str, Any]]:
         """
@@ -786,10 +734,7 @@ class PlanBuilderNew:
             model_price = model_req.price
 
             # Determine sizes
-            if model_req.sizes:
-                sizes = model_req.sizes
-            else:
-                sizes = model_info.get("allowed_sizes", [])
+            sizes = self._get_model_sizes(model_req)
 
             # Parent for this model
             parent_sku = self.sku_engine.parent_printed(model_code, print_code)
