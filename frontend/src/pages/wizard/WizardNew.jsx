@@ -712,7 +712,11 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan })
                 </td>
                 <td>
                   <div className="motivo-cell">
-                    {item.reason && <div className="reason-tag">{item.reason}</div>}
+                    {item.reason === 'MANUALLY_CREATED' ? (
+                      <div className="warning-item">ℹ️ Criado manualmente no Bling</div>
+                    ) : item.reason ? (
+                      <div className="reason-tag">{item.reason}</div>
+                    ) : null}
                     {item.diff_summary && item.diff_summary.length > 0 && (
                       <div className="diff-summary">
                         {item.diff_summary.map(field => (

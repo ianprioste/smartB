@@ -63,6 +63,8 @@ class PlanBuilderNew:
         self.bling_client = bling_client
         self.template_payloads: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self.sku_engine = SkuEngine()
+        # Cache for Bling product lookups to avoid rate limits
+        self._bling_cache: Dict[str, Optional[Dict[str, Any]]] = {}
 
     async def build_plan(self, request: PlanNewRequest) -> PlanResponse:
         """
@@ -82,72 +84,59 @@ class PlanBuilderNew:
         # Validate input
         self._validate_input(request)
 
-        # Load template payloads from Bling for merging
+        # Load template payloads from Bling for merging (minimal calls - only templates)
         await self._load_template_payloads()
 
-        # First, detect and verify if any seeds were manually created in Bling
-        # This needs to happen BEFORE generating items so that VARIATION_PRINTED
-        # items don't get marked as BLOCKED due to missing dependencies
-        verified_manual_seeds = []
+        # Track items to create
+        items_to_create = []
+        
+        # If manual mode, verify which seeds user manually created
+        # (This checks only seeds that SHOULD exist, not all possible SKUs)
         if not request.options.auto_seed_base_plain:
-            # Try to detect and verify manually created seeds
             all_possible_seeds = await self._get_all_possible_seeds(request)
             verified_manual_seeds = await self._verify_manually_created_seeds(all_possible_seeds)
-            
-            # Pre-populate items with verified seeds so they're available during generation
-            items = []
-            for verified_seed in verified_manual_seeds:
-                items.append(verified_seed)
-        else:
-            items = []
+            items_to_create.extend(verified_manual_seeds)
 
-        # Generate all plan items (including VARIATION_PRINTED which will see verified seeds)
+        # Generate all plan items
+        # (Dependencies will be checked on-demand with caching - no bulk verification)
         generated_items = await self._generate_items(request)
-        items.extend(generated_items)
+        items_to_create.extend(generated_items)
 
-        # Always detect missing base seeds (to populate seed_summary for UI toggle)
-        detected_seeds = await self._detect_missing_base_seeds(request, items)
+        # Detect missing base seeds for seed_summary UI
+        detected_missing_seeds = await self._detect_missing_base_seeds(request, items_to_create)
         
-        # Initialize seed_summary with detected missing seeds
+        # Build seed_summary with only missing seeds
         seed_summary = SeedSummary()
         
-        # If auto-seed disabled, only show remaining missing seeds (after manual verification)
-        if not request.options.auto_seed_base_plain:
-            verified_skus = {v.sku for v in verified_manual_seeds}
-            remaining_missing = [s for s in detected_seeds if s.sku not in verified_skus]
-            seed_summary.base_parent_missing = [
-                item.sku for item in remaining_missing if item.entity == "BASE_PARENT"
-            ]
-            seed_summary.base_variation_missing = [
-                item.sku for item in remaining_missing if item.entity == "BASE_VARIATION"
-            ]
-            # Auto-seed mode: show all detected missing seeds
-            seed_summary.base_parent_missing = [
-                item.sku for item in detected_seeds if item.entity == "BASE_PARENT"
-            ]
-            seed_summary.base_variation_missing = [
-                item.sku for item in detected_seeds if item.entity == "BASE_VARIATION"
-            ]
+        # Filter out seeds that were verified as existing
+        verified_skus = {item.sku for item in items_to_create if hasattr(item, 'autoseed_candidate') and item.autoseed_candidate}
+        remaining_missing = [s for s in detected_missing_seeds if s.sku not in verified_skus]
         
+        seed_summary.base_parent_missing = [
+            item.sku for item in remaining_missing if item.entity == "BASE_PARENT"
+        ]
+        seed_summary.base_variation_missing = [
+            item.sku for item in remaining_missing if item.entity == "BASE_VARIATION"
+        ]
         seed_summary.total_missing = len(seed_summary.base_parent_missing) + len(seed_summary.base_variation_missing)
         
-        # If auto-seed enabled, add items to plan and update seed_summary
+        # If auto-seed enabled, add items to plan
         if request.options.auto_seed_base_plain:
-            seed_items = await self._add_base_seed_items(request, items, detected_seeds)
-            items.extend(seed_items)
+            seed_items = await self._add_base_seed_items(request, items_to_create, detected_missing_seeds)
+            items_to_create.extend(seed_items)
             seed_summary.total_included = sum(1 for item in seed_items if item.included)
 
         # Calculate summary
-        summary = self._calculate_summary(request, items)
+        summary = self._calculate_summary(request, items_to_create)
 
         # Check for blockers
-        has_blockers = any(item.action == PlanItemActionEnum.BLOCKED for item in items)
+        has_blockers = any(item.action == PlanItemActionEnum.BLOCKED for item in items_to_create)
 
         plan = PlanResponse(
             planVersion="1.0",
             type="NEW_PRINT",
             summary=summary,
-            items=items,
+            items=items_to_create,
             has_blockers=has_blockers,
             seed_summary=seed_summary,
             options=request.options,
@@ -311,7 +300,7 @@ class PlanBuilderNew:
         for seed in detected_seeds:
             try:
                 # Check if seed exists in Bling
-                existing = await self.bling_checker(seed.sku)
+                existing = await self._check_bling_product_cached(seed.sku)
                 
                 if existing:
                     # Seed was created manually in Bling - add as UPDATE
@@ -601,6 +590,24 @@ class PlanBuilderNew:
                     f"Color {color_code} not found in configuration"
                 )
 
+    async def _check_bling_product_cached(self, sku: str) -> Optional[Dict[str, Any]]:
+        """
+        Check if product exists in Bling (cached to avoid rate limits).
+        
+        Args:
+            sku: Product SKU
+            
+        Returns:
+            Product data if found, None if not found
+        """
+        if sku in self._bling_cache:
+            return self._bling_cache[sku]
+        
+        # Fetch and cache
+        result = await self.bling_checker(sku)
+        self._bling_cache[sku] = result
+        return result
+
     async def _load_template_payloads(self) -> None:
         """Fetch template payloads from Bling for all templates in use."""
         if not self.bling_client:
@@ -765,6 +772,11 @@ class PlanBuilderNew:
                 print_name=print_name,
             )
             items.append(parent_item)
+            
+            # Add parent SKU to cache so VARIATION items don't think it's missing
+            # (Parent will be created in this same plan, so it's "available")
+            if parent_item.action in [PlanItemActionEnum.CREATE, PlanItemActionEnum.UPDATE]:
+                self._bling_cache[parent_sku] = {"codigo": parent_sku}  # Mock as existing
 
         # Second pass: create VARIATION_PRINTED for each color/size combination
         for model_req in model_codes:
@@ -840,6 +852,7 @@ class PlanBuilderNew:
             model_code: Model code
             hard_dependencies: List of required dependent SKUs
             soft_dependencies: List of optional recommended SKUs
+            available_skus: SKUs already available in Bling or will be created
             
         Returns:
             Plan item with status
@@ -857,43 +870,28 @@ class PlanBuilderNew:
             "bling_product_sku": template_payload.get("codigo") if template_payload else None,
         }
 
-        # If template not found → BLOCKED
+        # If no template, use empty payload - item can still be created
+        # (User will need to fill in details manually or via overrides)
         if template_kind is None:
-            return PlanItem(
-                sku=sku,
-                entity=entity,
-                action=PlanItemActionEnum.BLOCKED,
-                hard_dependencies=hard_dependencies,
-                soft_dependencies=soft_dependencies,
-                template=PlanItemTemplate(model=model_code, kind="UNKNOWN"),
-                status=PlanItemActionEnum.BLOCKED,
-                reason="MISSING_TEMPLATE",
-                message=f"No template available for {entity} in model {model_code}",
-                template_ref=template_ref,
-            )
+            template_kind = TemplateKindEnum.BASE_PLAIN  # Default fallback
+            logger.warning(f"No template found for {entity}/{model_code}, using empty payload")
+        
+        # If template payload is unavailable, still allow CREATE but with empty payload
+        # The payload can be filled in later from the template product in Bling
+        # (This handles cases where bling_client isn't available or fetch failed)
+        payload_for_merge = template_payload or {}
 
-        if template_payload is None:
-            return PlanItem(
-                sku=sku,
-                entity=entity,
-                action=PlanItemActionEnum.BLOCKED,
-                hard_dependencies=hard_dependencies,
-                soft_dependencies=soft_dependencies,
-                template=PlanItemTemplate(model=model_code, kind=template_kind.value, fallback_used=fallback_used),
-                status=PlanItemActionEnum.BLOCKED,
-                reason="MISSING_TEMPLATE_PAYLOAD",
-                message=f"Template payload unavailable for {model_code}/{template_kind.value}",
-                template_ref=template_ref,
-            )
-
-        # Check hard dependencies existence
+        # Check hard dependencies existence (with caching to avoid rate limits)
+        # An item is BLOCKED only if a hard dependency is truly missing in Bling
         missing_hard_deps = []
         for hard_dep in hard_dependencies:
-            existing_hard = await self._check_bling_product(hard_dep)
+            # Check if it exists in Bling (cached)
+            existing_hard = await self._check_bling_product_cached(hard_dep)
             if existing_hard is None:
                 missing_hard_deps.append(hard_dep)
 
         if missing_hard_deps:
+            logger.warning(f"Item {sku} BLOCKED: missing hard deps {missing_hard_deps}")
             return PlanItem(
                 sku=sku,
                 entity=entity,
@@ -909,7 +907,7 @@ class PlanBuilderNew:
 
         # Compute payload preview
         computed_payload = TemplateMerge.merge(
-            template_payload,
+            payload_for_merge,
             sku=sku,
             name=name,
             overrides=overrides,
@@ -1033,7 +1031,7 @@ class PlanBuilderNew:
             return None
 
         try:
-            return await self.bling_checker(sku)
+            return await self._check_bling_product_cached(sku)
         except Exception as e:
             logger.warning(f"Error checking Bling product {sku}: {e}")
             return None

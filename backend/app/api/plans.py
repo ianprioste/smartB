@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any
 from uuid import UUID
 
 from app.infra.db import get_db
-from app.infra.bling_client import BlingClient
+from app.infra.bling_client import BlingClient, BlingRefreshTokenExpiredError
 from app.models.schemas import (
     PlanNewRequest,
     PlanResponse,
@@ -185,8 +185,30 @@ async def create_new_plan(
             },
         )
 
+    except BlingRefreshTokenExpiredError as e:
+        logger.error(f"Bling token expired during plan generation: {e}")
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "BLING_TOKEN_EXPIRED",
+                "message": "Token do Bling expirado. É necessário autenticar novamente. Acesse /auth/bling/connect para obter novo token.",
+            },
+        )
+
     except Exception as e:
+        error_msg = str(e)
         logger.error(f"Unexpected error creating plan: {e}", exc_info=True)
+        
+        # Check for token-related errors in the exception message
+        if "Refresh token expired" in error_msg or "401" in error_msg:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "BLING_TOKEN_EXPIRED",
+                    "message": "Token do Bling expirado. É necessário autenticar novamente. Acesse /auth/bling/connect para obter novo token.",
+                },
+            )
+        
         raise HTTPException(
             status_code=500,
             detail={
