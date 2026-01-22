@@ -68,6 +68,23 @@ body {
   font-weight: 600;
 }
 
+.admin-nav .btn-wizard {
+  margin-left: auto;
+  background: #4CAF50;
+  color: white;
+  border-radius: 6px;
+  padding: 10px 20px;
+  border: none;
+  font-weight: 600;
+  transition: all 0.3s ease;
+}
+
+.admin-nav .btn-wizard:hover {
+  background: #45a049;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
+}
+
 .admin-main {
   flex: 1;
   padding: 32px 40px;

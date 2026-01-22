@@ -194,6 +194,8 @@ class ModelTemplateCreateRequest(BaseModel):
     model_code: str = Field(min_length=1, max_length=50, description="Model code")
     template_kind: str = Field(description="Template kind (BASE_PLAIN, STAMP, PARENT_PRINTED, VARIATION_PRINTED)")
     bling_product_id: int = Field(description="Bling product ID")
+    bling_product_sku: Optional[str] = Field(None, description="Optional SKU from search result to avoid extra fetch")
+    bling_product_name: Optional[str] = Field(None, description="Optional name from search result to avoid extra fetch")
 
 
 class ModelTemplateResponse(BaseModel):
@@ -251,4 +253,102 @@ class ErrorResponse(BaseModel):
     code: str = Field(description="Error code (e.g., VALIDATION_ERROR, NOT_FOUND)")
     message: str = Field(description="User-friendly message")
     details: Optional[str] = Field(None, description="Technical details (safe to display)")
+
+
+# ============ Sprint 3: Plan Builder Schemas ============
+
+# Plan Creation Request
+class PlanModelRequest(BaseModel):
+    """Model and sizes for plan request."""
+    code: str = Field(min_length=1, max_length=50, description="Model code (e.g., CAM)")
+    sizes: Optional[List[str]] = Field(None, description="Sizes for this model (if not provided, use allowed_sizes)")
+    price: float = Field(gt=0, description="Required price for this model")
+
+    class Config:
+        protected_namespaces = ()
+
+
+class PlanPrintInfo(BaseModel):
+    """Print information for plan."""
+    code: str = Field(min_length=1, max_length=50, description="Print code (e.g., STPV)")
+    name: str = Field(min_length=1, max_length=255, description="Print name")
+
+
+class PlanOverrides(BaseModel):
+    """User-provided overrides for variable fields."""
+    short_description: Optional[str] = Field(None, description="Override for descricaoCurta")
+    complement_description: Optional[str] = Field(None, description="Override for descricaoComplementar")
+    complement_same_as_short: bool = Field(default=True, description="If true, complement = short description")
+    category_override_id: Optional[int] = Field(None, description="Override for category id; null keeps template category")
+
+    class Config:
+        protected_namespaces = ()
+
+
+class PlanNewRequest(BaseModel):
+    """Create new print plan request."""
+    print: PlanPrintInfo = Field(description="Print information")
+    models: List[PlanModelRequest] = Field(min_items=1, description="Models to create")
+    colors: List[str] = Field(min_items=1, description="Color codes to use")
+    overrides: PlanOverrides = Field(default_factory=PlanOverrides, description="Optional overrides for variable fields")
+
+
+# Plan Item
+class PlanItemTemplate(BaseModel):
+    """Template information for plan item."""
+    model: str = Field(description="Model code")
+    kind: str = Field(description="Template kind")
+
+
+class PlanItem(BaseModel):
+    """Individual plan item."""
+    sku: str = Field(description="Generated SKU")
+    entity: str = Field(description="Entity type (BASE_PLAIN, STAMP, PARENT_PRINTED, VARIATION_PRINTED)")
+    action: str = Field(description="Action to take (CREATE, UPDATE, NOOP, BLOCKED)")
+    dependencies: List[str] = Field(default_factory=list, description="SKU dependencies")
+    template: Optional[PlanItemTemplate] = Field(None, description="Template information")
+    status: str = Field(description="Status of the item")
+    reason: Optional[str] = Field(None, description="Reason for BLOCKED status")
+    message: Optional[str] = Field(None, description="Detailed message")
+    existing_product: Optional[Dict[str, Any]] = Field(None, description="Existing product info from Bling")
+    template_ref: Optional[Dict[str, Any]] = Field(None, description="Reference to template used (model_code, kind, bling_product_id, bling_product_sku)")
+    overrides_used: Optional[Dict[str, Any]] = Field(None, description="Overrides applied for this item")
+    computed_payload_preview: Optional[Dict[str, Any]] = Field(None, description="Merged payload (template + overrides + SKU/Name)")
+
+
+class PlanSummary(BaseModel):
+    """Plan summary statistics."""
+    models: int = Field(description="Number of models")
+    colors: int = Field(description="Number of colors")
+    total_skus: int = Field(description="Total SKUs generated")
+    create_count: int = Field(default=0, description="Number of CREATE actions")
+    update_count: int = Field(default=0, description="Number of UPDATE actions")
+    noop_count: int = Field(default=0, description="Number of NOOP actions")
+    blocked_count: int = Field(default=0, description="Number of BLOCKED actions")
+
+
+class PlanResponse(BaseModel):
+    """Plan response."""
+    planVersion: str = Field(default="1.0", description="Plan version")
+    type: str = Field(description="Plan type (NEW_PRINT)")
+    summary: PlanSummary = Field(description="Summary statistics")
+    items: List[PlanItem] = Field(description="Plan items")
+    has_blockers: bool = Field(description="Whether plan has blocked items")
+
+
+class PlanSaveRequest(BaseModel):
+    """Save plan request."""
+    plan: PlanResponse = Field(description="Plan to save")
+
+
+class PlanSavedResponse(BaseModel):
+    """Plan saved response."""
+    id: UUID = Field(description="Plan ID")
+    type: str = Field(description="Plan type")
+    status: str = Field(description="Plan status")
+    created_at: datetime = Field(description="Creation timestamp")
+
+    class Config:
+        from_attributes = True
+
 

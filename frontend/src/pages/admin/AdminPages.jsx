@@ -29,6 +29,12 @@ export function AdminLayout({ children }) {
           >
             📋 Templates
           </a>
+          <a 
+            href="/wizard/new" 
+            className="btn-wizard"
+          >
+            🪄 Novo Cadastro
+          </a>
         </nav>
       </header>
       <main className="admin-main">
@@ -435,6 +441,8 @@ export function TemplatesPage() {
   const [selectedModel, setSelectedModel] = useState('');
   const [templateKind, setTemplateKind] = useState('BASE_PLAIN');
   const [searchQuery, setSearchQuery] = useState('');
+  const [showReauthModal, setShowReauthModal] = useState(false);
+  const [infoBoxExpanded, setInfoBoxExpanded] = useState(false);
 
   useEffect(() => {
     fetchModels();
@@ -480,14 +488,23 @@ export function TemplatesPage() {
       
       if (!resp.ok) {
         const err = await resp.json();
-        throw new Error(err.detail?.message || 'Erro ao buscar produtos no Bling');
-      }
-      
-      const data = await resp.json();
-      setSearchResults(data.items || []);
-      
-      if (!data.items || data.items.length === 0) {
-        setError(`Nenhum produto encontrado com "${searchQuery}". Verifique se o produto existe no Bling.`);
+        const errorMsg = err.detail?.message || 'Erro ao buscar produtos no Bling';
+        const needsReauth = err.detail?.needs_reauth || false;
+        
+        // If token expired, show reauth modal
+        if (needsReauth || errorMsg.includes('Token') || errorMsg.includes('expirado') || errorMsg.includes('401')) {
+          setError(errorMsg);
+          setShowReauthModal(true);
+        } else {
+          throw new Error(errorMsg);
+        }
+      } else {
+        const data = await resp.json();
+        setSearchResults(data.items || []);
+        
+        if (!data.items || data.items.length === 0) {
+          setError(`Nenhum produto encontrado com "${searchQuery}". Verifique se o produto existe no Bling.`);
+        }
       }
     } catch (err) {
       setError(err.message);
@@ -511,6 +528,8 @@ export function TemplatesPage() {
           model_code: selectedModel,
           template_kind: templateKind,
           bling_product_id: product.id,
+          bling_product_sku: product.codigo,
+          bling_product_name: product.nome,
         }),
       });
 
@@ -535,17 +554,23 @@ export function TemplatesPage() {
     <AdminLayout>
       <h2>Templates de Produtos</h2>
       
-      <div className="info-box">
-        <p><strong>📋 O que são Templates?</strong></p>
-        <p>Templates são produtos <strong>base do Bling</strong> que servem como referência para criar variações.</p>
-        <p><strong>Exemplo prático:</strong></p>
-        <ul>
-          <li><strong>BASE_PLAIN:</strong> Camiseta lisa sem estampa (produto base)</li>
-          <li><strong>STAMP:</strong> Estampa que será aplicada na camiseta</li>
-          <li><strong>PARENT_PRINTED:</strong> Camiseta com estampa (produto pai no Bling)</li>
-          <li><strong>VARIATION_PRINTED:</strong> Cada cor/tamanho específico (P Branca, M Preta, etc.)</li>
-        </ul>
-        <p>Para cada <strong>modelo</strong> (ex: CAM - Camiseta) você precisa associar produtos do Bling aos tipos de template.</p>
+      <div className="info-box" style={{ cursor: 'pointer' }}>
+        <div onClick={() => setInfoBoxExpanded(!infoBoxExpanded)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <p><strong>📋 O que são Templates?</strong></p>
+          <span style={{ fontSize: '1.2rem', transition: 'transform 0.3s ease', transform: infoBoxExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }}>▼</span>
+        </div>
+        {infoBoxExpanded && (
+          <div style={{ marginTop: '12px' }}>
+            <p>Templates são produtos <strong>base do Bling</strong> que servem como referência para criar variações.</p>
+            <p><strong>Exemplo prático:</strong></p>
+            <ul>
+              <li><strong>Base Lisa:</strong> Camiseta lisa sem estampa (produto base)</li>
+              <li><strong>Principal Estampado:</strong> Camiseta com estampa (produto pai no Bling)</li>
+              <li><strong>Variação Estampada:</strong> Cada cor/tamanho específico (P Branca, M Preta, etc.)</li>
+            </ul>
+            <p>Para cada <strong>modelo</strong> (ex: CAM - Camiseta) você precisa associar produtos do Bling aos tipos de template.</p>
+          </div>
+        )}
       </div>
 
       {error && <div className="error">{error}</div>}
@@ -573,10 +598,9 @@ export function TemplatesPage() {
               Tipo de Template:
             </label>
             <select value={templateKind} onChange={(e) => setTemplateKind(e.target.value)}>
-              <option value="BASE_PLAIN">BASE_PLAIN - Produto base sem estampa</option>
-              <option value="STAMP">STAMP - Estampa a ser aplicada</option>
-              <option value="PARENT_PRINTED">PARENT_PRINTED - Produto pai com estampa</option>
-              <option value="VARIATION_PRINTED">VARIATION_PRINTED - Variação específica (cor/tamanho)</option>
+              <option value="BASE_PLAIN">Base Lisa - Produto base sem estampa</option>
+              <option value="PARENT_PRINTED">Principal Estampado - Produto pai com estampa</option>
+              <option value="VARIATION_PRINTED">Variação Estampada - Variação específica (cor/tamanho)</option>
             </select>
           </div>
 
@@ -634,7 +658,12 @@ export function TemplatesPage() {
                 {templates.map(t => (
                   <tr key={t.id}>
                     <td>{t.model_code}</td>
-                    <td>{t.template_kind}</td>
+                    <td>{
+                      t.template_kind === 'BASE_PLAIN' ? 'Base Lisa' :
+                      t.template_kind === 'PARENT_PRINTED' ? 'Principal Estampado' :
+                      t.template_kind === 'VARIATION_PRINTED' ? 'Variação Estampada' :
+                      t.template_kind
+                    }</td>
                     <td>{t.bling_product_sku}</td>
                     <td>{t.bling_product_name}</td>
                   </tr>
@@ -644,6 +673,37 @@ export function TemplatesPage() {
           )
         )}
       </div>
+
+      {showReauthModal && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <h3>🔑 Token do Bling Expirado</h3>
+            <p>O token de acesso ao Bling expirou e precisa ser renovado.</p>
+            <p style={{ marginTop: '16px', fontSize: '0.95rem', color: '#666' }}>
+              Ao clicar em "Renovar Token", você será redirecionado para o Bling para autorizar novamente.
+              Após autorizar, você será redirecionado de volta e o token será renovado automaticamente.
+            </p>
+            <div className="modal-actions">
+              <button 
+                onClick={() => setShowReauthModal(false)} 
+                style={{ background: '#64748b' }}
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={() => {
+                  window.open('http://localhost:8000/auth/bling/connect', '_blank');
+                  setShowReauthModal(false);
+                  setError('Aguarde a autenticação no Bling e tente novamente.');
+                }}
+                style={{ background: '#4CAF50' }}
+              >
+                🔄 Renovar Token Agora
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </AdminLayout>
   );
 }

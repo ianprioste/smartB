@@ -5,7 +5,7 @@ from sqlalchemy import Column, String, DateTime, Integer, Text, ForeignKey, Enum
 from sqlalchemy.dialects.postgresql import UUID
 from app.infra.db import Base
 import enum
-from app.models.enums import TemplateKindEnum
+from app.models.enums import TemplateKindEnum, PlanTypeEnum, PlanStatusEnum
 
 
 class TenantModel(Base):
@@ -132,3 +132,18 @@ class ModelTemplateModel(Base):
     __table_args__ = (
         UniqueConstraint("tenant_id", "model_code", "template_kind", name="uq_model_templates_tenant_model_kind"),
     )
+
+
+class PlanModel(Base):
+    """Plans for product creation/update operations."""
+    __tablename__ = "plans"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    type = Column(Enum(PlanTypeEnum), nullable=False)  # NEW_PRINT, FIX
+    status = Column(Enum(PlanStatusEnum), nullable=False, default=PlanStatusEnum.DRAFT)
+    input_payload = Column(JSON, nullable=False)  # Original request that generated the plan
+    plan_payload = Column(JSON, nullable=False)  # Complete plan with all items
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    executed_at = Column(DateTime, nullable=True)  # When execution started
+

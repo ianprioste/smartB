@@ -1,5 +1,6 @@
 """Authentication endpoints for Bling OAuth2."""
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 import httpx
@@ -20,10 +21,40 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 _oauth_states = {}
 
 
+@router.get("/bling/connect")
+async def bling_connect_redirect():
+    """
+    Redirect directly to Bling OAuth2 authorization page.
+    
+    This is the easiest way to re-authenticate:
+    Just visit this URL in your browser and you'll be redirected to Bling.
+    """
+    
+    state = str(uuid.uuid4())
+    _oauth_states[state] = datetime.utcnow() + timedelta(minutes=10)
+    
+    # Build auth URL with proper URL encoding
+    auth_params = {
+        "client_id": settings.BLING_CLIENT_ID,
+        "redirect_uri": settings.BLING_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "read write",
+        "state": state,
+    }
+    auth_url = f"{settings.BLING_AUTH_URL}?{urlencode(auth_params)}"
+    
+    logger.info(
+        "oauth_authorize_redirect",
+        state=state,
+    )
+    
+    return RedirectResponse(url=auth_url)
+
+
 @router.post("/bling/connect", response_model=BlingAuthUrlResponse)
 async def get_bling_auth_url():
     """
-    Generate Bling OAuth2 authorization URL.
+    Generate Bling OAuth2 authorization URL (JSON response).
     
     **Response:**
     - `authorization_url`: URL to redirect user to for Bling authentication

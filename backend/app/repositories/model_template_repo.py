@@ -33,6 +33,33 @@ class ModelTemplateRepository:
         return template
 
     @staticmethod
+    def create_or_update(
+        db: Session,
+        tenant_id: UUID,
+        request: ModelTemplateCreateRequest,
+        bling_product_sku: str,
+        bling_product_name: Optional[str] = None,
+    ) -> ModelTemplateModel:
+        """Create new template or update existing one (upsert)."""
+        existing = ModelTemplateRepository.get_by_model_and_kind(
+            db, tenant_id, request.model_code, request.template_kind
+        )
+        
+        if existing:
+            # Update existing template
+            existing.bling_product_id = request.bling_product_id
+            existing.bling_product_sku = bling_product_sku
+            existing.bling_product_name = bling_product_name
+            db.commit()
+            db.refresh(existing)
+            return existing
+        else:
+            # Create new template
+            return ModelTemplateRepository.create(
+                db, tenant_id, request, bling_product_sku, bling_product_name
+            )
+
+    @staticmethod
     def get_by_id(db: Session, tenant_id: UUID, template_id: UUID) -> Optional[ModelTemplateModel]:
         """Get template by ID."""
         return db.query(ModelTemplateModel).filter(

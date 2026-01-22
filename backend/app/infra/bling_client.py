@@ -15,6 +15,11 @@ class BlingAuthError(Exception):
     pass
 
 
+class BlingRefreshTokenExpiredError(BlingAuthError):
+    """Raised when refresh token is expired or invalid."""
+    pass
+
+
 class BlingAPIError(Exception):
     """Raised when API call fails."""
     pass
@@ -106,9 +111,30 @@ class BlingClient:
             if self.on_token_refresh:
                 self.on_token_refresh(self.access_token, self.refresh_token, self.token_expires_at)
 
-        except httpx.HTTPError as e:
+        except httpx.HTTPStatusError as e:
+            error_detail = ""
+            try:
+                error_detail = e.response.text
+            except:
+                pass
+            
             logger.error(
                 "token_refresh_failed",
+                request_id=self.request_id,
+                status_code=e.response.status_code if hasattr(e, 'response') else None,
+                error=str(e),
+                error_detail=error_detail,
+            )
+            
+            # Detect expired/invalid refresh token (400 Bad Request usually means invalid grant)
+            if hasattr(e, 'response') and e.response.status_code == 400:
+                raise BlingRefreshTokenExpiredError(
+                    "Refresh token expired or invalid. User must re-authenticate via OAuth2 flow."
+                )
+            raise BlingAuthError(f"Token refresh failed: {e}")
+        except Exception as e:
+            logger.error(
+                "token_refresh_failed_unexpected",
                 request_id=self.request_id,
                 error=str(e),
             )
@@ -179,20 +205,30 @@ class BlingClient:
                     raise BlingAPIError(f"Resource not found (404): {path}")
                 elif response.status_code == 401:
                     # Unauthorized - try refresh if token available
-                    if self.access_token:
+                    if self.access_token and self.refresh_token:
                         logger.warn(
                             "unauthorized_refreshing_token",
                             request_id=self.request_id,
                             path=path,
                         )
-                        self._refresh_token()
+                        await self._refresh_token()
                         continue  # Retry with new token
                     else:
-                        raise Exception("Unauthorized (401)")
+                        raise BlingAuthError("Unauthorized (401) - No valid refresh token available")
 
                 response.raise_for_status()
                 return response
 
+            except BlingRefreshTokenExpiredError as e:
+                # Don't retry if refresh token is expired - fail fast
+                logger.error(
+                    "api_request_failed_refresh_token_expired",
+                    request_id=self.request_id,
+                    method=method,
+                    path=path,
+                    error=str(e),
+                )
+                raise
             except Exception as e:
                 last_exception = e
                 
@@ -259,7 +295,8 @@ class BlingClient:
             "pagina": page,
             "limite": limit,
             "criterio": 1,  # 1 = Últimos incluídos
-            "tipo": "P",    # P = Produtos (não serviços/composições)
+            # Removido filtro "tipo": "P" para incluir variações
+            # P = Produto com estoque | V = Produto variação
         }
         
         # Try to determine if query is SKU (short, uppercase, no spaces) or name
@@ -275,6 +312,18 @@ class BlingClient:
     async def get_product(self, product_id: int) -> Dict[str, Any]:
         """Get product details from Bling."""
         return await self.get(f"/produtos/{product_id}")
+
+    async def get_produtos(self, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Get products from Bling with custom parameters.
+        
+        Args:
+            params: Query parameters (e.g., {"codigo": "SKU123", "limite": 1})
+            
+        Returns:
+            Dict with 'data' list and pagination info
+        """
+        return await self.get("/produtos", params=params)
 
     def close(self) -> None:
         """Close HTTP client."""

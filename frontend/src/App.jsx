@@ -1,6 +1,7 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { ModelsPage, ColorsPage, TemplatesPage } from './pages/admin/AdminPages';
+import { WizardNewPage } from './pages/wizard/WizardNew';
 import './styles/admin.css';
 
 function App() {
@@ -10,6 +11,7 @@ function App() {
         <Route path="/admin/models" element={<ModelsPage />} />
         <Route path="/admin/colors" element={<ColorsPage />} />
         <Route path="/admin/templates" element={<TemplatesPage />} />
+        <Route path="/wizard/new" element={<WizardNewPage />} />
         <Route path="/" element={<Navigate to="/admin/models" />} />
       </Routes>
     </BrowserRouter>

@@ -101,24 +101,41 @@ async def search_products(
         logger.error("bling_search_failed", extra={
             "query": q,
             "error": error_msg,
+            "error_type": type(e).__name__,
         })
         
+        # Import here to avoid circular dependency
+        from app.infra.bling_client import BlingRefreshTokenExpiredError
+        
         # Parse error to provide better message
-        if "404" in error_msg or "Not Found" in error_msg:
+        if isinstance(e, BlingRefreshTokenExpiredError) or "Refresh token expired" in error_msg:
+            detail_msg = "Token do Bling expirado. É necessário autenticar novamente. Acesse /auth/bling/connect para obter novo token."
+            status_code = 401
+            code = "BLING_TOKEN_EXPIRED"
+        elif "404" in error_msg or "Not Found" in error_msg:
             detail_msg = "Nenhum produto encontrado no Bling com este nome ou SKU. Verifique se o produto existe no Bling."
+            status_code = 404
+            code = "BLING_PRODUCT_NOT_FOUND"
         elif "401" in error_msg or "Unauthorized" in error_msg:
-            detail_msg = "Erro de autenticação com Bling. Verifique as credenciais OAuth2."
+            detail_msg = "Erro de autenticação com Bling. Token pode estar inválido. Tente autenticar novamente em /auth/bling/connect."
+            status_code = 401
+            code = "BLING_UNAUTHORIZED"
         elif "429" in error_msg:
             detail_msg = "Limite de requisições excedido. Tente novamente em alguns minutos."
+            status_code = 429
+            code = "BLING_RATE_LIMITED"
         else:
             detail_msg = f"Erro ao buscar produtos no Bling: {error_msg}"
+            status_code = 500
+            code = "BLING_SEARCH_FAILED"
         
         raise HTTPException(
-            status_code=400,
+            status_code=status_code,
             detail={
-                "code": "BLING_SEARCH_FAILED",
+                "code": code,
                 "message": detail_msg,
                 "details": error_msg,
+                "needs_reauth": isinstance(e, BlingRefreshTokenExpiredError) or "Refresh token expired" in error_msg,
             },
         )
 

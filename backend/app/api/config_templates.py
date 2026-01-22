@@ -45,8 +45,8 @@ async def create_template(
     request: ModelTemplateCreateRequest,
     db: Session = Depends(get_db),
 ):
-    """Create a new model template."""
-    logger.info("create_template", extra={
+    """Create or update model template (upsert)."""
+    logger.info("create_or_update_template", extra={
         "tenant_id": str(DEFAULT_TENANT_ID),
         "model_code": request.model_code,
         "template_kind": request.template_kind,
@@ -68,47 +68,45 @@ async def create_template(
             },
         )
     
-    # Check if template already exists
-    existing = ModelTemplateRepository.get_by_model_and_kind(
+    # Use provided SKU/name when available to avoid extra Bling fetch (helps when token is missing)
+    bling_product_sku = request.bling_product_sku
+    bling_product_name = request.bling_product_name
+
+    if not bling_product_sku:
+        bling_client = BlingClient()
+        try:
+            product = await bling_client.get_product(request.bling_product_id)
+            payload = product.get("data") if isinstance(product, dict) else None
+            source = payload or product or {}
+            bling_product_sku = source.get("codigo", "")
+            bling_product_name = source.get("nome", "")
+        except Exception as e:
+            logger.error("bling_product_fetch_failed", extra={
+                "tenant_id": str(DEFAULT_TENANT_ID),
+                "bling_product_id": request.bling_product_id,
+                "error": str(e),
+            })
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "BLING_PRODUCT_NOT_FOUND",
+                    "message": f"Bling product {request.bling_product_id} not found or error fetching",
+                    "details": str(e),
+                },
+            )
+    
+    # Ensure non-null values for persistence
+    bling_product_sku = bling_product_sku or ""
+    bling_product_name = bling_product_name or ""
+
+    # Check if exists before upsert to determine action
+    existing_before = ModelTemplateRepository.get_by_model_and_kind(
         db, DEFAULT_TENANT_ID, request.model_code, request.template_kind
     )
-    if existing:
-        logger.warning("template_already_exists", extra={
-            "tenant_id": str(DEFAULT_TENANT_ID),
-            "model_code": request.model_code,
-            "template_kind": request.template_kind,
-        })
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "TEMPLATE_ALREADY_EXISTS",
-                "message": f"Template already exists for {request.model_code}/{request.template_kind}",
-            },
-        )
-    
-    # Fetch product details from Bling
-    bling_client = BlingClient()
-    try:
-        product = await bling_client.get_product(request.bling_product_id)
-        bling_product_sku = product.get("codigo", "")
-        bling_product_name = product.get("nome", "")
-    except Exception as e:
-        logger.error("bling_product_fetch_failed", extra={
-            "tenant_id": str(DEFAULT_TENANT_ID),
-            "bling_product_id": request.bling_product_id,
-            "error": str(e),
-        })
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": "BLING_PRODUCT_NOT_FOUND",
-                "message": f"Bling product {request.bling_product_id} not found or error fetching",
-                "details": str(e),
-            },
-        )
-    
-    # Create template
-    template = ModelTemplateRepository.create(
+    is_update = existing_before is not None
+
+    # Create or update template
+    template = ModelTemplateRepository.create_or_update(
         db,
         DEFAULT_TENANT_ID,
         request,
@@ -116,11 +114,13 @@ async def create_template(
         bling_product_name=bling_product_name,
     )
     
-    logger.info("template_created", extra={
+    action = "updated" if is_update else "created"
+    logger.info(f"template_{action}", extra={
         "tenant_id": str(DEFAULT_TENANT_ID),
         "template_id": str(template.id),
         "model_code": template.model_code,
         "template_kind": template.template_kind,
+        "action": action,
     })
     return template
 

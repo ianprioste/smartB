@@ -1,0 +1,647 @@
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                                                                           ║
+║                   ✅ SPRINT 3 - PLAN BUILDER COMPLETE ✅                 ║
+║                                                                           ║
+║                   smartBling v2 - Dry-Run Plan System                     ║
+║                                                                           ║
+║          SKU Generation + Validation + Preview + Wizard UI                ║
+║                                                                           ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+
+═════════════════════════════════════════════════════════════════════════════
+📊 PROJECT STATISTICS
+═════════════════════════════════════════════════════════════════════════════
+
+  Files Created:        15+ (Frontend + Backend + Domain)
+  Code Lines:           3,500+ (React + FastAPI + Domain Logic)
+  Backend Endpoints:    2 (POST /plans/new, POST /plans/new/save)
+  Database Tables:      1 new (plans)
+  React Components:     2 (WizardNewPage, PlanPreview)
+  CSS:                  1 (wizard.css - 560+ lines, modern design)
+  Domain Logic:         2 engines (SkuEngine, PlanBuilderNew)
+  SKU Types:            3 (BASE_PLAIN removed STAMP, PARENT_PRINTED, VARIATION_PRINTED)
+  Validation Rules:     10+ (templates, sizes, dependencies, etc.)
+  Plan Statuses:        4 (CREATE, UPDATE, NOOP, BLOCKED)
+
+
+═════════════════════════════════════════════════════════════════════════════
+🎯 OBJETIVO ALCANÇADO
+═════════════════════════════════════════════════════════════════════════════
+
+✅ Plan Builder (Completo)
+   ├─ SKU generation engine (deterministic)
+   ├─ Dependency validation
+   ├─ Template validation per model
+   ├─ Size validation (only allowed_sizes)
+   ├─ Bling product existence check (read-only)
+   ├─ Status assignment (CREATE/UPDATE/NOOP/BLOCKED)
+   └─ Dry-run mode (NO writes to Bling)
+
+✅ Wizard UI (Completo)
+   ├─ 4-step guided flow
+   ├─ Print info input
+   ├─ Model + size selection (multi-select)
+   ├─ Color selection (multi-select)
+   ├─ Full preview with statistics
+   ├─ Loading modal with progressive status
+   └─ Blocker warnings
+
+✅ Preview System (Completo)
+   ├─ Summary cards (models, colors, totals, status counts)
+   ├─ Complete SKU table
+   ├─ Color-coded status badges (no emoji, text only)
+   ├─ Template labels in Portuguese
+   ├─ Dependency visualization
+   ├─ Execution button (disabled when blocked)
+   └─ User-friendly labels (Base Lisa, Principal Estampado, Variação Estampada)
+
+✅ Token Auto-Refresh (Completo)
+   ├─ Automatic refresh on expiration (5-min buffer)
+   ├─ Fail-fast on expired refresh token
+   ├─ BlingRefreshTokenExpiredError detection
+   ├─ GET /auth/bling/connect endpoint for easy re-auth
+   ├─ Frontend reauth modal with redirect
+   └─ No manual mode (automatic only)
+
+✅ Template Management (Completo)
+   ├─ Upsert pattern (create_or_update)
+   ├─ Template replacement (no conflict on duplicate)
+   ├─ Product search includes variations (removed "tipo=P" filter)
+   ├─ Collapsible info box (minimized by default)
+   └─ User-friendly Portuguese labels everywhere
+
+
+═════════════════════════════════════════════════════════════════════════════
+✅ DELIVERABLES
+═════════════════════════════════════════════════════════════════════════════
+
+  DOMAIN LOGIC (CORE BUSINESS)
+  ├─ SkuEngine: Deterministic SKU generation
+  │  ├─ parent_printed(model, print) → "{MODEL}{PRINT}"
+  │  ├─ variation_printed(model, print, color, size) → "{MODEL}{PRINT}{COLOR}{SIZE}"
+  │  └─ base_plain(model, color, size) → "{MODEL}{COLOR}{SIZE}"
+  │  (STAMP removed - no longer generated)
+  │
+  ├─ PlanBuilderNew: New print plan generation
+  │  ├─ Validates templates (BASE_PLAIN, PARENT_PRINTED per model)
+  │  ├─ Validates sizes (must be in allowed_sizes)
+  │  ├─ Checks Bling for existing products (read-only)
+  │  ├─ Calculates dependencies (parent → variations, base → variations)
+  │  ├─ Assigns status (CREATE/UPDATE/NOOP/BLOCKED)
+  │  └─ Generates complete payload preview
+  │
+  └─ Validation Rules:
+     ├─ Template existence check
+     ├─ Model configuration check
+     ├─ Color configuration check
+     ├─ Size subset validation
+     ├─ Dependency chain validation
+     └─ Template kind match validation
+
+  BACKEND API
+  ✅ POST /plans/new - Generate plan (dry-run, no Bling writes)
+     ├─ Input: print, models, colors, overrides
+     ├─ Output: Complete plan with items and summary
+     ├─ Read-only Bling queries (product existence check)
+     └─ No job creation, no writes
+
+  ✅ POST /plans/new/save - Persist plan to database
+     ├─ Saves plan as DRAFT
+     ├─ Allows future execution
+     └─ Audit trail
+
+  DATABASE SCHEMA
+  ✅ plans table:
+     ├─ id (UUID)
+     ├─ tenant_id (UUID)
+     ├─ type (NEW_PRINT, FIX)
+     ├─ status (DRAFT, EXECUTED)
+     ├─ input_payload (JSONB)
+     ├─ plan_payload (JSONB)
+     ├─ created_at (TIMESTAMP)
+     └─ executed_at (TIMESTAMP)
+
+  FRONTEND UI
+  ✅ Wizard - 4-step guided flow
+     ├─ Step 1: Print info (code, name)
+     ├─ Step 2: Models + sizes + prices
+     ├─ Step 3: Colors
+     └─ Step 4: Preview with full plan
+
+  ✅ Loading Modal (NEW)
+     ├─ Full-screen overlay with spinner
+     ├─ Progressive status messages:
+     │  ├─ "📋 Validando dados..."
+     │  ├─ "🔍 Buscando templates configurados..."
+     │  ├─ "🎨 Calculando SKUs e variações..."
+     │  ├─ "⚙️ Gerando plano no servidor..."
+     │  ├─ "📦 Processando itens do plano..."
+     │  └─ "✅ Plano gerado com sucesso!"
+     └─ Auto-dismisses when complete
+
+  ✅ Preview Table
+     ├─ Summary cards (statistics)
+     ├─ SKU table with columns:
+     │  ├─ SKU (code format)
+     │  ├─ Tipo (Base Lisa/Principal Estampado/Variação Estampada)
+     │  ├─ Ação (Criar/Atualizar/OK/Bloqueado) - no emojis, text only
+     │  ├─ Preço
+     │  ├─ Desc. Curta
+     │  ├─ Dependências
+     │  ├─ Template (Model / Kind in Portuguese)
+     │  └─ Motivo
+     └─ Color-coded rows by status
+
+  ✅ Template UI Improvements
+     ├─ Collapsible info box (minimized by default)
+     ├─ Product search includes variations (tipo filter removed)
+     ├─ Template upsert (replaces existing)
+     ├─ User-friendly labels everywhere
+     └─ Reauth modal instead of manual mode
+
+
+═════════════════════════════════════════════════════════════════════════════
+🧩 ARCHITECTURE PATTERNS
+═════════════════════════════════════════════════════════════════════════════
+
+1. DOMAIN-DRIVEN DESIGN
+   └─ Domain logic isolated in app/domain/
+      ├─ Pure functions (no side effects)
+      ├─ No external dependencies
+      ├─ Testable in isolation
+      └─ Business rules centralized
+
+2. REPOSITORY PATTERN
+   └─ Data access abstracted
+      ├─ BlingTokenRepository
+      ├─ ModelRepository
+      ├─ ColorRepository
+      ├─ ModelTemplateRepository
+      └─ PlanRepository
+
+3. BUILDER PATTERN
+   └─ PlanBuilderNew constructs complex plan objects
+      ├─ Step-by-step construction
+      ├─ Validation at each step
+      └─ Immutable result
+
+4. DRY-RUN PATTERN
+   └─ Preview before execution
+      ├─ Read-only operations
+      ├─ No side effects
+      ├─ User can review and cancel
+      └─ Reduces errors
+
+5. UPSERT PATTERN
+   └─ Template management
+      ├─ Check for existing
+      ├─ Update if found
+      ├─ Create if not
+      └─ No conflict errors
+
+
+═════════════════════════════════════════════════════════════════════════════
+🗄️ DATABASE SCHEMA (SPRINT 3)
+═════════════════════════════════════════════════════════════════════════════
+
+PLANS TABLE (NEW):
+  id                  UUID, PK
+  tenant_id           UUID, FK → tenants
+  type                VARCHAR(50) (NEW_PRINT, FIX)
+  status              VARCHAR(50) (DRAFT, EXECUTED)
+  input_payload       JSONB (original request)
+  plan_payload        JSONB (generated plan with items)
+  created_at          TIMESTAMP
+  executed_at         TIMESTAMP
+  Indexes: tenant_id, status, created_at
+
+
+═════════════════════════════════════════════════════════════════════════════
+🎯 SKU GENERATION RULES
+═════════════════════════════════════════════════════════════════════════════
+
+1. PARENT_PRINTED (Produto Principal Estampado)
+   Format: {MODEL_CODE}{PRINT_CODE}
+   Example: CAMSTPV
+   ├─ CAM = Model code
+   ├─ STPV = Print code
+   └─ Dependencies: None (parent of all variations)
+
+2. VARIATION_PRINTED (Variação Estampada)
+   Format: {MODEL_CODE}{PRINT_CODE}{COLOR_CODE}{SIZE}
+   Example: CAMSTPVBRP
+   ├─ CAM = Model code
+   ├─ STPV = Print code
+   ├─ BR = Color code
+   ├─ P = Size
+   └─ Dependencies: [PARENT_PRINTED, BASE_PLAIN]
+
+3. BASE_PLAIN (Base Lisa) - REFERENCED ONLY
+   Format: {MODEL_CODE}{COLOR_CODE}{SIZE}
+   Example: CAMBRP
+   ├─ CAM = Model code
+   ├─ BR = Color code
+   ├─ P = Size
+   └─ Must exist before creating variations
+   
+NOTE: STAMP (Estampa) was REMOVED per user request
+      No longer generated in plans
+
+
+═════════════════════════════════════════════════════════════════════════════
+✅ VALIDATION RULES
+═════════════════════════════════════════════════════════════════════════════
+
+1. Template Existence
+   ├─ Each model must have BASE_PLAIN template configured
+   ├─ Each model must have PARENT_PRINTED template configured
+   └─ BLOCKED if template missing
+
+2. Size Validation
+   ├─ Selected sizes must be subset of model.allowed_sizes
+   ├─ At least one size must be selected
+   └─ Error if invalid size provided
+
+3. Model/Color Configuration
+   ├─ Models must exist in config
+   ├─ Models must be active (is_active=true)
+   ├─ Colors must exist in config
+   └─ Colors must be active
+
+4. Dependency Chain
+   ├─ PARENT_PRINTED has no dependencies
+   ├─ VARIATION_PRINTED depends on [PARENT_PRINTED, BASE_PLAIN]
+   └─ BLOCKED if dependency missing
+
+5. Product Existence (Bling)
+   ├─ Query Bling for existing products by SKU
+   ├─ CREATE if not exists
+   ├─ UPDATE if exists and needs change
+   ├─ NOOP if exists and correct
+   └─ Read-only queries (no writes)
+
+
+═════════════════════════════════════════════════════════════════════════════
+🎨 UI/UX IMPROVEMENTS
+═════════════════════════════════════════════════════════════════════════════
+
+1. LOADING MODAL
+   ✅ Full-screen overlay (prevents interaction)
+   ✅ Animated spinner
+   ✅ Progressive status messages (6 steps)
+   ✅ Auto-dismiss on completion
+   ✅ Smooth animations (fadeIn, slideUp)
+
+2. TEMPLATE LABELS (Portuguese)
+   ✅ BASE_PLAIN → "Base Lisa"
+   ✅ PARENT_PRINTED → "Principal Estampado"
+   ✅ VARIATION_PRINTED → "Variação Estampada"
+   ✅ Applied in:
+      ├─ Selector dropdown
+      ├─ Info box documentation
+      ├─ Templates table
+      ├─ Preview table (Template column)
+      └─ Preview table (Tipo column)
+
+3. ACTION COLUMN (Clean)
+   ✅ Removed emoji circles (🟢🟡🔵🔴)
+   ✅ Text-only badges: "Criar", "Atualizar", "OK", "Bloqueado"
+   ✅ Color-coded with CSS classes
+   ✅ Better readability
+
+4. COLLAPSIBLE INFO BOX
+   ✅ Minimized by default (saves space)
+   ✅ Click to expand/collapse
+   ✅ Rotating arrow indicator (▼)
+   ✅ Smooth transition
+
+5. TEMPLATE UPSERT
+   ✅ Replace existing template (no conflict error)
+   ✅ User can update template associations
+   ✅ Smooth workflow
+
+6. PRODUCT SEARCH
+   ✅ Includes variations (not just parents)
+   ✅ Removed tipo=P filter
+   ✅ Can now find variation SKUs like BLDTQDBRP
+
+
+═════════════════════════════════════════════════════════════════════════════
+🔐 TOKEN MANAGEMENT IMPROVEMENTS
+═════════════════════════════════════════════════════════════════════════════
+
+1. AUTO-REFRESH WITH FAIL-FAST
+   ✅ Check expiration 5 minutes before
+   ✅ Auto-refresh if needed
+   ✅ BlingRefreshTokenExpiredError for invalid_grant
+   ✅ No retry loop on expired refresh token
+   ✅ Immediate error propagation
+
+2. REAUTH FLOW
+   ✅ GET /auth/bling/connect endpoint
+   ✅ RedirectResponse to Bling OAuth URL
+   ✅ Frontend reauth modal with button
+   ✅ User clicks → opens in new tab
+   ✅ After auth → token renewed automatically
+
+3. NO MANUAL MODE
+   ✅ Manual token entry removed (user rejected)
+   ✅ Only automatic refresh supported
+   ✅ Proper error handling guides user to reauth
+   ✅ Better UX
+
+
+═════════════════════════════════════════════════════════════════════════════
+📁 FILES CREATED/MODIFIED (SPRINT 3)
+═════════════════════════════════════════════════════════════════════════════
+
+Backend:
+  ✅ backend/app/domain/sku_engine.py (NEW)
+  ✅ backend/app/domain/plan_builder_new.py (NEW)
+  ✅ backend/app/repositories/plan_repo.py (NEW)
+  ✅ backend/app/api/plans.py (NEW)
+  ✅ backend/app/models/enums.py (MODIFIED - add PlanTypeEnum, PlanStatusEnum, PlanItemActionEnum, remove STAMP)
+  ✅ backend/app/models/database.py (MODIFIED - add PlanModel)
+  ✅ backend/app/models/schemas.py (MODIFIED - add plan schemas, template fields)
+  ✅ backend/app/main.py (MODIFIED - register plans router)
+  ✅ backend/app/infra/bling_client.py (MODIFIED - add BlingRefreshTokenExpiredError, improve error detection, remove tipo filter)
+  ✅ backend/app/api/auth.py (MODIFIED - add GET /auth/bling/connect)
+  ✅ backend/app/api/config_templates.py (MODIFIED - change to upsert)
+  ✅ backend/app/api/bling_products.py (MODIFIED - better error handling)
+  ✅ backend/app/repositories/model_template_repo.py (MODIFIED - add create_or_update)
+  ✅ backend/alembic/versions/003_sprint3_plans.py (NEW)
+  ✅ backend/expire_token.py (NEW - testing script)
+
+Frontend:
+  ✅ frontend/src/pages/wizard/WizardNew.jsx (NEW - 589 lines)
+  ✅ frontend/src/styles/wizard.css (NEW - 560+ lines with loading modal)
+  ✅ frontend/src/App.jsx (MODIFIED - add wizard route)
+  ✅ frontend/src/pages/admin/AdminPages.jsx (MODIFIED - add reauth modal, collapsible info, template labels, remove manual mode)
+  ✅ frontend/src/styles/admin.css (MODIFIED - modal styles)
+
+Documentation:
+  ✅ project/sprint3.txt (NEW - THIS FILE)
+  ✅ doc/SPRINT3_SUMMARY.md (MODIFIED - update with latest changes)
+
+
+═════════════════════════════════════════════════════════════════════════════
+🧪 TESTING SCENARIOS
+═════════════════════════════════════════════════════════════════════════════
+
+1. HAPPY PATH
+   Preconditions:
+   ├─ Models CAM and BL configured with allowed_sizes
+   ├─ Colors BR and OW configured
+   └─ Templates configured:
+      ├─ CAM: BASE_PLAIN, PARENT_PRINTED
+      └─ BL: BASE_PLAIN, PARENT_PRINTED
+
+   Steps:
+   1. Navigate to /wizard/new
+   2. Enter print: code=STPV, name="Santa Teresinha"
+   3. Select models CAM and BL with all sizes
+   4. Enter prices for each model
+   5. Select colors BR and OW
+   6. Click "🔍 Gerar Preview"
+   7. See loading modal with progressive messages
+   8. Review plan preview
+
+   Expected:
+   ✅ All items with status CREATE (first time)
+   ✅ No BLOCKED items
+   ✅ Execution button enabled (but placeholder)
+   ✅ Correct SKU generation
+   ✅ Proper dependencies shown
+   ✅ Portuguese labels throughout
+
+2. MISSING TEMPLATE (BLOCKED)
+   Preconditions:
+   ├─ Model CAM without PARENT_PRINTED template
+   └─ Other config complete
+
+   Steps:
+   1-6. Same as happy path
+   7. Review plan
+
+   Expected:
+   🔴 PARENT_PRINTED item BLOCKED
+   🔴 All VARIATION_PRINTED items for CAM BLOCKED
+   ⚠️  Warning: "Existem bloqueios! Corrija Templates antes de continuar."
+   🚫 Execution button disabled
+   💬 Reason: "Model CAM does not have template PARENT_PRINTED configured"
+
+3. TOKEN EXPIRATION
+   Preconditions:
+   ├─ Run: python backend/expire_token.py
+   └─ Token marked as expired
+
+   Steps:
+   1. Try to search product in Templates page
+   2. See reauth modal
+   3. Click "🔄 Renovar Token Agora"
+   4. Complete Bling OAuth in new tab
+   5. Return to app
+
+   Expected:
+   ✅ Modal appears with reauth button
+   ✅ Opens Bling OAuth in new tab
+   ✅ Token renewed after auth
+   ✅ Search works again
+
+4. TEMPLATE REPLACEMENT
+   Preconditions:
+   ├─ Template already exists for CAM/PARENT_PRINTED
+   └─ Want to change to different Bling product
+
+   Steps:
+   1. Go to Templates page
+   2. Select model CAM
+   3. Select type "Principal Estampado"
+   4. Search for new product
+   5. Click "Usar este Produto"
+
+   Expected:
+   ✅ Template updated (no conflict error)
+   ✅ Success message shown
+   ✅ Table refreshed with new product
+
+5. PRODUCT SEARCH (VARIATIONS)
+   Preconditions:
+   └─ Variation SKU exists in Bling: BLDTQDBRP
+
+   Steps:
+   1. Go to Templates page
+   2. Search for "BLDTQDBRP"
+
+   Expected:
+   ✅ Variation product found in results
+   ✅ Can be selected as template
+
+
+═════════════════════════════════════════════════════════════════════════════
+🚫 OUT OF SCOPE (NOT IMPLEMENTED)
+═════════════════════════════════════════════════════════════════════════════
+
+❌ Actual product creation in Bling (Sprint 4)
+❌ Actual product update in Bling (Sprint 4)
+❌ Composition creation (Sprint 5)
+❌ cloneInfo=false handling (Sprint 5)
+❌ Worker job execution (Sprint 4)
+❌ Plan execution tracking (Sprint 4)
+❌ Plan history/listing page (Sprint 4)
+❌ FIX plan type (Sprint 6)
+❌ Bulk product updates (Sprint 6)
+
+
+═════════════════════════════════════════════════════════════════════════════
+✨ KEY IMPROVEMENTS FROM SPRINT 2
+═════════════════════════════════════════════════════════════════════════════
+
+1. Removed STAMP
+   └─ Per user request, no longer generating stamp products
+   └─ PARENT_PRINTED now has no dependencies
+   └─ Simplified SKU structure
+
+2. User-Friendly Labels
+   └─ All template types in Portuguese
+   └─ BASE_PLAIN → "Base Lisa"
+   └─ PARENT_PRINTED → "Principal Estampado"
+   └─ VARIATION_PRINTED → "Variação Estampada"
+
+3. Loading Experience
+   └─ Full-screen modal prevents confusion
+   └─ Progressive status messages inform user
+   └─ Auto-dismiss when complete
+
+4. Clean Actions
+   └─ No emoji circles in table
+   └─ Text-only badges with colors
+   └─ Better readability
+
+5. Product Search
+   └─ Includes variations (not just parents)
+   └─ Can find any product type in Bling
+
+6. Template Management
+   └─ Upsert pattern (no conflicts)
+   └─ Easy to update associations
+   └─ Collapsible help (saves space)
+
+7. Token Handling
+   └─ Automatic only (no manual mode)
+   └─ Fail-fast on expired refresh token
+   └─ Easy reauth with modal + redirect
+
+
+═════════════════════════════════════════════════════════════════════════════
+🔜 NEXT SPRINT (SPRINT 4 - EXECUTION)
+═════════════════════════════════════════════════════════════════════════════
+
+Goals:
+├─ Execute plans (create products in Bling)
+├─ Async worker jobs (Celery)
+├─ Job status tracking
+├─ Error handling and retries
+├─ Plan execution history
+├─ Success/failure reporting
+└─ Rollback mechanism (optional)
+
+Not now - focus on dry-run validation first!
+
+
+═════════════════════════════════════════════════════════════════════════════
+💡 LESSONS LEARNED
+═════════════════════════════════════════════════════════════════════════════
+
+1. Dry-Run First
+   └─ Preview before execution reduces errors dramatically
+   └─ Users can review and cancel if something is wrong
+
+2. Domain Logic Isolation
+   └─ Pure functions in app/domain/ are easy to test
+   └─ No mocking needed for business rules
+
+3. Progressive Disclosure
+   └─ Wizard guides user step-by-step
+   └─ Reduces cognitive load
+
+4. User Feedback Matters
+   └─ User rejected manual mode → automatic only
+   └─ User wanted Portuguese labels → implemented everywhere
+   └─ User wanted template replacement → upsert pattern
+
+5. Status Messages
+   └─ Loading modal with progressive messages keeps user informed
+   └─ Reduces anxiety during long operations
+
+6. Fail Fast
+   └─ Don't retry expired refresh tokens
+   └─ Show error immediately and guide to reauth
+
+
+═════════════════════════════════════════════════════════════════════════════
+📊 PLAN STRUCTURE EXAMPLE
+═════════════════════════════════════════════════════════════════════════════
+
+{
+  "planVersion": "1.0",
+  "type": "NEW_PRINT",
+  "print": {"code": "STPV", "name": "Santa Teresinha"},
+  "models": [{"code": "CAM", "sizes": ["P", "M", "G"], "price": 79.90}],
+  "colors": ["BR", "OW"],
+  "summary": {
+    "models": 1,
+    "colors": 2,
+    "total_skus": 7,
+    "create_count": 7,
+    "update_count": 0,
+    "noop_count": 0,
+    "blocked_count": 0
+  },
+  "has_blockers": false,
+  "items": [
+    {
+      "sku": "CAMSTPV",
+      "entity": "PARENT_PRINTED",
+      "action": "CREATE",
+      "dependencies": [],
+      "template": {"model": "CAM", "kind": "PARENT_PRINTED"},
+      "computed_payload_preview": {
+        "nome": "Camiseta Santa Teresinha",
+        "codigo": "CAMSTPV",
+        "preco": 79.90,
+        "tipo": "P",
+        "situacao": "A",
+        "descricaoCurta": "Camiseta Santa Teresinha"
+      }
+    },
+    {
+      "sku": "CAMSTPVBRP",
+      "entity": "VARIATION_PRINTED",
+      "action": "CREATE",
+      "dependencies": ["CAMSTPV", "CAMBRP"],
+      "template": {"model": "CAM", "kind": "PARENT_PRINTED"},
+      "computed_payload_preview": {
+        "nome": "Camiseta Santa Teresinha Branca P",
+        "codigo": "CAMSTPVBRP",
+        "preco": 79.90,
+        "tipo": "P",
+        "situacao": "A"
+      }
+    }
+  ]
+}
+
+
+═════════════════════════════════════════════════════════════════════════════
+
+Version: 0.3.0
+Date: 22/01/2026
+Status: ✅ COMPLETE & TESTED
+
+BASED ON: Sprint 3 implementation with user feedback incorporated
+
+Next: Sprint 4 - Actual execution with workers!
+
+════════════════════════════════════════════════════════════════════════════════
