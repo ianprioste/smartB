@@ -19,6 +19,7 @@ from app.models.schemas import (
     PlanItem,
     PlanSummary,
     PlanItemTemplate,
+    SeedSummary,
 )
 from app.models.enums import TemplateKindEnum, PlanItemActionEnum
 from app.infra.logging import get_logger
@@ -87,6 +88,22 @@ class PlanBuilderNew:
         # Generate all plan items
         items = await self._generate_items(request)
 
+        # Detect and add auto-seed items if enabled
+        seed_summary = SeedSummary()
+        if request.options.auto_seed_base_plain:
+            seed_items = await self._detect_and_add_base_seeds(request, items)
+            items.extend(seed_items)
+            
+            # Calculate seed summary
+            seed_summary.base_parent_missing = [
+                item.sku for item in seed_items if item.entity == "BASE_PARENT" and not item.included
+            ]
+            seed_summary.base_variation_missing = [
+                item.sku for item in seed_items if item.entity == "BASE_VARIATION" and not item.included
+            ]
+            seed_summary.total_missing = len(seed_summary.base_parent_missing) + len(seed_summary.base_variation_missing)
+            seed_summary.total_included = sum(1 for item in seed_items if item.included)
+
         # Calculate summary
         summary = self._calculate_summary(request, items)
 
@@ -99,6 +116,8 @@ class PlanBuilderNew:
             summary=summary,
             items=items,
             has_blockers=has_blockers,
+            seed_summary=seed_summary,
+            options=request.options,
         )
 
         logger.info(
@@ -108,6 +127,285 @@ class PlanBuilderNew:
         )
 
         return plan
+
+    async def _detect_and_add_base_seeds(
+        self, request: PlanNewRequest, items: List[PlanItem]
+    ) -> List[PlanItem]:
+        """
+        Detect missing BASE_PARENT and BASE_VARIATION seeds for VARIATION_PRINTED items.
+        
+        Args:
+            request: Plan creation request
+            items: Generated plan items
+            
+        Returns:
+            List of seed items to add to plan
+        """
+        seed_items = []
+        
+        # Collect existing SKUs to check against
+        existing_skus = {item.sku for item in items}
+        
+        # Track already created seeds to avoid duplicates
+        created_seeds: Dict[str, PlanItem] = {}
+        
+        # Process VARIATION_PRINTED items to identify missing base seeds
+        for item in items:
+            if item.entity != "VARIATION_PRINTED":
+                continue
+            
+            # Extract model, color, size from the variation item
+            # We need to iterate through request to find the matching variation
+            for model_req in request.models:
+                model_code = model_req.code
+                
+                for color_code in request.colors:
+                    # Determine sizes
+                    if model_req.sizes:
+                        sizes = model_req.sizes
+                    else:
+                        model_info = self.models_data[model_code]
+                        sizes = model_info.get("allowed_sizes", [])
+                    
+                    for size in sizes:
+                        # Generate expected variation SKU to match
+                        expected_variation_sku = self.sku_engine.variation_printed(
+                            model_code, request.print.code, color_code, size
+                        )
+                        
+                        if item.sku != expected_variation_sku:
+                            continue
+                        
+                        # Found matching variation - create BASE_PARENT if missing
+                        # BASE_PARENT SKU is just the model code
+                        base_parent_sku = model_code.upper()
+                        if base_parent_sku not in existing_skus and base_parent_sku not in created_seeds:
+                            base_parent_seed = await self._create_seed_item(
+                                sku=base_parent_sku,
+                                entity="BASE_PARENT",
+                                model_code=model_code,
+                                request=request,
+                                included=request.options.auto_seed_base_plain,
+                            )
+                            if base_parent_seed:
+                                created_seeds[base_parent_sku] = base_parent_seed
+                                existing_skus.add(base_parent_sku)
+                        
+                        # Create BASE_VARIATION if missing
+                        # BASE_VARIATION SKU is {MODEL_CODE}{COLOR_CODE}{SIZE}
+                        base_variation_sku = self.sku_engine.base_plain(model_code, color_code, size)
+                        if base_variation_sku not in existing_skus and base_variation_sku not in created_seeds:
+                            base_variation_seed = await self._create_seed_item(
+                                sku=base_variation_sku,
+                                entity="BASE_VARIATION",
+                                model_code=model_code,
+                                request=request,
+                                included=request.options.auto_seed_base_plain,
+                            )
+                            if base_variation_seed:
+                                created_seeds[base_variation_sku] = base_variation_seed
+                                existing_skus.add(base_variation_sku)
+        
+        # Add created seeds to the list
+        seed_items.extend(created_seeds.values())
+        
+        # Update VARIATION_PRINTED dependencies based on auto_seed setting
+        for item in items:
+            if item.entity != "VARIATION_PRINTED":
+                continue
+            
+            # Extract model, color, size
+            for model_req in request.models:
+                model_code = model_req.code
+                
+                for color_code in request.colors:
+                    if model_req.sizes:
+                        sizes = model_req.sizes
+                    else:
+                        model_info = self.models_data[model_code]
+                        sizes = model_info.get("allowed_sizes", [])
+                    
+                    for size in sizes:
+                        expected_variation_sku = self.sku_engine.variation_printed(
+                            model_code, request.print.code, color_code, size
+                        )
+                        
+                        if item.sku != expected_variation_sku:
+                            continue
+                        
+                        # Update dependencies based on auto_seed setting
+                        base_variation_sku = self.sku_engine.base_plain(model_code, color_code, size)
+                        
+                        if request.options.auto_seed_base_plain:
+                            # Check if seed was included
+                            if base_variation_sku in created_seeds and created_seeds[base_variation_sku].included:
+                                # Hard dependency on BASE_VARIATION if it's included in the plan
+                                if base_variation_sku not in item.hard_dependencies:
+                                    item.hard_dependencies.append(base_variation_sku)
+                                # Remove from soft dependencies if present
+                                if base_variation_sku in item.soft_dependencies:
+                                    item.soft_dependencies.remove(base_variation_sku)
+                        else:
+                            # Keep BASE_VARIATION as soft dependency when auto_seed is disabled
+                            if base_variation_sku not in item.soft_dependencies and base_variation_sku not in item.hard_dependencies:
+                                item.soft_dependencies.append(base_variation_sku)
+        
+        return seed_items
+
+    async def _create_seed_item(
+        self,
+        sku: str,
+        entity: str,
+        model_code: str,
+        request: PlanNewRequest,
+        included: bool,
+    ) -> Optional[PlanItem]:
+        """
+        Create a seed item (BASE_PARENT or BASE_VARIATION).
+        
+        Args:
+            sku: Generated SKU
+            entity: Entity type (BASE_PARENT or BASE_VARIATION)
+            model_code: Model code
+            request: Plan creation request
+            included: Whether this seed is included in the plan
+            
+        Returns:
+            Seed plan item, or None if creation fails
+        """
+        # Determine which template to use
+        if entity == "BASE_PARENT":
+            # Try BASE_PARENT template first, fallback to PARENT_PRINTED for compatibility
+            template_kind = None
+            fallback_used = False
+            
+            if self._template_exists(model_code, TemplateKindEnum.BASE_PARENT):
+                template_kind = TemplateKindEnum.BASE_PARENT
+            elif self._template_exists(model_code, TemplateKindEnum.PARENT_PRINTED):
+                template_kind = TemplateKindEnum.PARENT_PRINTED
+                fallback_used = True
+        
+        elif entity == "BASE_VARIATION":
+            # BASE_VARIATION uses BASE_PLAIN template
+            template_kind = None
+            fallback_used = False
+            
+            if self._template_exists(model_code, TemplateKindEnum.BASE_PLAIN):
+                template_kind = TemplateKindEnum.BASE_PLAIN
+        
+        else:
+            return None
+        
+        # If template not found - mark as BLOCKED
+        if template_kind is None:
+            template_ref = {
+                "model_code": model_code,
+                "template_kind": None,
+                "bling_product_id": None,
+                "bling_product_sku": None,
+            }
+            
+            return PlanItem(
+                sku=sku,
+                entity=entity,
+                action=PlanItemActionEnum.BLOCKED,
+                hard_dependencies=[],
+                soft_dependencies=[],
+                template=PlanItemTemplate(model=model_code, kind="UNKNOWN"),
+                status=PlanItemActionEnum.BLOCKED,
+                reason="MISSING_TEMPLATE",
+                message=f"Template não disponível para {entity} no modelo {model_code}",
+                template_ref=template_ref,
+                autoseed_candidate=True,
+                included=included,
+            )
+        
+        template_payload = self._get_template_payload(model_code, template_kind)
+        
+        if template_payload is None:
+            template_ref = {
+                "model_code": model_code,
+                "template_kind": template_kind.value,
+                "bling_product_id": self.templates_data.get(model_code, {}).get(template_kind.value),
+                "bling_product_sku": None,
+            }
+            
+            return PlanItem(
+                sku=sku,
+                entity=entity,
+                action=PlanItemActionEnum.BLOCKED,
+                hard_dependencies=[],
+                soft_dependencies=[],
+                template=PlanItemTemplate(model=model_code, kind=template_kind.value, fallback_used=fallback_used),
+                status=PlanItemActionEnum.BLOCKED,
+                reason="MISSING_TEMPLATE_PAYLOAD",
+                message=f"Payload do template indisponível para {model_code}/{template_kind.value}",
+                template_ref=template_ref,
+                autoseed_candidate=True,
+                included=included,
+            )
+        
+        # Get model info for naming
+        model_info = self.models_data[model_code]
+        model_name = model_info.get("name", model_code)
+        
+        # Compute payload for seed
+        computed_payload = TemplateMerge.merge(
+            template_payload,
+            sku=sku,
+            name=f"{model_name} Base Liso" if entity == "BASE_PARENT" else f"{model_name} Base Liso",
+            overrides=request.overrides,
+            price=request.models[0].price if request.models else 0,
+            model_name=model_name,
+            print_name="Base Liso",
+        )
+        
+        template_ref = {
+            "model_code": model_code,
+            "template_kind": template_kind.value,
+            "bling_product_id": self.templates_data.get(model_code, {}).get(template_kind.value),
+            "bling_product_sku": template_payload.get("codigo"),
+        }
+        
+        # Determine action based on whether SKU exists in Bling
+        existing_product = await self._check_bling_product(sku)
+        
+        if existing_product is None:
+            action = PlanItemActionEnum.CREATE
+            reason_text = f"Seed auto-gerado para {entity.lower()}"
+        else:
+            # Check if needs update
+            diff_fields = self._calculate_diff_summary(
+                existing_product,
+                computed_payload,
+                category_override_active=request.overrides.category_override_id is not None,
+            )
+            
+            if diff_fields:
+                action = PlanItemActionEnum.UPDATE
+                reason_text = f"Seed existente, requer atualização"
+            else:
+                action = PlanItemActionEnum.NOOP
+                reason_text = f"Seed existente e correto"
+        
+        return PlanItem(
+            sku=sku,
+            entity=entity,
+            action=action,
+            hard_dependencies=[],
+            soft_dependencies=[],
+            template=PlanItemTemplate(model=model_code, kind=template_kind.value, fallback_used=fallback_used),
+            status=action,
+            reason="AUTO_SEED" if not existing_product else None,
+            message=reason_text,
+            warnings=[],
+            diff_summary=[],
+            existing_product=existing_product,
+            template_ref=template_ref,
+            computed_payload_preview=computed_payload,
+            autoseed_candidate=True,
+            included=included,
+        )
 
     def _validate_input(self, request: PlanNewRequest) -> None:
         """

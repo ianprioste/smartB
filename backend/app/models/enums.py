@@ -5,6 +5,8 @@ import enum
 class TemplateKindEnum(str, enum.Enum):
     """Model template kind enumeration."""
     BASE_PLAIN = "BASE_PLAIN"  # Template de produto liso do modelo
+    BASE_PARENT = "BASE_PARENT"  # Template de pai liso (para autoseed)
+    BASE_VARIATION = "BASE_VARIATION"  # Template de variação lisa (para autoseed)
     PARENT_PRINTED = "PARENT_PRINTED"  # Template do pai estampado
     VARIATION_PRINTED = "VARIATION_PRINTED"  # Template de variação estampada
 

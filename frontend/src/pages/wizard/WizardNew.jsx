@@ -418,6 +418,9 @@ export function WizardNewPage() {
           plan={plan}
           onBack={() => setStep(3)}
           onExecute={() => alert('Execução será implementada na próxima sprint!')}
+          onRegeneratePlan={async (autoSeed) => {
+            return await generatePlanRequest(autoSeed);
+          }}
         />
       )}
 
@@ -453,7 +456,24 @@ export function WizardNewPage() {
   );
 }
 
-function PlanPreview({ plan, onBack, onExecute }) {
+function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan }) {
+  const [plan, setPlan] = React.useState(initialPlan);
+  const [autoSeedBasePlain, setAutoSeedBasePlain] = React.useState(initialPlan.options?.auto_seed_base_plain || false);
+  const [isRegenerating, setIsRegenerating] = React.useState(false);
+
+  async function handleToggleAutoSeed(newValue) {
+    setAutoSeedBasePlain(newValue);
+    setIsRegenerating(true);
+    try {
+      const newPlan = await onRegeneratePlan(newValue);
+      setPlan(newPlan);
+    } catch (err) {
+      alert(`Erro ao regenerar plano: ${err.message}`);
+      setAutoSeedBasePlain(!newValue);
+    } finally {
+      setIsRegenerating(false);
+    }
+  }
   const hasBlockers = plan.has_blockers;
 
   // Group items by action
@@ -498,6 +518,53 @@ function PlanPreview({ plan, onBack, onExecute }) {
           <span>🔴 Bloqueado</span>
         </div>
       </div>
+
+      {plan.seed_summary && (plan.seed_summary.base_parent_missing.length > 0 || plan.seed_summary.base_variation_missing.length > 0) && (
+        <div className="seed-summary-block">
+          <h3>🔍 Bases Lisas Faltantes Detectadas</h3>
+          
+          {plan.seed_summary.base_parent_missing.length > 0 && (
+            <div className="seed-section">
+              <strong>Base Parents ({plan.seed_summary.base_parent_missing.length}):</strong>
+              <div className="seed-list">
+                {plan.seed_summary.base_parent_missing.slice(0, 5).map(sku => (
+                  <code key={sku}>{sku}</code>
+                ))}
+                {plan.seed_summary.base_parent_missing.length > 5 && (
+                  <code className="seed-more">+{plan.seed_summary.base_parent_missing.length - 5} mais</code>
+                )}
+              </div>
+            </div>
+          )}
+          
+          {plan.seed_summary.base_variation_missing.length > 0 && (
+            <div className="seed-section">
+              <strong>Base Variations ({plan.seed_summary.base_variation_missing.length}):</strong>
+              <div className="seed-list">
+                {plan.seed_summary.base_variation_missing.slice(0, 5).map(sku => (
+                  <code key={sku}>{sku}</code>
+                ))}
+                {plan.seed_summary.base_variation_missing.length > 5 && (
+                  <code className="seed-more">+{plan.seed_summary.base_variation_missing.length - 5} mais</code>
+                )}
+              </div>
+            </div>
+          )}
+          
+          <div className="seed-toggle">
+            <label>
+              <input
+                type="checkbox"
+                checked={autoSeedBasePlain}
+                onChange={e => handleToggleAutoSeed(e.target.checked)}
+                disabled={isRegenerating}
+              />
+              {' '}Criar automaticamente bases lisas faltantes
+            </label>
+            {isRegenerating && <span className="regenerating">↻ Regenerando plano...</span>}
+          </div>
+        </div>
+      )}
 
       {hasBlockers && (
         <div className="blocker-warning">

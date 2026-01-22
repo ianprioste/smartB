@@ -285,12 +285,21 @@ class PlanOverrides(BaseModel):
         protected_namespaces = ()
 
 
+class PlanOptions(BaseModel):
+    """Plan execution options and toggles."""
+    auto_seed_base_plain: bool = Field(default=False, description="Auto-seed missing base plain (BASE_PARENT, BASE_VARIATION) templates")
+
+    class Config:
+        protected_namespaces = ()
+
+
 class PlanNewRequest(BaseModel):
     """Create new print plan request."""
     print: PlanPrintInfo = Field(description="Print information")
     models: List[PlanModelRequest] = Field(min_items=1, description="Models to create")
     colors: List[str] = Field(min_items=1, description="Color codes to use")
     overrides: PlanOverrides = Field(default_factory=PlanOverrides, description="Optional overrides for variable fields")
+    options: PlanOptions = Field(default_factory=PlanOptions, description="Plan execution options and toggles")
 
 
 # Plan Item
@@ -299,6 +308,14 @@ class PlanItemTemplate(BaseModel):
     model: str = Field(description="Model code")
     kind: str = Field(description="Template kind")
     fallback_used: bool = Field(default=False, description="Whether fallback template was used (VARIATION_PRINTED using BASE_PLAIN)")
+
+
+class SeedSummary(BaseModel):
+    """Seed summary for auto-seed feature."""
+    base_parent_missing: List[str] = Field(default_factory=list, description="Missing BASE_PARENT SKUs")
+    base_variation_missing: List[str] = Field(default_factory=list, description="Missing BASE_VARIATION SKUs")
+    total_missing: int = Field(default=0, description="Total missing base SKUs")
+    total_included: int = Field(default=0, description="Total included base SKUs in plan")
 
 
 class PlanItem(BaseModel):
@@ -318,6 +335,8 @@ class PlanItem(BaseModel):
     template_ref: Optional[Dict[str, Any]] = Field(None, description="Reference to template used (model_code, kind, bling_product_id, bling_product_sku)")
     overrides_used: Optional[Dict[str, Any]] = Field(None, description="Overrides applied for this item")
     computed_payload_preview: Optional[Dict[str, Any]] = Field(None, description="Merged payload (template + overrides + SKU/Name)")
+    autoseed_candidate: bool = Field(default=False, description="Whether this is an auto-seed candidate")
+    included: bool = Field(default=True, description="Whether this item is included in the plan")
 
 
 class PlanSummary(BaseModel):
@@ -338,6 +357,8 @@ class PlanResponse(BaseModel):
     summary: PlanSummary = Field(description="Summary statistics")
     items: List[PlanItem] = Field(description="Plan items")
     has_blockers: bool = Field(description="Whether plan has blocked items")
+    seed_summary: SeedSummary = Field(default_factory=SeedSummary, description="Seed summary for auto-seed feature")
+    options: PlanOptions = Field(default_factory=PlanOptions, description="Plan options used")
 
 
 class PlanSaveRequest(BaseModel):
