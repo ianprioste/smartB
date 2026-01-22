@@ -468,9 +468,12 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan })
   const [autoSeedBasePlain, setAutoSeedBasePlain] = React.useState(initialPlan.options?.auto_seed_base_plain || false);
   const [isRegenerating, setIsRegenerating] = React.useState(false);
   const [loadingStatus, setLoadingStatus] = React.useState('');
+  const [selectedSeeds, setSelectedSeeds] = React.useState(new Set());
+  const [manualMode, setManualMode] = React.useState(false);
 
   async function handleToggleAutoSeed(newValue) {
     setAutoSeedBasePlain(newValue);
+    setManualMode(false);
     setIsRegenerating(true);
     
     try {
@@ -489,6 +492,7 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan })
       
       await new Promise(resolve => setTimeout(resolve, 500));
       setPlan(newPlan);
+      setSelectedSeeds(new Set());
     } catch (err) {
       alert(`Erro ao regenerar plano: ${err.message}`);
       setAutoSeedBasePlain(!newValue);
@@ -497,6 +501,66 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan })
       setLoadingStatus('');
     }
   }
+
+  function handleToggleManualMode() {
+    const newManualMode = !manualMode;
+    setManualMode(newManualMode);
+    
+    if (newManualMode) {
+      // Entering manual mode - deselect auto and clear selections
+      setAutoSeedBasePlain(false);
+      setSelectedSeeds(new Set());
+    }
+  }
+
+  function handleToggleSeed(sku) {
+    const newSelected = new Set(selectedSeeds);
+    if (newSelected.has(sku)) {
+      newSelected.delete(sku);
+    } else {
+      newSelected.add(sku);
+    }
+    setSelectedSeeds(newSelected);
+  }
+
+  function handleSelectAllSeeds() {
+    const allSeeds = new Set([
+      ...(plan.seed_summary?.base_parent_missing || []),
+      ...(plan.seed_summary?.base_variation_missing || [])
+    ]);
+    setSelectedSeeds(allSeeds);
+  }
+
+  function handleDeselectAllSeeds() {
+    setSelectedSeeds(new Set());
+  }
+
+  async function handleRecalculate() {
+    setIsRegenerating(true);
+    
+    try {
+      setLoadingStatus('🔄 Recalculando plano com seleção manual...');
+      await new Promise(resolve => setTimeout(resolve, 300));
+      
+      setLoadingStatus('⚙️ Processando no servidor...');
+      // For now, if any seeds selected, use auto_seed=true, else false
+      // In future, backend can accept specific SKU list
+      const hasSelectedSeeds = selectedSeeds.size > 0;
+      const newPlan = await onRegeneratePlan(hasSelectedSeeds);
+      
+      await new Promise(resolve => setTimeout(resolve, 300));
+      setLoadingStatus('✅ Plano recalculado com sucesso!');
+      
+      await new Promise(resolve => setTimeout(resolve, 500));
+      setPlan(newPlan);
+    } catch (err) {
+      alert(`Erro ao recalcular plano: ${err.message}`);
+    } finally {
+      setIsRegenerating(false);
+      setLoadingStatus('');
+    }
+  }
+
   const hasBlockers = plan.has_blockers;
 
   // Group items by action
@@ -556,45 +620,131 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan })
         <div className="seed-summary-block">
           <h3>🔍 Bases Lisas Faltantes Detectadas</h3>
           
-          {plan.seed_summary.base_parent_missing.length > 0 && (
-            <div className="seed-section">
-              <strong>Base Parents ({plan.seed_summary.base_parent_missing.length}):</strong>
-              <div className="seed-list">
-                {plan.seed_summary.base_parent_missing.slice(0, 5).map(sku => (
-                  <code key={sku}>{sku}</code>
-                ))}
-                {plan.seed_summary.base_parent_missing.length > 5 && (
-                  <code className="seed-more">+{plan.seed_summary.base_parent_missing.length - 5} mais</code>
-                )}
+          {!manualMode ? (
+            <>
+              {plan.seed_summary.base_parent_missing.length > 0 && (
+                <div className="seed-section">
+                  <strong>Base Parents ({plan.seed_summary.base_parent_missing.length}):</strong>
+                  <div className="seed-list">
+                    {plan.seed_summary.base_parent_missing.slice(0, 5).map(sku => (
+                      <code key={sku}>{sku}</code>
+                    ))}
+                    {plan.seed_summary.base_parent_missing.length > 5 && (
+                      <code className="seed-more">+{plan.seed_summary.base_parent_missing.length - 5} mais</code>
+                    )}
+                  </div>
+                </div>
+              )}
+              
+              {plan.seed_summary.base_variation_missing.length > 0 && (
+                <div className="seed-section">
+                  <strong>Base Variations ({plan.seed_summary.base_variation_missing.length}):</strong>
+                  <div className="seed-list">
+                    {plan.seed_summary.base_variation_missing.slice(0, 5).map(sku => (
+                      <code key={sku}>{sku}</code>
+                    ))}
+                    {plan.seed_summary.base_variation_missing.length > 5 && (
+                      <code className="seed-more">+{plan.seed_summary.base_variation_missing.length - 5} mais</code>
+                    )}
+                  </div>
+                </div>
+              )}
+              
+              <div className="seed-toggle">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={autoSeedBasePlain}
+                    onChange={e => handleToggleAutoSeed(e.target.checked)}
+                    disabled={isRegenerating}
+                  />
+                  {' '}Criar automaticamente todas as bases lisas
+                </label>
+                <button
+                  className="btn-secondary btn-small"
+                  onClick={handleToggleManualMode}
+                  disabled={isRegenerating}
+                >
+                  ✏️ Seleção Manual
+                </button>
               </div>
-            </div>
-          )}
-          
-          {plan.seed_summary.base_variation_missing.length > 0 && (
-            <div className="seed-section">
-              <strong>Base Variations ({plan.seed_summary.base_variation_missing.length}):</strong>
-              <div className="seed-list">
-                {plan.seed_summary.base_variation_missing.slice(0, 5).map(sku => (
-                  <code key={sku}>{sku}</code>
-                ))}
-                {plan.seed_summary.base_variation_missing.length > 5 && (
-                  <code className="seed-more">+{plan.seed_summary.base_variation_missing.length - 5} mais</code>
-                )}
+            </>
+          ) : (
+            <>
+              {plan.seed_summary.base_parent_missing.length > 0 && (
+                <div className="seed-section">
+                  <strong>Base Parents ({plan.seed_summary.base_parent_missing.length}):</strong>
+                  <div className="seed-list-manual">
+                    {plan.seed_summary.base_parent_missing.map(sku => (
+                      <label key={sku} className="seed-checkbox-item">
+                        <input
+                          type="checkbox"
+                          checked={selectedSeeds.has(sku)}
+                          onChange={() => handleToggleSeed(sku)}
+                          disabled={isRegenerating}
+                        />
+                        <code>{sku}</code>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {plan.seed_summary.base_variation_missing.length > 0 && (
+                <div className="seed-section">
+                  <strong>Base Variations ({plan.seed_summary.base_variation_missing.length}):</strong>
+                  <div className="seed-list-manual">
+                    {plan.seed_summary.base_variation_missing.map(sku => (
+                      <label key={sku} className="seed-checkbox-item">
+                        <input
+                          type="checkbox"
+                          checked={selectedSeeds.has(sku)}
+                          onChange={() => handleToggleSeed(sku)}
+                          disabled={isRegenerating}
+                        />
+                        <code>{sku}</code>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              <div className="seed-actions">
+                <div className="seed-action-buttons">
+                  <button
+                    className="btn-link"
+                    onClick={handleSelectAllSeeds}
+                    disabled={isRegenerating}
+                  >
+                    Selecionar Todos
+                  </button>
+                  <button
+                    className="btn-link"
+                    onClick={handleDeselectAllSeeds}
+                    disabled={isRegenerating}
+                  >
+                    Desmarcar Todos
+                  </button>
+                </div>
+                <div className="seed-action-buttons">
+                  <button
+                    className="btn-secondary"
+                    onClick={handleToggleManualMode}
+                    disabled={isRegenerating}
+                  >
+                    ← Voltar
+                  </button>
+                  <button
+                    className="btn-primary"
+                    onClick={handleRecalculate}
+                    disabled={isRegenerating}
+                  >
+                    🔄 Recalcular Plano ({selectedSeeds.size} selecionados)
+                  </button>
+                </div>
               </div>
-            </div>
+            </>
           )}
-          
-          <div className="seed-toggle">
-            <label>
-              <input
-                type="checkbox"
-                checked={autoSeedBasePlain}
-                onChange={e => handleToggleAutoSeed(e.target.checked)}
-                disabled={isRegenerating}
-              />
-              {' '}Criar automaticamente bases lisas faltantes
-            </label>
-          </div>
         </div>
       )}
 
