@@ -467,18 +467,34 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan })
   const [plan, setPlan] = React.useState(initialPlan);
   const [autoSeedBasePlain, setAutoSeedBasePlain] = React.useState(initialPlan.options?.auto_seed_base_plain || false);
   const [isRegenerating, setIsRegenerating] = React.useState(false);
+  const [loadingStatus, setLoadingStatus] = React.useState('');
 
   async function handleToggleAutoSeed(newValue) {
     setAutoSeedBasePlain(newValue);
     setIsRegenerating(true);
+    
     try {
+      if (newValue) {
+        setLoadingStatus('🌱 Ativando auto-seed de bases lisas...');
+      } else {
+        setLoadingStatus('🔄 Desativando auto-seed de bases lisas...');
+      }
+      await new Promise(resolve => setTimeout(resolve, 300));
+      
+      setLoadingStatus('⚙️ Recalculando plano no servidor...');
       const newPlan = await onRegeneratePlan(newValue);
+      
+      await new Promise(resolve => setTimeout(resolve, 300));
+      setLoadingStatus('✅ Plano regenerado com sucesso!');
+      
+      await new Promise(resolve => setTimeout(resolve, 500));
       setPlan(newPlan);
     } catch (err) {
       alert(`Erro ao regenerar plano: ${err.message}`);
       setAutoSeedBasePlain(!newValue);
     } finally {
       setIsRegenerating(false);
+      setLoadingStatus('');
     }
   }
   const hasBlockers = plan.has_blockers;
@@ -493,6 +509,16 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan })
 
   return (
     <div className="wizard-content preview-content">
+      {isRegenerating && (
+        <div className="loading-modal-overlay">
+          <div className="loading-modal">
+            <div className="loading-spinner"></div>
+            <h2>{loadingStatus}</h2>
+            <p>Por favor, aguarde...</p>
+          </div>
+        </div>
+      )}
+
       <h2>📊 Preview do Plano</h2>
 
       <div className="plan-summary">
@@ -568,7 +594,6 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan })
               />
               {' '}Criar automaticamente bases lisas faltantes
             </label>
-            {isRegenerating && <span className="regenerating">↻ Regenerando plano...</span>}
           </div>
         </div>
       )}
