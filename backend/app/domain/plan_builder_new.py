@@ -93,12 +93,45 @@ class PlanBuilderNew:
         
         # Initialize seed_summary with detected missing seeds
         seed_summary = SeedSummary()
-        seed_summary.base_parent_missing = [
-            item.sku for item in detected_seeds if item.entity == "BASE_PARENT"
-        ]
-        seed_summary.base_variation_missing = [
-            item.sku for item in detected_seeds if item.entity == "BASE_VARIATION"
-        ]
+        
+        # If auto-seed disabled, check if user created seeds manually in Bling
+        if not request.options.auto_seed_base_plain:
+            # Try to find manually created seeds in Bling
+            verified_seeds = await self._verify_manually_created_seeds(detected_seeds)
+            
+            # Add verified seeds to plan as UPDATE items
+            for verified_seed in verified_seeds:
+                items.append(verified_seed)
+            
+            # Update VARIATION_PRINTED dependencies for verified seeds
+            verified_skus = {v.sku for v in verified_seeds}
+            for item in items:
+                if item.entity != "VARIATION_PRINTED":
+                    continue
+                
+                # If any of the soft dependencies are now verified, upgrade to hard
+                for dep_sku in list(item.soft_dependencies):
+                    if dep_sku in verified_skus:
+                        item.hard_dependencies.append(dep_sku)
+                        item.soft_dependencies.remove(dep_sku)
+            
+            # Update seed_summary to only show truly missing seeds
+            remaining_missing = [s for s in detected_seeds if s.sku not in verified_skus]
+            seed_summary.base_parent_missing = [
+                item.sku for item in remaining_missing if item.entity == "BASE_PARENT"
+            ]
+            seed_summary.base_variation_missing = [
+                item.sku for item in remaining_missing if item.entity == "BASE_VARIATION"
+            ]
+        else:
+            # Auto-seed mode: show all detected missing seeds
+            seed_summary.base_parent_missing = [
+                item.sku for item in detected_seeds if item.entity == "BASE_PARENT"
+            ]
+            seed_summary.base_variation_missing = [
+                item.sku for item in detected_seeds if item.entity == "BASE_VARIATION"
+            ]
+        
         seed_summary.total_missing = len(seed_summary.base_parent_missing) + len(seed_summary.base_variation_missing)
         
         # If auto-seed enabled, add items to plan and update seed_summary
@@ -205,6 +238,51 @@ class PlanBuilderNew:
         
         detected_seeds.extend(created_seeds.values())
         return detected_seeds
+
+    async def _verify_manually_created_seeds(
+        self, detected_seeds: List[PlanItem]
+    ) -> List[PlanItem]:
+        """
+        Verify if manually created seeds exist in Bling.
+        Checks each detected seed against Bling and creates UPDATE items for found seeds.
+        
+        Args:
+            detected_seeds: Seeds that were detected as missing
+            
+        Returns:
+            List of seed items found in Bling (as UPDATE items)
+        """
+        verified_seeds = []
+        
+        for seed in detected_seeds:
+            try:
+                # Check if seed exists in Bling
+                existing = await self.bling_checker(seed.sku)
+                
+                if existing:
+                    # Seed was created manually in Bling - add as UPDATE
+                    verified_seed = PlanItem(
+                        sku=seed.sku,
+                        entity=seed.entity,
+                        action=PlanItemActionEnum.UPDATE,
+                        hard_dependencies=[],
+                        soft_dependencies=[],
+                        template=seed.template,
+                        status=PlanItemActionEnum.UPDATE,
+                        reason="MANUALLY_CREATED",
+                        message=f"{seed.entity} foi criado manualmente no Bling",
+                        overrides_used={},
+                        autoseed_candidate=True,
+                        included=True,
+                    )
+                    verified_seeds.append(verified_seed)
+                    logger.info(f"Seed {seed.sku} found in Bling (manually created)")
+            except Exception as e:
+                # If check fails, just skip this seed
+                logger.warning(f"Error verifying seed {seed.sku}: {str(e)}")
+                continue
+        
+        return verified_seeds
 
     async def _add_base_seed_items(
         self, request: PlanNewRequest, items: List[PlanItem], detected_seeds: List[PlanItem]
