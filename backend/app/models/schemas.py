@@ -351,7 +351,19 @@ class PlanSummary(BaseModel):
 
 
 class PlanResponse(BaseModel):
-    """Plan response."""
+    """Plan response.
+    
+    IMPORTANT - Executor Usage (Sprint 4):
+    =====================================
+    When executing this plan, the executor MUST:
+    1. Only iterate items where action in {'CREATE', 'UPDATE'}
+    2. Skip items where action == 'BLOCKED' (not executable)
+    3. Skip items where action == 'NOOP' (already correct in Bling)
+    4. Never execute items with reason='MISSING_TEMPLATE_PAYLOAD'
+    
+    The 'has_blockers' flag indicates whether user review is needed before execution.
+    If has_blockers=true, user should review and fix issues (missing templates, etc.)
+    """
     planVersion: str = Field(default="1.0", description="Plan version")
     type: str = Field(description="Plan type (NEW_PRINT)")
     summary: PlanSummary = Field(description="Summary statistics")

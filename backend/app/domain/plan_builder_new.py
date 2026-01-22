@@ -815,15 +815,15 @@ class PlanBuilderNew:
             "bling_product_sku": template_payload.get("codigo") if template_payload else None,
         }
 
-        # If no template, use empty payload - item can still be created
+        # If no template, use empty payload - item can still be PREVIEWED
         # (User will need to fill in details manually or via overrides)
         if template_kind is None:
             template_kind = TemplateKindEnum.BASE_PLAIN  # Default fallback
-            logger.warning(f"No template found for {entity}/{model_code}, using empty payload")
+            logger.warning(f"No template found for {entity}/{model_code}, using empty payload for preview")
         
-        # If template payload is unavailable, still allow CREATE but with empty payload
-        # The payload can be filled in later from the template product in Bling
-        # (This handles cases where bling_client isn't available or fetch failed)
+        # IMPORTANT: Distinguish between "preview-safe" and "execution-ready"
+        # - For PREVIEW: use template_payload or {} (safe fallback, no crash)
+        # - For EXECUTION: validation below ensures template_payload exists (CREATE blocked if None)
         payload_for_merge = template_payload or {}
 
         # Check hard dependencies existence (with caching to avoid rate limits)
@@ -884,7 +884,29 @@ class PlanBuilderNew:
         existing_product = await self._check_bling_product(sku)
 
         if existing_product is None:
-            # SKU doesn't exist - CREATE
+            # SKU doesn't exist - CHECK for template_payload
+            # IMPORTANT: template_payload None means we can't execute CREATE safely
+            # Preview shows it, but execution is BLOCKED to prevent data loss
+            if template_payload is None:
+                logger.warning(f"Item {sku} (CREATE) BLOCKED: template payload is None - cannot execute without template data")
+                return PlanItem(
+                    sku=sku,
+                    entity=entity,
+                    action=PlanItemActionEnum.BLOCKED,
+                    hard_dependencies=hard_dependencies,
+                    soft_dependencies=soft_dependencies,
+                    template=PlanItemTemplate(model=model_code, kind=template_kind.value, fallback_used=fallback_used),
+                    status=PlanItemActionEnum.BLOCKED,
+                    reason="MISSING_TEMPLATE_PAYLOAD",
+                    message="Template não possui dados de payload - não é possível executar CREATE. Configure o template no Bling.",
+                    warnings=warnings,
+                    diff_summary=[],
+                    template_ref=template_ref,
+                    overrides_used=overrides_used,
+                    computed_payload_preview=computed_payload,
+                )
+            
+            # Template payload exists - can proceed with CREATE
             return PlanItem(
                 sku=sku,
                 entity=entity,

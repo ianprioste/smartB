@@ -716,6 +716,10 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan })
                       <div className="warning-item">ℹ️ Criado manualmente no Bling</div>
                     ) : item.reason === 'AUTO_SEED' ? (
                       <div className="warning-item">🌱 Base criada automaticamente para garantir integridade</div>
+                    ) : item.reason === 'MISSING_TEMPLATE_PAYLOAD' ? (
+                      <div className="warning-item blocked-reason">
+                        🚫 Template sem payload - não pode executar. Configure no Bling.
+                      </div>
                     ) : item.reason ? (
                       <div className="reason-tag">{item.reason}</div>
                     ) : null}

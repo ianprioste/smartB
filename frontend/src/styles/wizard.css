@@ -466,6 +466,12 @@
   border-left: 3px solid #ffc107;
 }
 
+.warning-item.blocked-reason {
+  background: #ffebee;
+  color: #c62828;
+  border-left-color: #f44336;
+}
+
 /* Actions */
 .wizard-actions {
   display: flex;

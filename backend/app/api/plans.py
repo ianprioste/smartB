@@ -118,6 +118,18 @@ async def create_new_plan(
     Does NOT create any products in Bling.
     
     Returns plan with CREATE/UPDATE/NOOP/BLOCKED status for each SKU.
+    
+    IMPORTANT - Execution Semantics:
+    ===============================
+    - Items with action=CREATE/UPDATE: Ready to execute in Sprint 4
+    - Items with action=BLOCKED: Executor MUST skip these (not executable)
+    - Items with action=NOOP: Executor can skip (already correct)
+    - Items with reason=MISSING_TEMPLATE_PAYLOAD: BLOCKED (no payload data to create)
+    
+    Preview vs Execution:
+    - Preview: Shows all items safely (safe fallback for missing template_payload: {})
+    - Execution: Only items with action in {CREATE, UPDATE} are processed
+    - BLOCKED items remain for user review but are NOT executed by the worker
     """
     logger.info(f"Creating plan for print {request.print.code}")
 
