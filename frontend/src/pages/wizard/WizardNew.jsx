@@ -111,6 +111,47 @@ export function WizardNewPage() {
     }
   }
 
+  async function generatePlanRequest(autoSeedBasePlain = false) {
+    const payload = {
+      print: {
+        code: printInfo.code.toUpperCase(),
+        name: printInfo.name,
+      },
+      models: selectedModels.map(m => ({
+        code: m.code,
+        sizes: m.selected_sizes,
+        price: parseFloat(m.price),
+      })),
+      colors: selectedColors,
+      overrides: {
+        short_description: overrides.short_description || null,
+        complement_description: overrides.complement_same_as_short
+          ? null
+          : overrides.complement_description || null,
+        complement_same_as_short: overrides.complement_same_as_short,
+        category_override_id: overrides.category_override_id
+          ? parseInt(overrides.category_override_id, 10)
+          : null,
+      },
+      options: {
+        auto_seed_base_plain: autoSeedBasePlain,
+      },
+    };
+
+    const resp = await fetch(`${API_BASE}/plans/new`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!resp.ok) {
+      const errorData = await resp.json();
+      throw new Error(errorData.detail?.message || 'Falha ao gerar plano');
+    }
+
+    return await resp.json();
+  }
+
   async function handleGeneratePlan() {
     if (!printInfo.code || !printInfo.name) {
       setError('Preencha código e nome da estampa');
@@ -154,44 +195,10 @@ export function WizardNewPage() {
       await new Promise(resolve => setTimeout(resolve, 300));
       setLoadingStatus('🎨 Calculando SKUs e variações...');
 
-      const payload = {
-        print: {
-          code: printInfo.code.toUpperCase(),
-          name: printInfo.name,
-        },
-        models: selectedModels.map(m => ({
-          code: m.code,
-          sizes: m.selected_sizes,
-          price: parseFloat(m.price),
-        })),
-        colors: selectedColors,
-        overrides: {
-          short_description: overrides.short_description || null,
-          complement_description: overrides.complement_same_as_short
-            ? null
-            : overrides.complement_description || null,
-          complement_same_as_short: overrides.complement_same_as_short,
-          category_override_id: overrides.category_override_id
-            ? parseInt(overrides.category_override_id, 10)
-            : null,
-        },
-      };
-
       setLoadingStatus('⚙️ Gerando plano no servidor...');
-
-      const resp = await fetch(`${API_BASE}/plans/new`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      if (!resp.ok) {
-        const errorData = await resp.json();
-        throw new Error(errorData.detail?.message || 'Falha ao gerar plano');
-      }
+      const planData = await generatePlanRequest(false);
 
       setLoadingStatus('📦 Processando itens do plano...');
-      const planData = await resp.json();
       
       await new Promise(resolve => setTimeout(resolve, 300));
       setLoadingStatus('✅ Plano gerado com sucesso!');
