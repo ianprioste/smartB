@@ -172,6 +172,100 @@ class PlanBuilderNew:
         """Return cached template payload if available."""
         return self.template_payloads.get(model_code, {}).get(template_kind.value)
 
+    def resolve_template_for_entity(
+        self, entity: str, model_code: str
+    ) -> tuple[Optional[TemplateKindEnum], bool]:
+        """
+        Resolve the template kind to use for an entity.
+        
+        Args:
+            entity: Entity type (BASE_PLAIN, PARENT_PRINTED, VARIATION_PRINTED)
+            model_code: Model code
+            
+        Returns:
+            Tuple of (template_kind, fallback_used)
+            - template_kind: The template kind to use, or None if not found
+            - fallback_used: Whether a fallback template was used
+        """
+        if entity == "PARENT_PRINTED":
+            # PARENT_PRINTED always uses PARENT_PRINTED template
+            if self._template_exists(model_code, TemplateKindEnum.PARENT_PRINTED):
+                return TemplateKindEnum.PARENT_PRINTED, False
+            return None, False
+
+        if entity == "BASE_PLAIN":
+            # BASE_PLAIN always uses BASE_PLAIN template
+            if self._template_exists(model_code, TemplateKindEnum.BASE_PLAIN):
+                return TemplateKindEnum.BASE_PLAIN, False
+            return None, False
+
+        if entity == "VARIATION_PRINTED":
+            # VARIATION_PRINTED tries VARIATION_PRINTED first, then falls back to BASE_PLAIN
+            if self._template_exists(model_code, TemplateKindEnum.VARIATION_PRINTED):
+                return TemplateKindEnum.VARIATION_PRINTED, False
+            
+            if self._template_exists(model_code, TemplateKindEnum.BASE_PLAIN):
+                return TemplateKindEnum.BASE_PLAIN, True
+            
+            # No template found
+            return None, False
+
+        return None, False
+
+    def _template_exists(self, model_code: str, template_kind: TemplateKindEnum) -> bool:
+        """
+        Check if a template exists (synchronously, from cached templates_data).
+        
+        Args:
+            model_code: Model code
+            template_kind: Template kind
+            
+        Returns:
+            True if template exists
+        """
+        if model_code not in self.templates_data:
+            return False
+        return template_kind.value in self.templates_data[model_code]
+
+    def _get_dependencies_for_entity(
+        self, entity: str, model_code: str, print_code: str, color_code: Optional[str] = None, size: Optional[str] = None
+    ) -> tuple[List[str], List[str]]:
+        """
+        Get hard and soft dependencies for an entity.
+        
+        Args:
+            entity: Entity type
+            model_code: Model code
+            print_code: Print code
+            color_code: Color code (for VARIATION_PRINTED)
+            size: Size (for VARIATION_PRINTED)
+            
+        Returns:
+            Tuple of (hard_dependencies, soft_dependencies)
+        """
+        hard_deps = []
+        soft_deps = []
+
+        if entity == "PARENT_PRINTED":
+            # No dependencies
+            pass
+
+        elif entity == "BASE_PLAIN":
+            # No dependencies
+            pass
+
+        elif entity == "VARIATION_PRINTED":
+            # Hard: PARENT_PRINTED must exist
+            parent_sku = self.sku_engine.parent_printed(model_code, print_code)
+            hard_deps.append(parent_sku)
+            
+            # Soft: BASE_PLAIN is recommended but not blocking
+            if color_code and size:
+                base_sku = self.sku_engine.base_plain(model_code, color_code, size)
+                soft_deps.append(base_sku)
+
+        return hard_deps, soft_deps
+
     async def _generate_items(self, request: PlanNewRequest) -> List[PlanItem]:
         """
         Generate all plan items.
@@ -198,12 +292,17 @@ class PlanBuilderNew:
             # Create parent SKU (once per model)
             parent_sku = self.sku_engine.parent_printed(model_code, print_code)
             parent_name = f"{model_name} {print_name}"
+            
+            hard_deps, soft_deps = self._get_dependencies_for_entity(
+                "PARENT_PRINTED", model_code, print_code
+            )
+            
             parent_item = await self._create_plan_item(
                 sku=parent_sku,
                 entity="PARENT_PRINTED",
                 model_code=model_code,
-                template_kind=TemplateKindEnum.PARENT_PRINTED,
-                dependencies=[],
+                hard_dependencies=hard_deps,
+                soft_dependencies=soft_deps,
                 overrides=overrides,
                 price=model_price,
                 name=parent_name,
@@ -231,7 +330,7 @@ class PlanBuilderNew:
             for color_code in request.colors:
                 color_name = self.colors_data.get(color_code, color_code)
                 for size in sizes:
-                    # BASE_PLAIN already exists, just reference it as dependency
+                    # BASE_PLAIN reference as soft dependency
                     base_sku = self.sku_engine.base_plain(model_code, color_code, size)
 
                     # Create VARIATION_PRINTED item
@@ -239,12 +338,17 @@ class PlanBuilderNew:
                         model_code, print_code, color_code, size
                     )
                     variation_name = f"{model_name} {print_name} {color_name} {size}"
+                    
+                    hard_deps, soft_deps = self._get_dependencies_for_entity(
+                        "VARIATION_PRINTED", model_code, print_code, color_code, size
+                    )
+                    
                     variation_item = await self._create_plan_item(
                         sku=variation_sku,
                         entity="VARIATION_PRINTED",
                         model_code=model_code,
-                        template_kind=TemplateKindEnum.PARENT_PRINTED,
-                        dependencies=[parent_sku, base_sku],
+                        hard_dependencies=hard_deps,
+                        soft_dependencies=soft_deps,
                         overrides=overrides,
                         price=model_price,
                         name=variation_name,
@@ -262,8 +366,8 @@ class PlanBuilderNew:
         sku: str,
         entity: str,
         model_code: str,
-        template_kind: TemplateKindEnum,
-        dependencies: List[str],
+        hard_dependencies: List[str],
+        soft_dependencies: List[str],
         overrides: Any,
         price: float,
         name: str,
@@ -279,39 +383,72 @@ class PlanBuilderNew:
             sku: Generated SKU
             entity: Entity type
             model_code: Model code
-            template_kind: Template kind required
-            dependencies: List of dependent SKUs
+            hard_dependencies: List of required dependent SKUs
+            soft_dependencies: List of optional recommended SKUs
             
         Returns:
             Plan item with status
         """
-        # Check if template exists
-        template_missing = await self._check_template_missing(model_code, template_kind)
-        template_payload = self._get_template_payload(model_code, template_kind)
+        template_kind, fallback_used = self.resolve_template_for_entity(entity, model_code)
+
+        template_payload = None
+        if template_kind:
+            template_payload = self._get_template_payload(model_code, template_kind)
 
         template_ref = {
             "model_code": model_code,
-            "template_kind": template_kind.value,
-            "bling_product_id": self.templates_data.get(model_code, {}).get(template_kind.value),
+            "template_kind": template_kind.value if template_kind else None,
+            "bling_product_id": self.templates_data.get(model_code, {}).get(template_kind.value if template_kind else None),
             "bling_product_sku": template_payload.get("codigo") if template_payload else None,
         }
 
-        if template_missing or template_payload is None:
-            reason = "MISSING_TEMPLATE" if template_missing else "MISSING_TEMPLATE_PAYLOAD"
-            message = (
-                f"Model {model_code} does not have template {template_kind.value} configured"
-                if template_missing
-                else f"Template payload unavailable for {model_code}/{template_kind.value}"
-            )
+        # If template not found → BLOCKED
+        if template_kind is None:
             return PlanItem(
                 sku=sku,
                 entity=entity,
                 action=PlanItemActionEnum.BLOCKED,
-                dependencies=dependencies,
-                template=PlanItemTemplate(model=model_code, kind=template_kind.value),
+                hard_dependencies=hard_dependencies,
+                soft_dependencies=soft_dependencies,
+                template=PlanItemTemplate(model=model_code, kind="UNKNOWN"),
                 status=PlanItemActionEnum.BLOCKED,
-                reason=reason,
-                message=message,
+                reason="MISSING_TEMPLATE",
+                message=f"No template available for {entity} in model {model_code}",
+                template_ref=template_ref,
+            )
+
+        if template_payload is None:
+            return PlanItem(
+                sku=sku,
+                entity=entity,
+                action=PlanItemActionEnum.BLOCKED,
+                hard_dependencies=hard_dependencies,
+                soft_dependencies=soft_dependencies,
+                template=PlanItemTemplate(model=model_code, kind=template_kind.value, fallback_used=fallback_used),
+                status=PlanItemActionEnum.BLOCKED,
+                reason="MISSING_TEMPLATE_PAYLOAD",
+                message=f"Template payload unavailable for {model_code}/{template_kind.value}",
+                template_ref=template_ref,
+            )
+
+        # Check hard dependencies existence
+        missing_hard_deps = []
+        for hard_dep in hard_dependencies:
+            existing_hard = await self._check_bling_product(hard_dep)
+            if existing_hard is None:
+                missing_hard_deps.append(hard_dep)
+
+        if missing_hard_deps:
+            return PlanItem(
+                sku=sku,
+                entity=entity,
+                action=PlanItemActionEnum.BLOCKED,
+                hard_dependencies=hard_dependencies,
+                soft_dependencies=soft_dependencies,
+                template=PlanItemTemplate(model=model_code, kind=template_kind.value, fallback_used=fallback_used),
+                status=PlanItemActionEnum.BLOCKED,
+                reason="MISSING_HARD_DEPENDENCY",
+                message=f"Hard dependency ausente: {', '.join(missing_hard_deps)}",
                 template_ref=template_ref,
             )
 
@@ -334,6 +471,17 @@ class PlanBuilderNew:
             "complement_same_as_short": overrides.complement_same_as_short,
         }
 
+        # Calculate warnings (soft dependencies)
+        warnings = []
+        missing_soft_deps = []
+        for soft_dep in soft_dependencies:
+            existing = await self._check_bling_product(soft_dep)
+            if existing is None:
+                missing_soft_deps.append(soft_dep)
+
+        if missing_soft_deps and entity == "VARIATION_PRINTED":
+            warnings.append("Base lisa não encontrada (dependência recomendada)")
+
         # Check if SKU exists in Bling
         existing_product = await self._check_bling_product(sku)
 
@@ -343,29 +491,35 @@ class PlanBuilderNew:
                 sku=sku,
                 entity=entity,
                 action=PlanItemActionEnum.CREATE,
-                dependencies=dependencies,
-                template=PlanItemTemplate(model=model_code, kind=template_kind.value),
+                hard_dependencies=hard_dependencies,
+                soft_dependencies=soft_dependencies,
+                template=PlanItemTemplate(model=model_code, kind=template_kind.value, fallback_used=fallback_used),
                 status=PlanItemActionEnum.CREATE,
+                warnings=warnings,
+                diff_summary=[],
                 template_ref=template_ref,
                 overrides_used=overrides_used,
                 computed_payload_preview=computed_payload,
             )
 
         # SKU exists - check if needs update
-        needs_update = self._check_needs_update(
+        diff_fields = self._calculate_diff_summary(
             existing_product,
             computed_payload,
             category_override_active=overrides.category_override_id is not None,
         )
 
-        if needs_update:
+        if diff_fields:
             return PlanItem(
                 sku=sku,
                 entity=entity,
                 action=PlanItemActionEnum.UPDATE,
-                dependencies=dependencies,
-                template=PlanItemTemplate(model=model_code, kind=template_kind.value),
+                hard_dependencies=hard_dependencies,
+                soft_dependencies=soft_dependencies,
+                template=PlanItemTemplate(model=model_code, kind=template_kind.value, fallback_used=fallback_used),
                 status=PlanItemActionEnum.UPDATE,
+                warnings=warnings,
+                diff_summary=diff_fields,
                 existing_product=existing_product,
                 message="Product exists but needs update",
                 template_ref=template_ref,
@@ -378,9 +532,12 @@ class PlanBuilderNew:
             sku=sku,
             entity=entity,
             action=PlanItemActionEnum.NOOP,
-            dependencies=dependencies,
-            template=PlanItemTemplate(model=model_code, kind=template_kind.value),
+            hard_dependencies=hard_dependencies,
+            soft_dependencies=soft_dependencies,
+            template=PlanItemTemplate(model=model_code, kind=template_kind.value, fallback_used=fallback_used),
             status=PlanItemActionEnum.NOOP,
+            warnings=warnings,
+            diff_summary=[],
             existing_product=existing_product,
             message="Product already exists and is correct",
             template_ref=template_ref,
@@ -434,30 +591,59 @@ class PlanBuilderNew:
         category_override_active: bool,
     ) -> bool:
         """Compare existing product with computed payload to decide UPDATE/NOOP."""
-        if not existing_product:
-            return True
+        diff_fields = self._calculate_diff_summary(
+            existing_product, computed_payload, category_override_active=category_override_active
+        )
+        return len(diff_fields) > 0
 
-        # Fields we expect to match computed payload
+    def _calculate_diff_summary(
+        self,
+        existing_product: Dict[str, Any],
+        computed_payload: Dict[str, Any],
+        *,
+        category_override_active: bool,
+    ) -> List[str]:
+        """
+        Calculate which fields differ between existing product and computed payload.
+        
+        Args:
+            existing_product: Current product data from Bling
+            computed_payload: New payload that would be sent
+            category_override_active: Whether category override is active
+            
+        Returns:
+            List of field names that differ
+        """
+        diff_fields = []
+
+        if not existing_product:
+            return ["*"]  # Indicate complete change
+
+        # Fields we always compare
         fields_to_compare = [
-            "nome",
-            "preco",
-            "precoVenda",
-            "descricaoCurta",
-            "descricaoComplementar",
+            ("preco", "preco"),
+            ("nome", "nome"),
+            ("precoVenda", "precoVenda"),
+            ("descricaoCurta", "descricaoCurta"),
+            ("descricaoComplementar", "descricaoComplementar"),
         ]
 
-        for field in fields_to_compare:
-            expected = computed_payload.get(field)
+        for existing_field, computed_field in fields_to_compare:
+            expected = computed_payload.get(computed_field)
+            actual = existing_product.get(existing_field)
+            
             if expected is None:
                 continue
-            if existing_product.get(field) != expected:
-                return True
+            if actual != expected:
+                diff_fields.append(existing_field)
 
         if category_override_active:
-            if existing_product.get("categoria_id") != computed_payload.get("categoria_id"):
-                return True
+            expected_cat = computed_payload.get("categoria_id")
+            actual_cat = existing_product.get("categoria_id")
+            if expected_cat is not None and actual_cat != expected_cat:
+                diff_fields.append("categoria_id")
 
-        return False
+        return diff_fields
 
     def _calculate_summary(
         self, request: PlanNewRequest, items: List[PlanItem]

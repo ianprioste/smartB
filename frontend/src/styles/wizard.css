@@ -401,6 +401,22 @@
   font-size: 0.8rem;
 }
 
+.dep-hard {
+  background: #fdecea;
+  color: #c62828;
+  border-left: 3px solid #c62828;
+  padding: 0.15rem 0.35rem;
+  border-radius: 3px;
+}
+
+.dep-soft {
+  background: #eef6ff;
+  color: #1e88e5;
+  border-left: 3px solid #1e88e5;
+  padding: 0.15rem 0.35rem;
+  border-radius: 3px;
+}
+
 .reason-tag {
   display: inline-block;
   background: #f44336;
@@ -409,6 +425,45 @@
   border-radius: 4px;
   font-size: 0.75rem;
   margin-top: 0.25rem;
+}
+
+.motivo-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.diff-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.diff-field {
+  display: inline-block;
+  background: #ff9800;
+  color: white;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 500;
+}
+
+.warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.warning-item {
+  display: flex;
+  align-items: center;
+  background: #fff3cd;
+  color: #856404;
+  padding: 0.3rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.75rem;
+  border-left: 3px solid #ffc107;
 }
 
 /* Actions */

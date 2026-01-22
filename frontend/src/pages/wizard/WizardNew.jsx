@@ -546,10 +546,13 @@ function PlanPreview({ plan, onBack, onExecute }) {
                   {item.computed_payload_preview?.descricaoCurta || '-'}
                 </td>
                 <td>
-                  {item.dependencies && item.dependencies.length > 0 ? (
+                  {(item.hard_dependencies?.length || item.soft_dependencies?.length) ? (
                     <div className="dependencies">
-                      {item.dependencies.map(dep => (
-                        <code key={dep}>{dep}</code>
+                      {item.hard_dependencies?.map(dep => (
+                        <code key={dep} className="dep-hard">{dep}</code>
+                      ))}
+                      {item.soft_dependencies?.map(dep => (
+                        <code key={dep} className="dep-soft">{dep}</code>
                       ))}
                     </div>
                   ) : (
@@ -571,8 +574,26 @@ function PlanPreview({ plan, onBack, onExecute }) {
                   )}
                 </td>
                 <td>
-                  {item.message ? <small>{item.message}</small> : '-'}
-                  {item.reason && <div className="reason-tag">{item.reason}</div>}
+                  <div className="motivo-cell">
+                    {item.reason && <div className="reason-tag">{item.reason}</div>}
+                    {item.diff_summary && item.diff_summary.length > 0 && (
+                      <div className="diff-summary">
+                        {item.diff_summary.map(field => (
+                          <span key={field} className="diff-field">{field}</span>
+                        ))}
+                      </div>
+                    )}
+                    {item.warnings && item.warnings.length > 0 && (
+                      <div className="warnings">
+                        {item.warnings.map((warn, idx) => (
+                          <div key={idx} className="warning-item">⚠️ {warn}</div>
+                        ))}
+                      </div>
+                    )}
+                    {!item.reason && !item.diff_summary?.length && !item.warnings?.length && (
+                      <span>{item.message || '-'}</span>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}

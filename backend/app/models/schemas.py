@@ -298,18 +298,22 @@ class PlanItemTemplate(BaseModel):
     """Template information for plan item."""
     model: str = Field(description="Model code")
     kind: str = Field(description="Template kind")
+    fallback_used: bool = Field(default=False, description="Whether fallback template was used (VARIATION_PRINTED using BASE_PLAIN)")
 
 
 class PlanItem(BaseModel):
     """Individual plan item."""
     sku: str = Field(description="Generated SKU")
-    entity: str = Field(description="Entity type (BASE_PLAIN, STAMP, PARENT_PRINTED, VARIATION_PRINTED)")
+    entity: str = Field(description="Entity type (BASE_PLAIN, PARENT_PRINTED, VARIATION_PRINTED)")
     action: str = Field(description="Action to take (CREATE, UPDATE, NOOP, BLOCKED)")
-    dependencies: List[str] = Field(default_factory=list, description="SKU dependencies")
+    hard_dependencies: List[str] = Field(default_factory=list, description="Hard dependencies (blocking if missing)")
+    soft_dependencies: List[str] = Field(default_factory=list, description="Soft dependencies (optional but recommended)")
     template: Optional[PlanItemTemplate] = Field(None, description="Template information")
     status: str = Field(description="Status of the item")
     reason: Optional[str] = Field(None, description="Reason for BLOCKED status")
     message: Optional[str] = Field(None, description="Detailed message")
+    warnings: List[str] = Field(default_factory=list, description="Warning messages (e.g., missing soft dependencies)")
+    diff_summary: List[str] = Field(default_factory=list, description="Summary of changes for UPDATE status (e.g., ['preco', 'nome'])")
     existing_product: Optional[Dict[str, Any]] = Field(None, description="Existing product info from Bling")
     template_ref: Optional[Dict[str, Any]] = Field(None, description="Reference to template used (model_code, kind, bling_product_id, bling_product_sku)")
     overrides_used: Optional[Dict[str, Any]] = Field(None, description="Overrides applied for this item")
