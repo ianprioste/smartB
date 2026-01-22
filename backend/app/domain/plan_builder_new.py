@@ -88,20 +88,23 @@ class PlanBuilderNew:
         # Generate all plan items
         items = await self._generate_items(request)
 
-        # Detect and add auto-seed items if enabled
+        # Always detect missing base seeds (to populate seed_summary for UI toggle)
+        detected_seeds = await self._detect_missing_base_seeds(request, items)
+        
+        # Initialize seed_summary with detected missing seeds
         seed_summary = SeedSummary()
+        seed_summary.base_parent_missing = [
+            item.sku for item in detected_seeds if item.entity == "BASE_PARENT"
+        ]
+        seed_summary.base_variation_missing = [
+            item.sku for item in detected_seeds if item.entity == "BASE_VARIATION"
+        ]
+        seed_summary.total_missing = len(seed_summary.base_parent_missing) + len(seed_summary.base_variation_missing)
+        
+        # If auto-seed enabled, add items to plan and update seed_summary
         if request.options.auto_seed_base_plain:
-            seed_items = await self._detect_and_add_base_seeds(request, items)
+            seed_items = await self._add_base_seed_items(request, items, detected_seeds)
             items.extend(seed_items)
-            
-            # Calculate seed summary
-            seed_summary.base_parent_missing = [
-                item.sku for item in seed_items if item.entity == "BASE_PARENT" and not item.included
-            ]
-            seed_summary.base_variation_missing = [
-                item.sku for item in seed_items if item.entity == "BASE_VARIATION" and not item.included
-            ]
-            seed_summary.total_missing = len(seed_summary.base_parent_missing) + len(seed_summary.base_variation_missing)
             seed_summary.total_included = sum(1 for item in seed_items if item.included)
 
         # Calculate summary
@@ -128,25 +131,22 @@ class PlanBuilderNew:
 
         return plan
 
-    async def _detect_and_add_base_seeds(
+    async def _detect_missing_base_seeds(
         self, request: PlanNewRequest, items: List[PlanItem]
     ) -> List[PlanItem]:
         """
         Detect missing BASE_PARENT and BASE_VARIATION seeds for VARIATION_PRINTED items.
+        Returns seed items that WOULD be needed, without including them=true yet.
         
         Args:
             request: Plan creation request
             items: Generated plan items
             
         Returns:
-            List of seed items to add to plan
+            List of detected seed items (as seeds, not for adding to plan yet)
         """
-        seed_items = []
-        
-        # Collect existing SKUs to check against
+        detected_seeds = []
         existing_skus = {item.sku for item in items}
-        
-        # Track already created seeds to avoid duplicates
         created_seeds: Dict[str, PlanItem] = {}
         
         # Process VARIATION_PRINTED items to identify missing base seeds
@@ -155,7 +155,6 @@ class PlanBuilderNew:
                 continue
             
             # Extract model, color, size from the variation item
-            # We need to iterate through request to find the matching variation
             for model_req in request.models:
                 model_code = model_req.code
                 
@@ -164,7 +163,7 @@ class PlanBuilderNew:
                     if model_req.sizes:
                         sizes = model_req.sizes
                     else:
-                        model_info = self.models_data[model_code]
+                        model_info = self.models_data.get(model_code, {})
                         sizes = model_info.get("allowed_sizes", [])
                     
                     for size in sizes:
@@ -176,8 +175,7 @@ class PlanBuilderNew:
                         if item.sku != expected_variation_sku:
                             continue
                         
-                        # Found matching variation - create BASE_PARENT if missing
-                        # BASE_PARENT SKU is just the model code
+                        # Found matching variation - detect BASE_PARENT if missing
                         base_parent_sku = model_code.upper()
                         if base_parent_sku not in existing_skus and base_parent_sku not in created_seeds:
                             base_parent_seed = await self._create_seed_item(
@@ -185,14 +183,13 @@ class PlanBuilderNew:
                                 entity="BASE_PARENT",
                                 model_code=model_code,
                                 request=request,
-                                included=request.options.auto_seed_base_plain,
+                                included=False,  # Detection only, not included yet
                             )
                             if base_parent_seed:
                                 created_seeds[base_parent_sku] = base_parent_seed
                                 existing_skus.add(base_parent_sku)
                         
-                        # Create BASE_VARIATION if missing
-                        # BASE_VARIATION SKU is {MODEL_CODE}{COLOR_CODE}{SIZE}
+                        # Detect BASE_VARIATION if missing
                         base_variation_sku = self.sku_engine.base_plain(model_code, color_code, size)
                         if base_variation_sku not in existing_skus and base_variation_sku not in created_seeds:
                             base_variation_seed = await self._create_seed_item(
@@ -200,16 +197,50 @@ class PlanBuilderNew:
                                 entity="BASE_VARIATION",
                                 model_code=model_code,
                                 request=request,
-                                included=request.options.auto_seed_base_plain,
+                                included=False,  # Detection only, not included yet
                             )
                             if base_variation_seed:
                                 created_seeds[base_variation_sku] = base_variation_seed
                                 existing_skus.add(base_variation_sku)
         
-        # Add created seeds to the list
+        detected_seeds.extend(created_seeds.values())
+        return detected_seeds
+
+    async def _add_base_seed_items(
+        self, request: PlanNewRequest, items: List[PlanItem], detected_seeds: List[PlanItem]
+    ) -> List[PlanItem]:
+        """
+        Add detected base seed items to the plan with included=true when auto_seed_base_plain is enabled.
+        Also updates VARIATION_PRINTED dependencies.
+        
+        Args:
+            request: Plan creation request
+            items: Generated plan items
+            detected_seeds: Detected seed items from _detect_missing_base_seeds
+            
+        Returns:
+            List of seed items to add to plan (with included=True)
+        """
+        seed_items = []
+        existing_skus = {item.sku for item in items}
+        existing_skus.update(seed.sku for seed in detected_seeds)
+        created_seeds: Dict[str, PlanItem] = {}
+        
+        # Recreate seeds with included=True
+        for detected_seed in detected_seeds:
+            seed_item = await self._create_seed_item(
+                sku=detected_seed.sku,
+                entity=detected_seed.entity,
+                model_code=detected_seed.template.model if detected_seed.template else "UNKNOWN",
+                request=request,
+                included=True,  # Include in plan
+            )
+            if seed_item:
+                created_seeds[seed_item.sku] = seed_item
+        
         seed_items.extend(created_seeds.values())
         
-        # Update VARIATION_PRINTED dependencies based on auto_seed setting
+        # Update VARIATION_PRINTED dependencies for included seeds
         for item in items:
             if item.entity != "VARIATION_PRINTED":
                 continue
@@ -222,7 +253,7 @@ class PlanBuilderNew:
                     if model_req.sizes:
                         sizes = model_req.sizes
                     else:
-                        model_info = self.models_data[model_code]
+                        model_info = self.models_data.get(model_code, {})
                         sizes = model_info.get("allowed_sizes", [])
                     
                     for size in sizes:
@@ -233,22 +264,16 @@ class PlanBuilderNew:
                         if item.sku != expected_variation_sku:
                             continue
                         
-                        # Update dependencies based on auto_seed setting
+                        # Update dependencies based on seed inclusion
                         base_variation_sku = self.sku_engine.base_plain(model_code, color_code, size)
                         
-                        if request.options.auto_seed_base_plain:
-                            # Check if seed was included
-                            if base_variation_sku in created_seeds and created_seeds[base_variation_sku].included:
-                                # Hard dependency on BASE_VARIATION if it's included in the plan
-                                if base_variation_sku not in item.hard_dependencies:
-                                    item.hard_dependencies.append(base_variation_sku)
-                                # Remove from soft dependencies if present
-                                if base_variation_sku in item.soft_dependencies:
-                                    item.soft_dependencies.remove(base_variation_sku)
-                        else:
-                            # Keep BASE_VARIATION as soft dependency when auto_seed is disabled
-                            if base_variation_sku not in item.soft_dependencies and base_variation_sku not in item.hard_dependencies:
-                                item.soft_dependencies.append(base_variation_sku)
+                        if base_variation_sku in created_seeds:
+                            # Hard dependency on BASE_VARIATION if it's included in the plan
+                            if base_variation_sku not in item.hard_dependencies:
+                                item.hard_dependencies.append(base_variation_sku)
+                            # Remove from soft dependencies if present
+                            if base_variation_sku in item.soft_dependencies:
+                                item.soft_dependencies.remove(base_variation_sku)
         
         return seed_items
 
