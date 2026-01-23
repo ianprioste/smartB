@@ -451,7 +451,7 @@ export function TemplatesPage() {
 
   async function fetchModels() {
     try {
-      const resp = await fetch(`${API_BASE}/config/models?all=true`);
+      const resp = await fetch(`${API_BASE}/config/models`);
       if (!resp.ok) throw new Error('Failed to fetch models');
       const data = await resp.json();
       setModels(data);
@@ -469,7 +469,12 @@ export function TemplatesPage() {
       const resp = await fetch(url);
       if (!resp.ok) throw new Error('Failed to fetch templates');
       const data = await resp.json();
-      setTemplates(data);
+      
+      // Filter out templates from inactive models
+      const activeModelCodes = models.filter(m => m.is_active).map(m => m.code);
+      const filteredTemplates = data.filter(t => activeModelCodes.includes(t.model_code));
+      
+      setTemplates(filteredTemplates);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -547,8 +552,10 @@ export function TemplatesPage() {
   }
 
   useEffect(() => {
-    if (selectedModel) fetchTemplates();
-  }, [selectedModel]);
+    if (models.length > 0) {
+      fetchTemplates();
+    }
+  }, [selectedModel, models]);
 
   return (
     <AdminLayout>
