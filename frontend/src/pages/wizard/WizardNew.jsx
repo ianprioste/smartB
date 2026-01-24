@@ -32,6 +32,7 @@ export function WizardNewPage() {
   const [showReauthModal, setShowReauthModal] = useState(false);
   const [pendingRetryAfterReauth, setPendingRetryAfterReauth] = useState(false);
   const [seedResultsModal, setSeedResultsModal] = useState(null);
+  const [executionResultsModal, setExecutionResultsModal] = useState(null);
 
   useEffect(() => {
     fetchConfiguration();
@@ -477,7 +478,7 @@ export function WizardNewPage() {
               const result = await response.json();
               setLoadingStatus('');
               setGeneratingPlan(false);
-              alert(`✅ Plano executado com sucesso!\n\nCriados: ${result.summary.created_parents} pais, ${result.summary.created_bases} bases\nAtualizados: ${result.summary.updated}\nFalhas: ${result.summary.failed}`);
+              setExecutionResultsModal(result);
             } catch (error) {
               setLoadingStatus('');
               setGeneratingPlan(false);
@@ -590,6 +591,13 @@ export function WizardNewPage() {
         <SeedResultsModal 
           results={seedResultsModal} 
           onClose={() => setSeedResultsModal(null)} 
+        />
+      )}
+      
+      {executionResultsModal && (
+        <ExecutionResultsModal 
+          results={executionResultsModal} 
+          onClose={() => setExecutionResultsModal(null)} 
         />
       )}
     </div>
@@ -969,12 +977,32 @@ function SeedResultsModal({ results, onClose }) {
       <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '600px' }}>
         <h3>✅ Bases Criadas</h3>
         
-        <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: '8px', padding: '16px', marginBottom: '20px', textAlign: 'center' }}>
-          <div style={{ fontSize: '28px', fontWeight: 'bold', color: '#16a34a' }}>
-            {summary.created_bases}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', marginBottom: '20px' }}>
+          <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: '8px', padding: '16px', textAlign: 'center' }}>
+            <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#16a34a' }}>
+              {summary.created_products}
+            </div>
+            <div style={{ color: '#15803d', marginTop: '4px', fontSize: '13px' }}>
+              {summary.created_products === 1 ? 'Produto' : 'Produtos'}
+            </div>
           </div>
-          <div style={{ color: '#15803d', marginTop: '4px' }}>
-            {summary.created_bases === 1 ? 'base criada' : 'bases criadas'}
+          
+          <div style={{ background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '8px', padding: '16px', textAlign: 'center' }}>
+            <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#2563eb' }}>
+              {summary.created_variations}
+            </div>
+            <div style={{ color: '#1e40af', marginTop: '4px', fontSize: '13px' }}>
+              {summary.created_variations === 1 ? 'Variação' : 'Variações'}
+            </div>
+          </div>
+          
+          <div style={{ background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: '8px', padding: '16px', textAlign: 'center' }}>
+            <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#d97706' }}>
+              {summary.total_items}
+            </div>
+            <div style={{ color: '#b45309', marginTop: '4px', fontSize: '13px' }}>
+              Total
+            </div>
           </div>
         </div>
 
@@ -996,7 +1024,7 @@ function SeedResultsModal({ results, onClose }) {
                   <div style={{ fontWeight: '600', marginBottom: '4px' }}>{item.sku}</div>
                   <div style={{ fontSize: '13px', color: '#6b7280' }}>
                     ID: {item.id}
-                    {item.variations_count && ` • ${item.variations_count} variações`}
+                    {item.variations_count > 0 && ` • ${item.variations_count} variações`}
                   </div>
                 </div>
               ))}
@@ -1025,4 +1053,145 @@ function SeedResultsModal({ results, onClose }) {
   );
 }
 
+function ExecutionResultsModal({ results, onClose }) {
+  if (!results) return null;
 
+  const { summary, results: items } = results;
+  const successItems = items.filter(r => r.status === 'success');
+  const failedItems = items.filter(r => r.status === 'failed');
+  
+  const createdItems = successItems.filter(r => r.action === 'CREATE');
+  const updatedItems = successItems.filter(r => r.action === 'UPDATE');
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '700px' }}>
+        <h3>✅ Plano Executado com Sucesso</h3>
+        
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '10px', marginBottom: '20px' }}>
+          <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
+            <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#16a34a' }}>
+              {summary.created_parents || 0}
+            </div>
+            <div style={{ color: '#15803d', marginTop: '2px', fontSize: '11px' }}>
+              Pais
+            </div>
+          </div>
+          
+          <div style={{ background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
+            <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#2563eb' }}>
+              {summary.created_variations || 0}
+            </div>
+            <div style={{ color: '#1e40af', marginTop: '2px', fontSize: '11px' }}>
+              Variações
+            </div>
+          </div>
+          
+          <div style={{ background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
+            <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#d97706' }}>
+              {summary.created_bases || 0}
+            </div>
+            <div style={{ color: '#b45309', marginTop: '2px', fontSize: '11px' }}>
+              Bases
+            </div>
+          </div>
+          
+          <div style={{ background: '#f3e8ff', border: '1px solid #c084fc', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
+            <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#9333ea' }}>
+              {updatedItems.length}
+            </div>
+            <div style={{ color: '#7e22ce', marginTop: '2px', fontSize: '11px' }}>
+              Atualizados
+            </div>
+          </div>
+          
+          <div style={{ background: failedItems.length > 0 ? '#fef2f2' : '#f9fafb', border: failedItems.length > 0 ? '1px solid #fca5a5' : '1px solid #e5e7eb', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
+            <div style={{ fontSize: '20px', fontWeight: 'bold', color: failedItems.length > 0 ? '#dc2626' : '#6b7280' }}>
+              {failedItems.length}
+            </div>
+            <div style={{ color: failedItems.length > 0 ? '#b91c1c' : '#6b7280', marginTop: '2px', fontSize: '11px' }}>
+              Falhas
+            </div>
+          </div>
+        </div>
+
+        {createdItems.length > 0 && (
+          <div style={{ marginBottom: '20px' }}>
+            <h4 style={{ marginBottom: '12px', color: '#059669' }}>✓ Criados ({createdItems.length}):</h4>
+            <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
+              {createdItems.map((item, idx) => (
+                <div 
+                  key={idx} 
+                  style={{
+                    padding: '10px 12px',
+                    background: '#f9fafb',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '6px',
+                    marginBottom: '6px',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center'
+                  }}
+                >
+                  <div>
+                    <span style={{ fontWeight: '600' }}>{item.sku}</span>
+                    <span style={{ fontSize: '12px', color: '#6b7280', marginLeft: '8px' }}>
+                      {item.entity}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#6b7280', background: '#f3f4f6', padding: '3px 8px', borderRadius: '4px' }}>
+                    ID: {item.id}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {updatedItems.length > 0 && (
+          <div style={{ marginBottom: '20px' }}>
+            <h4 style={{ marginBottom: '12px', color: '#2563eb' }}>↻ Atualizados ({updatedItems.length}):</h4>
+            <div style={{ maxHeight: '150px', overflowY: 'auto' }}>
+              {updatedItems.map((item, idx) => (
+                <div 
+                  key={idx} 
+                  style={{
+                    padding: '8px 12px',
+                    background: '#eff6ff',
+                    border: '1px solid #bfdbfe',
+                    borderRadius: '6px',
+                    marginBottom: '6px'
+                  }}
+                >
+                  <span style={{ fontWeight: '600' }}>{item.sku}</span>
+                  <span style={{ fontSize: '12px', color: '#6b7280', marginLeft: '8px' }}>
+                    {item.entity}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {failedItems.length > 0 && (
+          <div style={{ marginBottom: '20px' }}>
+            <h4 style={{ marginBottom: '12px', color: '#dc2626' }}>✗ Falhas ({failedItems.length}):</h4>
+            <div style={{ background: '#fef2f2', borderRadius: '6px', padding: '12px', maxHeight: '150px', overflowY: 'auto' }}>
+              {failedItems.map((item, idx) => (
+                <div key={idx} style={{ padding: '6px 0', color: '#dc2626', fontSize: '14px' }}>
+                  • {item.sku} <span style={{ fontSize: '12px', color: '#991b1b' }}>({item.entity})</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="modal-actions">
+          <button onClick={onClose} style={{ width: '100%' }}>
+            Fechar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

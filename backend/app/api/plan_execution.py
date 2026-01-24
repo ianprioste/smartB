@@ -237,7 +237,15 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
         created_id = await upsert_product(client, payload, sku)
         if created_id:
             parent_ids[sku] = created_id
-            results.append({"sku": sku, "entity": "PARENT", "action": "CREATE", "id": created_id, "status": "success"})
+            variations_count = len(payload['variacoes'])
+            results.append({
+                "sku": sku, 
+                "entity": "PARENT", 
+                "action": "CREATE", 
+                "id": created_id, 
+                "status": "success",
+                "variations_count": variations_count
+            })
         else:
             results.append({"sku": sku, "entity": "PARENT", "action": "CREATE", "status": "failed"})
 
@@ -275,6 +283,10 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
             results.append({"sku": sku, "action": "UPDATE", "id": prod_id, "status": "failed", "error": str(e)})
 
     await client.client.aclose()
+    
+    success_results = [r for r in results if r.get("status") == "success"]
+    created_parents = [r for r in success_results if r.get("entity") == "PARENT" and r.get("action") == "CREATE"]
+    total_variations = sum(r.get("variations_count", 0) for r in created_parents)
 
     return {
         "status": "completed",
@@ -282,7 +294,8 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
         "results": results,
         "summary": {
             "created_bases": len([r for r in results if r.get("entity") == "BASE" and r.get("status") == "success"]),
-            "created_parents": len([r for r in results if r.get("entity") == "PARENT" and r.get("status") == "success"]),
+            "created_parents": len(created_parents),
+            "created_variations": total_variations,
             "updated": len([r for r in results if r.get("action") == "UPDATE" and r.get("status") == "success"]),
             "failed": len([r for r in results if r.get("status") == "failed"]),
         }
@@ -349,7 +362,12 @@ async def seed_missing_bases(plan: Dict[str, Any], db: Session = Depends(get_db)
             
             created_id = await create_product(client, payload)
             if created_id:
-                results.append({"sku": parent_sku, "id": created_id, "status": "created"})
+                results.append({
+                    "sku": parent_sku, 
+                    "id": created_id, 
+                    "status": "created",
+                    "variations_count": len(variations) if variations else 0
+                })
                 logger.info(f"✓ Created base {parent_sku} (id: {created_id})")
             else:
                 results.append({"sku": parent_sku, "status": "failed"})
@@ -357,12 +375,15 @@ async def seed_missing_bases(plan: Dict[str, Any], db: Session = Depends(get_db)
         
         await client.client.aclose()
         
+        success_results = [r for r in results if r["status"] == "created"]
+        total_variations = sum(r.get("variations_count", 0) for r in success_results)
+        
         return {
             "results": results,
             "summary": {
-                "created_bases": len([r for r in results if r["status"] == "created"]),
-                "created_parents": 0,
-                "created_variations": 0
+                "created_products": len(success_results),
+                "created_variations": total_variations,
+                "total_items": len(success_results) + total_variations
             }
         }
     
