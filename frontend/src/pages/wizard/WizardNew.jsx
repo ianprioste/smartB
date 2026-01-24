@@ -31,6 +31,7 @@ export function WizardNewPage() {
   const [loadingStatus, setLoadingStatus] = useState('');
   const [showReauthModal, setShowReauthModal] = useState(false);
   const [pendingRetryAfterReauth, setPendingRetryAfterReauth] = useState(false);
+  const [seedResultsModal, setSeedResultsModal] = useState(null);
 
   useEffect(() => {
     fetchConfiguration();
@@ -158,6 +159,15 @@ export function WizardNewPage() {
 
     if (!resp.ok) {
       const errorData = await resp.json();
+      
+      // Check for token expiration
+      if (resp.status === 401 && errorData.detail?.code === 'BLING_TOKEN_EXPIRED') {
+        const error = new Error('Token expirado');
+        error.code = 'BLING_TOKEN_EXPIRED';
+        error.status = 401;
+        throw error;
+      }
+      
       throw new Error(errorData.detail?.message || 'Falha ao gerar plano');
     }
 
@@ -219,13 +229,13 @@ export function WizardNewPage() {
       setPlan(planData);
       setStep(4); // Go to preview
     } catch (err) {
-      const errorMsg = err.message || '';
       // Check if token expired
-      if (errorMsg.includes('Token') || errorMsg.includes('expirado') || errorMsg.includes('401')) {
+      if (err.code === 'BLING_TOKEN_EXPIRED') {
         setShowReauthModal(true);
+        setPendingRetryAfterReauth(true);
         setError('Token expirado. Renove o token para continuar.');
       } else {
-        setError(errorMsg);
+        setError(err.message || 'Erro ao gerar plano');
       }
     } finally {
       setGeneratingPlan(false);
@@ -449,10 +459,37 @@ export function WizardNewPage() {
         <PlanPreview
           plan={plan}
           onBack={() => setStep(3)}
-          onExecute={() => alert('Execução será implementada na próxima sprint!')}
+          onExecute={async (currentPlan) => {
+            try {
+              setLoadingStatus('Executando plano no Bling...');
+              setGeneratingPlan(true);
+              const response = await fetch('/api/plans/execute', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(currentPlan),
+              });
+              
+              if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.detail || 'Erro ao executar plano');
+              }
+              
+              const result = await response.json();
+              setLoadingStatus('');
+              setGeneratingPlan(false);
+              alert(`✅ Plano executado com sucesso!\n\nCriados: ${result.summary.created_parents} pais, ${result.summary.created_bases} bases\nAtualizados: ${result.summary.updated}\nFalhas: ${result.summary.failed}`);
+            } catch (error) {
+              setLoadingStatus('');
+              setGeneratingPlan(false);
+              alert(`❌ Erro ao executar: ${error.message}`);
+            }
+          }}
           onRegeneratePlan={async (autoSeed) => {
             return await generatePlanRequest(autoSeed);
           }}
+          onShowReauthModal={() => setShowReauthModal(true)}
+          onSetPendingRetry={(value) => setPendingRetryAfterReauth(value)}
+          onSetError={(msg) => setError(msg)}
         />
       )}
 
@@ -548,15 +585,23 @@ export function WizardNewPage() {
           </div>
         </div>
       )}
+      
+      {seedResultsModal && (
+        <SeedResultsModal 
+          results={seedResultsModal} 
+          onClose={() => setSeedResultsModal(null)} 
+        />
+      )}
     </div>
   );
 }
 
-function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan }) {
+function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan, onShowReauthModal, onSetPendingRetry, onSetError }) {
   const [plan, setPlan] = React.useState(initialPlan);
   const [autoSeedBasePlain, setAutoSeedBasePlain] = React.useState(initialPlan.options?.auto_seed_base_plain || false);
   const [isRegenerating, setIsRegenerating] = React.useState(false);
   const [loadingStatus, setLoadingStatus] = React.useState('');
+  const [seedResultsModal, setSeedResultsModal] = React.useState(null);
 
   async function handleToggleAutoSeed(newValue) {
     setAutoSeedBasePlain(newValue);
@@ -605,6 +650,54 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan })
       setPlan(newPlan);
     } catch (err) {
       alert(`Erro ao recalcular plano: ${err.message}`);
+    } finally {
+      setIsRegenerating(false);
+      setLoadingStatus('');
+    }
+  }
+
+  async function handleSeedBases() {
+    setIsRegenerating(true);
+    try {
+      setLoadingStatus('🌱 Criando bases lisas faltantes...');
+      await new Promise(resolve => setTimeout(resolve, 200));
+
+      const response = await fetch('/api/plans/seed-bases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(plan),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        
+        // Check for token expiration
+        if (response.status === 401 && error.detail?.code === 'BLING_TOKEN_EXPIRED') {
+          onShowReauthModal();
+          onSetPendingRetry(true);
+          onSetError('Token expirado. Renove o token para continuar.');
+          setIsRegenerating(false);
+          setLoadingStatus('');
+          return;
+        }
+        
+        throw new Error(error.detail || 'Erro ao criar bases lisas');
+      }
+
+      const result = await response.json();
+      
+      // Show results modal
+      setSeedResultsModal(result);
+      
+      // Recalcula o plano para desbloquear dependências
+      setLoadingStatus('🔄 Recalculando plano após criação...');
+      await new Promise(resolve => setTimeout(resolve, 300));
+      const newPlan = await onRegeneratePlan(false);
+      setPlan(newPlan);
+      setLoadingStatus('✅ Plano atualizado!');
+      await new Promise(resolve => setTimeout(resolve, 400));
+    } catch (err) {
+      alert(`❌ Erro ao criar bases lisas: ${err.message}`);
     } finally {
       setIsRegenerating(false);
       setLoadingStatus('');
@@ -700,15 +793,13 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan })
           
           <div className="seed-actions-simple">
             <div className="seed-toggle">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={autoSeedBasePlain}
-                  onChange={e => handleToggleAutoSeed(e.target.checked)}
-                  disabled={isRegenerating}
-                />
-                {' '}Criar automaticamente bases lisas faltantes
-              </label>
+              <button
+                className="btn-primary"
+                onClick={handleSeedBases}
+                disabled={isRegenerating}
+              >
+                🌱 Criar bases lisas faltantes
+              </button>
             </div>
             
             <div className="seed-manual-hint">
@@ -841,9 +932,94 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan })
         <button className="btn-secondary" onClick={onBack}>
           ← Voltar
         </button>
-        <button className="btn-primary" onClick={onExecute} disabled={hasBlockers}>
-          {hasBlockers ? '🚫 Bloqueado' : '✅ Executar (próxima sprint)'}
+        <button 
+          className="btn-secondary" 
+          onClick={() => {
+            window.open('http://localhost:8000/auth/bling/connect', '_blank');
+            alert('🔄 Janela de autenticação aberta. Complete a autenticação e depois retorne.');
+          }}
+          style={{ background: '#f59e0b', color: 'white' }}
+        >
+          🔑 Renovar Token Bling
         </button>
+        <button className="btn-primary" onClick={() => onExecute(plan)} disabled={hasBlockers}>
+          {hasBlockers ? '🚫 Bloqueado' : '✅ Executar no Bling'}
+        </button>
+      </div>
+      
+      {seedResultsModal && (
+        <SeedResultsModal 
+          results={seedResultsModal} 
+          onClose={() => setSeedResultsModal(null)} 
+        />
+      )}
+    </div>
+  );
+}
+
+function SeedResultsModal({ results, onClose }) {
+  if (!results) return null;
+
+  const { summary, results: items } = results;
+  const successItems = items.filter(r => r.status === 'created');
+  const failedItems = items.filter(r => r.status === 'failed');
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '600px' }}>
+        <h3>✅ Bases Criadas</h3>
+        
+        <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: '8px', padding: '16px', marginBottom: '20px', textAlign: 'center' }}>
+          <div style={{ fontSize: '28px', fontWeight: 'bold', color: '#16a34a' }}>
+            {summary.created_bases}
+          </div>
+          <div style={{ color: '#15803d', marginTop: '4px' }}>
+            {summary.created_bases === 1 ? 'base criada' : 'bases criadas'}
+          </div>
+        </div>
+
+        {successItems.length > 0 && (
+          <div style={{ marginBottom: '20px' }}>
+            <h4 style={{ marginBottom: '12px', color: '#059669' }}>Produtos Criados:</h4>
+            <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+              {successItems.map((item, idx) => (
+                <div 
+                  key={idx} 
+                  style={{
+                    padding: '12px',
+                    background: '#f9fafb',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '6px',
+                    marginBottom: '8px'
+                  }}
+                >
+                  <div style={{ fontWeight: '600', marginBottom: '4px' }}>{item.sku}</div>
+                  <div style={{ fontSize: '13px', color: '#6b7280' }}>
+                    ID: {item.id}
+                    {item.variations_count && ` • ${item.variations_count} variações`}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {failedItems.length > 0 && (
+          <div style={{ marginBottom: '20px' }}>
+            <h4 style={{ marginBottom: '12px', color: '#dc2626' }}>Falhas:</h4>
+            {failedItems.map((item, idx) => (
+              <div key={idx} style={{ padding: '8px', color: '#dc2626' }}>
+                • {item.sku}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="modal-actions">
+          <button onClick={onClose} style={{ width: '100%' }}>
+            Fechar
+          </button>
+        </div>
       </div>
     </div>
   );
