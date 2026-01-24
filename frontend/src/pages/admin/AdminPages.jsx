@@ -442,6 +442,7 @@ export function TemplatesPage() {
   const [templateKind, setTemplateKind] = useState('BASE_PLAIN');
   const [searchQuery, setSearchQuery] = useState('');
   const [showReauthModal, setShowReauthModal] = useState(false);
+  const [pendingRetryAfterReauth, setPendingRetryAfterReauth] = useState(false);
   const [infoBoxExpanded, setInfoBoxExpanded] = useState(false);
 
   useEffect(() => {
@@ -691,25 +692,45 @@ export function TemplatesPage() {
             <p>O token de acesso ao Bling expirou e precisa ser renovado.</p>
             <p style={{ marginTop: '16px', fontSize: '0.95rem', color: '#666' }}>
               Ao clicar em "Renovar Token", você será redirecionado para o Bling para autorizar novamente.
-              Após autorizar, você será redirecionado de volta e o token será renovado automaticamente.
+              Após autorizar, você será redirecionado de volta.
             </p>
             <div className="modal-actions">
               <button 
-                onClick={() => setShowReauthModal(false)} 
+                onClick={() => {
+                  setShowReauthModal(false);
+                  setPendingRetryAfterReauth(false);
+                  setError(null);
+                }} 
                 style={{ background: '#64748b' }}
               >
                 Cancelar
               </button>
-              <button 
-                onClick={() => {
-                  window.open('http://localhost:8000/auth/bling/connect', '_blank');
-                  setShowReauthModal(false);
-                  setError('Aguarde a autenticação no Bling e tente novamente.');
-                }}
-                style={{ background: '#4CAF50' }}
-              >
-                🔄 Renovar Token Agora
-              </button>
+              {!pendingRetryAfterReauth && (
+                <button 
+                  onClick={() => {
+                    window.open('http://localhost:8000/auth/bling/connect', '_blank');
+                    setPendingRetryAfterReauth(true);
+                    setError('Autenticando no Bling...');
+                  }}
+                  style={{ background: '#4CAF50' }}
+                >
+                  🔄 Renovar Token Agora
+                </button>
+              )}
+              {pendingRetryAfterReauth && (
+                <button 
+                  onClick={() => {
+                    setShowReauthModal(false);
+                    setPendingRetryAfterReauth(false);
+                    setError(null);
+                    // Retry the search
+                    handleSearch();
+                  }}
+                  style={{ background: '#3b82f6' }}
+                >
+                  ✅ Tentar Novamente
+                </button>
+              )}
             </div>
           </div>
         </div>

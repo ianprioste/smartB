@@ -93,7 +93,7 @@ class PlanBuilderNew:
                 for color_code in request.colors:
                     for size in sizes:
                         # Main product SKU
-                        sku = self.sku_engine.product(model_code, color_code, size)
+                        sku = self.sku_engine.base_plain(model_code, color_code, size)
                         required_skus.add(sku)
             
             # Add seed SKUs (base products)
@@ -341,17 +341,17 @@ class PlanBuilderNew:
                 existing = await self._check_bling_product_cached(seed.sku)
                 
                 if existing:
-                    # Seed was created manually in Bling - add as UPDATE
+                    # Seed was created manually in Bling - mark as NOOP (não será modificado)
                     verified_seed = PlanItem(
                         sku=seed.sku,
                         entity=seed.entity,
-                        action=PlanItemActionEnum.UPDATE,
+                        action=PlanItemActionEnum.NOOP,
                         hard_dependencies=[],
                         soft_dependencies=[],
                         template=seed.template,
-                        status=PlanItemActionEnum.UPDATE,
+                        status=PlanItemActionEnum.NOOP,
                         reason="MANUALLY_CREATED",
-                        message=f"{seed.entity} foi criado manualmente no Bling",
+                        message=f"{seed.entity} já existe no Bling (não será modificado)",
                         overrides_used={},
                         autoseed_candidate=True,
                         included=True,
@@ -511,19 +511,9 @@ class PlanBuilderNew:
             action = PlanItemActionEnum.CREATE
             reason_text = f"Seed auto-gerado para {entity.lower()}"
         else:
-            # Check if needs update
-            diff_fields = self._calculate_diff_summary(
-                existing_product,
-                computed_payload,
-                category_override_active=request.overrides.category_override_id is not None,
-            )
-            
-            if diff_fields:
-                action = PlanItemActionEnum.UPDATE
-                reason_text = f"Seed existente, requer atualização"
-            else:
-                action = PlanItemActionEnum.NOOP
-                reason_text = f"Seed existente e correto"
+            # Bases já existentes não serão modificadas
+            action = PlanItemActionEnum.NOOP
+            reason_text = f"Seed existente (não será modificado)"
         
         return PlanItem(
             sku=sku,

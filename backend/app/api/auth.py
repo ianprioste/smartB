@@ -157,8 +157,14 @@ async def bling_callback(
         tenant = BlingTokenRepository.get_or_create_default_tenant(db)
 
         # Store tokens (in production, encrypt them!)
-        expires_at = datetime.utcnow() + timedelta(
-            seconds=token_data.get("expires_in", 3600)
+        expires_in = token_data.get("expires_in", 3600)
+        expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
+        
+        logger.info(
+            "oauth_saving_token",
+            expires_in=expires_in,
+            expires_at=expires_at.isoformat(),
+            now=datetime.utcnow().isoformat(),
         )
         
         BlingTokenRepository.create_or_update(
@@ -201,3 +207,57 @@ async def bling_callback(
             detail="Internal server error",
         )
 
+
+
+
+@router.get("/bling/status")
+async def check_bling_token_status(db: Session = Depends(get_db)):
+    """
+    Check if Bling token exists and is not expired.
+    
+    Returns:
+        - valid: bool - Whether token exists and is not expired
+        - message: str - Status message
+    """
+    from uuid import UUID
+    
+    TENANT_ID = UUID("00000000-0000-0000-0000-000000000001")
+    
+    try:
+        token_repo = BlingTokenRepository()
+        token = token_repo.get_by_tenant(db, TENANT_ID)
+        
+        if not token:
+            return {
+                "valid": False,
+                "message": "No token found"
+            }
+        
+        # Check if token is expired
+        now = datetime.utcnow()
+        
+        logger.info(
+            "checking_token_validity",
+            token_expires_at=token.expires_at.isoformat() if token.expires_at else "None",
+            now=now.isoformat(),
+            is_expired=token.expires_at <= now if token.expires_at else "no_expiry",
+        )
+        
+        if token.expires_at and token.expires_at <= now:
+            return {
+                "valid": False,
+                "message": "Token expired"
+            }
+        
+        # Token exists and is not expired
+        return {
+            "valid": True,
+            "message": "Token is valid"
+        }
+            
+    except Exception as e:
+        logger.error(f"Error checking Bling token status: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Error checking token status"
+        )

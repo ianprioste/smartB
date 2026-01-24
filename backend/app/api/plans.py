@@ -6,6 +6,7 @@ from uuid import UUID
 
 from app.infra.db import get_db
 from app.infra.bling_client import BlingClient, BlingRefreshTokenExpiredError
+from app.settings import settings
 from app.models.schemas import (
     PlanNewRequest,
     PlanResponse,
@@ -82,7 +83,7 @@ async def _check_bling_products_bulk(
         
         # Use raw httpx client to send the request properly
         response = await bling_client.client.get(
-            f"{bling_client.base_url}/produtos",
+            f"/produtos",
             params=params,
             headers=bling_client._get_headers()
         )

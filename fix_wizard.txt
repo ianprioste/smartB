@@ -1,0 +1,2 @@
+Linha 202: remover verificação checkBlingTokenStatus
+Linha 239: simplificar erro para usar setPendingRetryAfterReauth, setError, setShowReauthModal

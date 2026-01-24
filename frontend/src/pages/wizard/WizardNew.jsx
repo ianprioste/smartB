@@ -30,6 +30,7 @@ export function WizardNewPage() {
   const [generatingPlan, setGeneratingPlan] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState('');
   const [showReauthModal, setShowReauthModal] = useState(false);
+  const [pendingRetryAfterReauth, setPendingRetryAfterReauth] = useState(false);
 
   useEffect(() => {
     fetchConfiguration();
@@ -222,8 +223,10 @@ export function WizardNewPage() {
       // Check if token expired
       if (errorMsg.includes('Token') || errorMsg.includes('expirado') || errorMsg.includes('401')) {
         setShowReauthModal(true);
+        setError('Token expirado. Renove o token para continuar.');
+      } else {
+        setError(errorMsg);
       }
-      setError(errorMsg);
     } finally {
       setGeneratingPlan(false);
       setLoadingStatus('');
@@ -479,6 +482,70 @@ export function WizardNewPage() {
               {generatingPlan ? 'Gerando Preview...' : '🔍 Gerar Preview'}
             </button>
           )}
+        </div>
+      )}
+
+      {/* Modal de reautenticação */}
+      {showReauthModal && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <h3>🔑 Token do Bling Expirado</h3>
+            <p>O token de acesso ao Bling expirou e precisa ser renovado.</p>
+            <p style={{ marginTop: '16px', fontSize: '0.95rem', color: '#666' }}>
+              Ao clicar em "Renovar Token", você será redirecionado para o Bling para autorizar novamente.
+              Após autorizar, você será redirecionado de volta.
+            </p>
+            <div className="modal-actions">
+              <button 
+                onClick={() => {
+                  setShowReauthModal(false);
+                  setPendingRetryAfterReauth(false);
+                  setError(null);
+                }} 
+                style={{ background: '#64748b' }}
+              >
+                Cancelar
+              </button>
+              {!pendingRetryAfterReauth && (
+                <button 
+                  onClick={() => {
+                    window.open('http://localhost:8000/auth/bling/connect', '_blank');
+                    setPendingRetryAfterReauth(true);
+                    setError('Autenticando no Bling... Aguarde até completar a autenticação.');
+                    
+                    // Auto-detect when user returns and auto-retry
+                    const handleFocus = () => {
+                      setTimeout(() => {
+                        setShowReauthModal(false);
+                        setPendingRetryAfterReauth(false);
+                        setError(null);
+                        handleGeneratePlan();
+                      }, 2000);
+                      window.removeEventListener('focus', handleFocus);
+                    };
+                    window.addEventListener('focus', handleFocus);
+                  }}
+                  style={{ background: '#4CAF50' }}
+                >
+                  🔄 Renovar Token Agora
+                </button>
+              )}
+              {pendingRetryAfterReauth && (
+                <button 
+                  onClick={() => {
+                    setShowReauthModal(false);
+                    setPendingRetryAfterReauth(false);
+                    setError(null);
+                    // Retry generating the plan
+                    handleGeneratePlan();
+                  }}
+                  style={{ background: '#3b82f6' }}
+                >
+                  ✅ Tentar Novamente
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -778,37 +845,8 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan })
           {hasBlockers ? '🚫 Bloqueado' : '✅ Executar (próxima sprint)'}
         </button>
       </div>
-
-      {showReauthModal && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <h3>🔑 Token do Bling Expirado</h3>
-            <p>O token de acesso ao Bling expirou e precisa ser renovado.</p>
-            <p style={{ marginTop: '16px', fontSize: '0.95rem', color: '#666' }}>
-              Ao clicar em "Renovar Token", você será redirecionado para o Bling para autorizar novamente.
-              Após autorizar, você será redirecionado de volta e o token será renovado automaticamente.
-            </p>
-            <div className="modal-actions">
-              <button 
-                onClick={() => setShowReauthModal(false)} 
-                style={{ background: '#64748b' }}
-              >
-                Cancelar
-              </button>
-              <button 
-                onClick={() => {
-                  window.open('http://localhost:8000/auth/bling/connect', '_blank');
-                  setShowReauthModal(false);
-                  setError('Aguarde a autenticação no Bling e tente novamente.');
-                }}
-                style={{ background: '#4CAF50' }}
-              >
-                🔄 Renovar Token Agora
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
+
+
