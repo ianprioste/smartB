@@ -216,6 +216,17 @@ class BlingClient:
                     else:
                         raise BlingAuthError("Unauthorized (401) - No valid refresh token available")
 
+                elif response.status_code >= 400:
+                    logger.error(
+                        "api_client_error_body",
+                        request_id=self.request_id,
+                        method=method,
+                        path=path,
+                        status=response.status_code,
+                        body=response.text,
+                    )
+                    response.raise_for_status()
+
                 response.raise_for_status()
                 return response
 

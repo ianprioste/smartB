@@ -68,6 +68,9 @@ class PlanBuilderNew:
         self.sku_engine = SkuEngine()
         # Cache for Bling product lookups to avoid rate limits
         self._bling_cache: Dict[str, Optional[Dict[str, Any]]] = bling_cache or {}
+        # Execution flags (set during plan build)
+        self._auto_seed_base_plain: bool = False
+        self._planned_base_skus: set[str] = set()
 
     def collect_all_required_skus(self, request: PlanNewRequest) -> set[str]:
         """
@@ -131,11 +134,23 @@ class PlanBuilderNew:
         """
         logger.info(f"Building plan for print {request.print.code}")
 
+        # Execution flags
+        self._auto_seed_base_plain = request.options.auto_seed_base_plain
+        self._planned_base_skus = set()
+
         # Validate input
         self._validate_input(request)
 
         # Load template payloads from Bling for merging (minimal calls - only templates)
         await self._load_template_payloads()
+
+        # Pre-register base SKUs that will be created when auto-seed is enabled
+        if self._auto_seed_base_plain:
+            for model_req in request.models:
+                sizes = self._get_model_sizes(model_req)
+                for color_code in request.colors:
+                    for size in sizes:
+                        self._planned_base_skus.add(self.sku_engine.base_plain(model_req.code, color_code, size))
 
         # Track items to create
         items_to_create = []
@@ -709,10 +724,11 @@ class PlanBuilderNew:
             parent_sku = self.sku_engine.parent_printed(model_code, print_code)
             hard_deps.append(parent_sku)
             
-            # Soft: BASE_PLAIN is recommended but not blocking
+            # Hard: BASE_PLAIN must exist to build composition with the base as component
+            # This ensures the plan is execution-ready for the next stage in Bling
             if color_code and size:
                 base_sku = self.sku_engine.base_plain(model_code, color_code, size)
-                soft_deps.append(base_sku)
+                hard_deps.append(base_sku)
 
         return hard_deps, soft_deps
 
@@ -876,19 +892,25 @@ class PlanBuilderNew:
                 missing_hard_deps.append(hard_dep)
 
         if missing_hard_deps:
-            logger.warning(f"Item {sku} BLOCKED: missing hard deps {missing_hard_deps}")
-            return PlanItem(
-                sku=sku,
-                entity=entity,
-                action=PlanItemActionEnum.BLOCKED,
-                hard_dependencies=hard_dependencies,
-                soft_dependencies=soft_dependencies,
-                template=PlanItemTemplate(model=model_code, kind=template_kind.value, fallback_used=fallback_used),
-                status=PlanItemActionEnum.BLOCKED,
-                reason="MISSING_HARD_DEPENDENCY",
-                message=f"Hard dependency ausente: {', '.join(missing_hard_deps)}",
-                template_ref=template_ref,
-            )
+            # If auto-seed is enabled, allow base seeds planned for creation to satisfy deps
+            if self._auto_seed_base_plain:
+                missing_hard_deps = [dep for dep in missing_hard_deps if dep not in self._planned_base_skus]
+
+            # After filtering, if any remain, the item is blocked
+            if missing_hard_deps:
+                logger.warning(f"Item {sku} BLOCKED: missing hard deps {missing_hard_deps}")
+                return PlanItem(
+                    sku=sku,
+                    entity=entity,
+                    action=PlanItemActionEnum.BLOCKED,
+                    hard_dependencies=hard_dependencies,
+                    soft_dependencies=soft_dependencies,
+                    template=PlanItemTemplate(model=model_code, kind=template_kind.value, fallback_used=fallback_used),
+                    status=PlanItemActionEnum.BLOCKED,
+                    reason="MISSING_HARD_DEPENDENCY",
+                    message=f"Hard dependency ausente: {', '.join(missing_hard_deps)}",
+                    template_ref=template_ref,
+                )
 
         # Compute payload preview
         computed_payload = TemplateMerge.merge(
