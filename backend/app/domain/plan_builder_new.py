@@ -46,6 +46,7 @@ class PlanBuilderNew:
         templates_data: Dict[str, Dict[str, int]],  # {model_code: {kind: bling_product_id}}
         bling_checker,  # Async function to fetch existing product detail by SKU
         bling_client=None,  # Optional Bling client to fetch template payloads
+        bling_cache: Optional[Dict[str, Optional[Dict[str, Any]]]] = None,  # Pre-loaded cache of SKU -> product
     ):
         """
         Initialize plan builder.
@@ -55,6 +56,8 @@ class PlanBuilderNew:
             colors_data: Color information {code: name}
             templates_data: Template information {model_code: {kind: bling_product_id}}
             bling_checker: Async function(sku) -> Optional[Dict] to check Bling
+            bling_client: Optional Bling client to fetch template payloads
+            bling_cache: Optional pre-loaded cache of SKU -> product to avoid individual checks
         """
         self.models_data = models_data
         self.colors_data = colors_data
@@ -64,7 +67,54 @@ class PlanBuilderNew:
         self.template_payloads: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self.sku_engine = SkuEngine()
         # Cache for Bling product lookups to avoid rate limits
-        self._bling_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+        self._bling_cache: Dict[str, Optional[Dict[str, Any]]] = bling_cache or {}
+
+    def collect_all_required_skus(self, request: PlanNewRequest) -> set[str]:
+        """
+        Collect all SKUs that will be needed for this plan (for bulk Bling check).
+        
+        This generates all possible SKUs without making any Bling calls,
+        useful for pre-loading the cache before building the plan.
+        
+        Args:
+            request: Plan creation request
+            
+        Returns:
+            Set of all SKUs that will be verified during plan building
+        """
+        required_skus = set()
+        
+        try:
+            # Add all product SKUs (main products)
+            for model_req in request.models:
+                model_code = model_req.code
+                sizes = model_req.sizes or self.models_data.get(model_code, {}).get("allowed_sizes", [])
+                
+                for color_code in request.colors:
+                    for size in sizes:
+                        # Main product SKU
+                        sku = self.sku_engine.product(model_code, color_code, size)
+                        required_skus.add(sku)
+            
+            # Add seed SKUs (base products)
+            for model_req in request.models:
+                model_code = model_req.code
+                sizes = model_req.sizes or self.models_data.get(model_code, {}).get("allowed_sizes", [])
+                
+                # BASE_PARENT
+                base_parent_sku = model_code.upper()
+                required_skus.add(base_parent_sku)
+                
+                # BASE_VARIATION for each color/size
+                for color_code in request.colors:
+                    for size in sizes:
+                        base_variation_sku = self.sku_engine.base_plain(model_code, color_code, size)
+                        required_skus.add(base_variation_sku)
+        except Exception as e:
+            logger.warning(f"Error collecting required SKUs: {e}")
+            return set()
+        
+        return required_skus
 
     async def build_plan(self, request: PlanNewRequest) -> PlanResponse:
         """

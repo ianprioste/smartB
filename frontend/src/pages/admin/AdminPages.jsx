@@ -470,11 +470,14 @@ export function TemplatesPage() {
       if (!resp.ok) throw new Error('Failed to fetch templates');
       const data = await resp.json();
       
-      // Filter out templates from inactive models
-      const activeModelCodes = models.filter(m => m.is_active).map(m => m.code);
-      const filteredTemplates = data.filter(t => activeModelCodes.includes(t.model_code));
-      
-      setTemplates(filteredTemplates);
+      // Filter out templates from inactive models only if models are loaded
+      if (models && models.length > 0) {
+        const activeModelCodes = models.filter(m => m.is_active).map(m => m.code);
+        const filteredTemplates = data.filter(t => activeModelCodes.includes(t.model_code));
+        setTemplates(filteredTemplates);
+      } else {
+        setTemplates(data);
+      }
     } catch (err) {
       setError(err.message);
     } finally {

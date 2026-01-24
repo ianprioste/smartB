@@ -50,53 +50,96 @@ async def _get_bling_client(db: Session) -> Optional[BlingClient]:
     )
 
 
-async def _check_bling_product(
-    bling_client: Optional[BlingClient], sku: str
-) -> Optional[Dict[str, Any]]:
-    """Check if product exists in Bling by SKU and return enriched fields for diffing."""
-    if not bling_client:
-        return None
-
+async def _check_bling_products_bulk(
+    bling_client: Optional[BlingClient], skus: list[str]
+) -> Dict[str, Optional[Dict[str, Any]]]:
+    """
+    Check if products exist in Bling by SKUs (bulk operation).
+    
+    Makes a single API call with multiple SKUs and returns a dictionary
+    mapping SKU -> product data for caching.
+    
+    Args:
+        bling_client: Bling client instance
+        skus: List of SKUs to check
+        
+    Returns:
+        Dictionary mapping SKU -> product data (or None if not found)
+    """
+    result: Dict[str, Optional[Dict[str, Any]]] = {sku: None for sku in skus}
+    
+    if not bling_client or not skus:
+        return result
+    
     try:
-        response = await bling_client.get_produtos(params={"codigo": sku, "limite": 1})
-
-        if not response or "data" not in response:
-            return None
-
-        data = response["data"]
-        if not data:
-            return None
-
-        product = data[0]
-        product_id = product.get("id")
-
-        # Fetch full details for diffing
-        detail = None
-        if product_id:
-            try:
-                detail_resp = await bling_client.get_product(product_id)
-                detail = detail_resp.get("data") if detail_resp else None
-            except Exception as e:
-                logger.warning(f"Error fetching full product for {sku}: {e}")
-
-        enriched = detail or product
-
-        return {
-            "id": enriched.get("id", product_id),
-            "codigo": enriched.get("codigo", sku),
-            "nome": enriched.get("nome"),
-            "formato": enriched.get("formato"),
-            "situacao": enriched.get("situacao"),
-            "preco": enriched.get("preco"),
-            "precoVenda": enriched.get("precoVenda"),
-            "descricaoCurta": enriched.get("descricaoCurta"),
-            "descricaoComplementar": enriched.get("descricaoComplementar"),
-            "categoria_id": enriched.get("categoria_id") or enriched.get("categoriaId"),
-        }
-
+        # Make single API call with all SKUs
+        # Build params as list of tuples to properly handle multiple codigos[] params
+        # This creates URL like: /produtos?codigos[]=SKU1&codigos[]=SKU2&limite=100
+        params = [("codigos[]", sku) for sku in skus]
+        params.append(("limite", str(min(len(skus) + 10, 100))))
+        
+        logger.info(f"Bulk checking {len(skus)} SKUs in Bling: {skus[:5]}..." if len(skus) > 5 else f"Bulk checking SKUs: {skus}")
+        
+        # Use raw httpx client to send the request properly
+        response = await bling_client.client.get(
+            f"{bling_client.base_url}/produtos",
+            params=params,
+            headers=bling_client._get_headers()
+        )
+        
+        logger.info(f"Bling API response status: {response.status_code}")
+        
+        if response.status_code != 200:
+            logger.warning(f"Bling API returned status {response.status_code}")
+            return result
+        
+        data = response.json()
+        
+        if not data or "data" not in data:
+            logger.warning(f"No 'data' field in Bling response for {len(skus)} SKUs")
+            return result
+        
+        products = data.get("data", [])
+        logger.info(f"Found {len(products)} products in Bling response")
+        
+        # Process each product
+        for product in products:
+            sku = product.get("codigo")
+            if not sku or sku not in result:
+                continue
+                
+            product_id = product.get("id")
+            
+            # Fetch full details for diffing
+            detail = None
+            if product_id:
+                try:
+                    detail_resp = await bling_client.get_product(product_id)
+                    detail = detail_resp.get("data") if detail_resp else None
+                except Exception as e:
+                    logger.warning(f"Error fetching full product for {sku} (ID: {product_id}): {e}")
+            
+            enriched = detail or product
+            
+            result[sku] = {
+                "id": enriched.get("id", product_id),
+                "codigo": enriched.get("codigo", sku),
+                "nome": enriched.get("nome"),
+                "formato": enriched.get("formato"),
+                "situacao": enriched.get("situacao"),
+                "preco": enriched.get("preco"),
+                "precoVenda": enriched.get("precoVenda"),
+                "descricaoCurta": enriched.get("descricaoCurta"),
+                "descricaoComplementar": enriched.get("descricaoComplementar"),
+                "categoria_id": enriched.get("categoria_id") or enriched.get("categoriaId"),
+            }
+        
+        logger.info(f"Bulk check complete: Found {len([v for v in result.values() if v])} of {len(skus)} products")
+        return result
+        
     except Exception as e:
-        logger.warning(f"Error checking Bling product {sku}: {e}")
-        return None
+        logger.error(f"Error checking Bling products bulk: {e}", exc_info=True)
+        return result
 
 
 @router.post(
@@ -165,17 +208,44 @@ async def create_new_plan(
         # Get Bling client for checking existing products
         bling_client = await _get_bling_client(db)
 
-        # Create checker function
+        # Create temporary builder to collect all required SKUs
         async def bling_checker(sku: str) -> Optional[Dict[str, Any]]:
-            return await _check_bling_product(bling_client, sku)
+            # This will be overridden by the cache, so it shouldn't be called much
+            return None
 
-        # Build plan
-        builder = PlanBuilderNew(
+        temp_builder = PlanBuilderNew(
             models_data=models_data,
             colors_data=colors_data,
             templates_data=templates_data,
             bling_checker=bling_checker,
             bling_client=bling_client,
+        )
+        
+        # Collect all SKUs that will be needed
+        required_skus = list(temp_builder.collect_all_required_skus(request))
+        logger.info(f"Bulk checking {len(required_skus)} SKUs in Bling")
+        
+        # Make single bulk API call to Bling for all SKUs
+        bling_products_cache = {}
+        if required_skus and bling_client:
+            try:
+                bling_products_cache = await _check_bling_products_bulk(bling_client, required_skus)
+            except Exception as e:
+                logger.warning(f"Error during bulk Bling check, continuing with empty cache: {e}")
+                bling_products_cache = {sku: None for sku in required_skus}
+
+        # Create final builder with pre-loaded cache
+        async def bling_checker_cached(sku: str) -> Optional[Dict[str, Any]]:
+            # Use pre-loaded cache, avoid individual calls
+            return bling_products_cache.get(sku)
+
+        builder = PlanBuilderNew(
+            models_data=models_data,
+            colors_data=colors_data,
+            templates_data=templates_data,
+            bling_checker=bling_checker_cached,
+            bling_client=bling_client,
+            bling_cache=bling_products_cache,  # Pass pre-loaded cache
         )
 
         plan = await builder.build_plan(request)

@@ -29,6 +29,7 @@ export function WizardNewPage() {
   const [plan, setPlan] = useState(null);
   const [generatingPlan, setGeneratingPlan] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState('');
+  const [showReauthModal, setShowReauthModal] = useState(false);
 
   useEffect(() => {
     fetchConfiguration();
@@ -49,9 +50,19 @@ export function WizardNewPage() {
       const modelsData = await modelsResp.json();
       const colorsData = await colorsResp.json();
 
-      setModels(modelsData.filter(m => m.is_active));
-      setColors(colorsData.filter(c => c.is_active));
+      console.log('Models data:', modelsData);
+      console.log('Colors data:', colorsData);
+
+      const activeModels = modelsData.filter(m => m.is_active);
+      const activeColors = colorsData.filter(c => c.is_active);
+      
+      console.log('Active models:', activeModels);
+      console.log('Active colors:', activeColors);
+
+      setModels(activeModels);
+      setColors(activeColors);
     } catch (err) {
+      console.error('Error fetching configuration:', err);
       setError(err.message);
     } finally {
       setLoading(false);
@@ -207,7 +218,12 @@ export function WizardNewPage() {
       setPlan(planData);
       setStep(4); // Go to preview
     } catch (err) {
-      setError(err.message);
+      const errorMsg = err.message || '';
+      // Check if token expired
+      if (errorMsg.includes('Token') || errorMsg.includes('expirado') || errorMsg.includes('401')) {
+        setShowReauthModal(true);
+      }
+      setError(errorMsg);
     } finally {
       setGeneratingPlan(false);
       setLoadingStatus('');
@@ -354,49 +370,55 @@ export function WizardNewPage() {
       {step === 2 && (
         <div className="wizard-content">
           <h2>📐 Selecione os Modelos e Tamanhos</h2>
-          <div className="models-grid">
-            {models.map(model => {
-              const selected = selectedModels.find(m => m.code === model.code);
-              return (
-                <div key={model.code} className={`model-card ${selected ? 'selected' : ''}`}>
-                  <div className="model-header" onClick={() => handleModelToggle(model)}>
-                    <input type="checkbox" checked={!!selected} readOnly />
-                    <strong>{model.code}</strong> - {model.name}
-                  </div>
-                  {selected && (
-                    <div className="sizes-selection">
-                      <label>Tamanhos:</label>
-                      <div className="sizes-buttons">
-                        {model.allowed_sizes.map(size => (
-                          <button
-                            key={size}
-                            className={`size-btn ${
-                              selected.selected_sizes.includes(size) ? 'active' : ''
-                            }`}
-                            onClick={() => handleSizeToggle(model.code, size)}
-                          >
-                            {size}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="form-group inline">
-                        <label>Preço (R$)</label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          value={selected.price}
-                          onClick={e => e.stopPropagation()}
-                          onChange={e => handlePriceChange(model.code, e.target.value)}
-                          placeholder="Ex: 79.90"
-                        />
-                      </div>
+          {models.length === 0 ? (
+            <div className="wizard-error">
+              ⚠️ Nenhum modelo disponível. Por favor, crie modelos primeiro.
+            </div>
+          ) : (
+            <div className="models-grid">
+              {models.map(model => {
+                const selected = selectedModels.find(m => m.code === model.code);
+                return (
+                  <div key={model.code} className={`model-card ${selected ? 'selected' : ''}`}>
+                    <div className="model-header" onClick={() => handleModelToggle(model)}>
+                      <input type="checkbox" checked={!!selected} readOnly />
+                      <strong>{model.code}</strong> - {model.name}
                     </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                    {selected && (
+                      <div className="sizes-selection">
+                        <label>Tamanhos:</label>
+                        <div className="sizes-buttons">
+                          {model.allowed_sizes.map(size => (
+                            <button
+                              key={size}
+                              className={`size-btn ${
+                                selected.selected_sizes.includes(size) ? 'active' : ''
+                              }`}
+                              onClick={() => handleSizeToggle(model.code, size)}
+                            >
+                              {size}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="form-group inline">
+                          <label>Preço (R$)</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={selected.price}
+                            onClick={e => e.stopPropagation()}
+                            onChange={e => handlePriceChange(model.code, e.target.value)}
+                            placeholder="Ex: 79.90"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -756,6 +778,37 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan })
           {hasBlockers ? '🚫 Bloqueado' : '✅ Executar (próxima sprint)'}
         </button>
       </div>
+
+      {showReauthModal && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <h3>🔑 Token do Bling Expirado</h3>
+            <p>O token de acesso ao Bling expirou e precisa ser renovado.</p>
+            <p style={{ marginTop: '16px', fontSize: '0.95rem', color: '#666' }}>
+              Ao clicar em "Renovar Token", você será redirecionado para o Bling para autorizar novamente.
+              Após autorizar, você será redirecionado de volta e o token será renovado automaticamente.
+            </p>
+            <div className="modal-actions">
+              <button 
+                onClick={() => setShowReauthModal(false)} 
+                style={{ background: '#64748b' }}
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={() => {
+                  window.open('http://localhost:8000/auth/bling/connect', '_blank');
+                  setShowReauthModal(false);
+                  setError('Aguarde a autenticação no Bling e tente novamente.');
+                }}
+                style={{ background: '#4CAF50' }}
+              >
+                🔄 Renovar Token Agora
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
