@@ -303,6 +303,46 @@
   font-weight: 600;
 }
 
+/* NOOP Products Option Block */
+.noop-option-block {
+  background: #e3f2fd;
+  border: 2px solid #1976d2;
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.noop-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.noop-checkbox input[type="checkbox"] {
+  margin-top: 0.25rem;
+  width: 1.25rem;
+  height: 1.25rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.noop-checkbox label {
+  cursor: pointer;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.noop-checkbox label strong {
+  color: #1976d2;
+  font-weight: 600;
+}
+
+.noop-checkbox label small {
+  color: #555;
+  display: block;
+  margin-top: 0.5rem;
+}
+
 /* Plan Table */
 .plan-table-container {
   overflow-x: auto;

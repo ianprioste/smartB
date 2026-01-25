@@ -610,6 +610,7 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan, o
   const [isRegenerating, setIsRegenerating] = React.useState(false);
   const [loadingStatus, setLoadingStatus] = React.useState('');
   const [seedResultsModal, setSeedResultsModal] = React.useState(null);
+  const [includeExistingProducts, setIncludeExistingProducts] = React.useState(false);
 
   async function handleToggleAutoSeed(newValue) {
     setAutoSeedBasePlain(newValue);
@@ -722,6 +723,23 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan, o
     BLOCKED: plan.items.filter(i => i.action === 'BLOCKED'),
   };
 
+  function getPlanForExecution() {
+    if (includeExistingProducts) {
+      // Convert NOOP items to CREATE/UPDATE
+      return {
+        ...plan,
+        items: plan.items.map(item => {
+          if (item.action === 'NOOP') {
+            // Mark NOOP items as CREATE so they get processed
+            return { ...item, action: 'CREATE' };
+          }
+          return item;
+        })
+      };
+    }
+    return plan;
+  }
+
   return (
     <div className="wizard-content preview-content">
       {isRegenerating && (
@@ -827,6 +845,24 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan, o
       {hasBlockers && (
         <div className="blocker-warning">
           ⚠️ <strong>Existem bloqueios!</strong> Corrija Templates antes de continuar.
+        </div>
+      )}
+
+      {itemsByAction.NOOP.length > 0 && (
+        <div className="noop-option-block">
+          <div className="noop-checkbox">
+            <input 
+              type="checkbox" 
+              id="includeExisting" 
+              checked={includeExistingProducts}
+              onChange={(e) => setIncludeExistingProducts(e.target.checked)}
+            />
+            <label htmlFor="includeExisting">
+              <strong>♻️ Também atualizar produtos existentes ({itemsByAction.NOOP.length})</strong>
+              <br />
+              <small>Marcados com "🔵 Sem mudança" serão atualizados com os dados atuais do plano</small>
+            </label>
+          </div>
         </div>
       )}
 
@@ -950,7 +986,7 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan, o
         >
           🔑 Renovar Token Bling
         </button>
-        <button className="btn-primary" onClick={() => onExecute(plan)} disabled={hasBlockers}>
+        <button className="btn-primary" onClick={() => onExecute(getPlanForExecution())} disabled={hasBlockers}>
           {hasBlockers ? '🚫 Bloqueado' : '✅ Executar no Bling'}
         </button>
       </div>

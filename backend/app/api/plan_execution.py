@@ -279,11 +279,13 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
     parent_ids: Dict[str, int] = {}
     results = []
 
-    # Process BASE creates
+    # Process BASE creates/updates - always upsert (create if not exists, update if exists)
     for item in items:
-        if item.get("action") != "CREATE":
+        entity = item.get("entity", "")
+        if not entity.startswith("BASE"):
             continue
-        if not item.get("entity", "").startswith("BASE"):
+        action = item.get("action")
+        if action not in ["CREATE", "UPDATE"]:
             continue
 
         sku = item["sku"]
@@ -293,73 +295,98 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
         payload.setdefault("tipo", "P")
         payload.setdefault("formato", payload.get("formato", "S"))
 
-        logger.info(f"Creating base {sku}")
+        logger.info(f"Upserting base {sku} (action={action})")
         created_id = await upsert_product(client, payload, sku)
         if created_id:
             base_ids[sku] = created_id
-            results.append({"sku": sku, "entity": "BASE", "action": "CREATE", "id": created_id, "status": "success"})
+            # Determine if it was created or updated
+            actual_action = "UPDATE" if action == "UPDATE" or await fetch_id_by_sku(client, sku) else "CREATE"
+            results.append({"sku": sku, "entity": "BASE", "action": actual_action, "id": created_id, "status": "success"})
         else:
-            results.append({"sku": sku, "entity": "BASE", "action": "CREATE", "status": "failed"})
+            results.append({"sku": sku, "entity": "BASE", "action": action, "status": "failed"})
 
-    # Process PARENT creates with variations
+    # Process PARENT creates/updates - always upsert
     for item in items:
-        if item.get("action") != "CREATE":
-            continue
-        if item.get("entity") != "PARENT_PRINTED":
+        entity = item.get("entity")
+        action = item.get("action")
+        if entity != "PARENT_PRINTED" or action not in ["CREATE", "UPDATE"]:
             continue
 
         sku = item["sku"]
         payload = normalize_parent_payload(item)
         payload["variacoes"] = children_map.get(sku, [])
         
-        logger.info(f"Creating parent {sku} with {len(payload['variacoes'])} variations")
+        logger.info(f"Upserting parent {sku} with {len(payload['variacoes'])} variations (action={action})")
         created_id = await upsert_product(client, payload, sku)
         if created_id:
             parent_ids[sku] = created_id
             variations_count = len(payload['variacoes'])
+            # Determine if it was created or updated
+            actual_action = "UPDATE" if action == "UPDATE" or await fetch_id_by_sku(client, sku) else "CREATE"
             results.append({
                 "sku": sku, 
                 "entity": "PARENT", 
-                "action": "CREATE", 
+                "action": actual_action, 
                 "id": created_id, 
                 "status": "success",
                 "variations_count": variations_count
             })
         else:
-            results.append({"sku": sku, "entity": "PARENT", "action": "CREATE", "status": "failed"})
+            results.append({"sku": sku, "entity": "PARENT", "action": action, "status": "failed"})
 
-    # Process UPDATEs
+    # Process UPDATEs and VARIATION creates
     for item in items:
-        if item.get("action") != "UPDATE":
+        action = item.get("action")
+        entity = item.get("entity")
+        
+        # Skip NOOP and BLOCKED items
+        if action in ["NOOP", "BLOCKED"]:
+            continue
+            
+        # Skip items we already processed (BASE and PARENT)
+        if entity and (entity.startswith("BASE") or entity == "PARENT_PRINTED"):
             continue
 
         sku = item["sku"]
         existing = item.get("existing_product") or {}
         prod_id = existing.get("id") or await fetch_id_by_sku(client, sku)
-        if not prod_id:
-            results.append({"sku": sku, "action": "UPDATE", "status": "failed", "error": "Product not found"})
+        
+        # For VARIATION creates, we still need prod_id to be there
+        if not prod_id and action == "CREATE" and entity == "VARIATION_PRINTED":
+            logger.warning(f"Skipping variation {sku} - parent product not found")
+            results.append({"sku": sku, "action": action, "status": "failed", "error": "Product not found"})
             continue
-
-        if item.get("entity") == "PARENT_PRINTED":
-            payload = normalize_parent_payload(item)
-        elif item.get("entity") == "VARIATION_PRINTED":
+        
+        if entity == "VARIATION_PRINTED":
             parent_sku, base_sku = extract_parent_and_base(item)
             parent_id = parent_ids.get(parent_sku) or await fetch_id_by_sku(client, parent_sku)
             base_id = base_ids.get(base_sku) or await fetch_id_by_sku(client, base_sku)
             if not parent_id or not base_id:
-                results.append({"sku": sku, "action": "UPDATE", "status": "failed", "error": "Missing parent or base"})
+                results.append({"sku": sku, "action": action, "status": "failed", "error": "Missing parent or base"})
                 continue
-            # Build composition payload for variation update
+            # Build composition payload for variation
             payload = ensure_codigo(item.get("computed_payload_preview", {}), sku)
         else:
             payload = ensure_codigo(item.get("computed_payload_preview", {}), sku)
 
-        logger.info(f"Updating {sku} (id {prod_id})")
-        try:
-            resp = await client.put(f"/produtos/{prod_id}", payload)
-            results.append({"sku": sku, "action": "UPDATE", "id": prod_id, "status": "success"})
-        except Exception as e:
-            results.append({"sku": sku, "action": "UPDATE", "id": prod_id, "status": "failed", "error": str(e)})
+        # If product doesn't exist yet and action is CREATE or UPDATE, create it
+        if not prod_id and action in ["CREATE", "UPDATE"]:
+            logger.info(f"Creating {sku} (action={action})")
+            prod_id = await create_product(client, payload)
+            if prod_id:
+                results.append({"sku": sku, "action": "CREATE", "id": prod_id, "status": "success"})
+            else:
+                results.append({"sku": sku, "action": "CREATE", "status": "failed"})
+        # If product exists, update it
+        elif prod_id and action in ["UPDATE", "CREATE"]:
+            logger.info(f"Updating {sku} (id {prod_id}, action={action})")
+            try:
+                resp = await client.put(f"/produtos/{prod_id}", payload)
+                results.append({"sku": sku, "action": "UPDATE", "id": prod_id, "status": "success"})
+            except Exception as e:
+                results.append({"sku": sku, "action": "UPDATE", "id": prod_id, "status": "failed", "error": str(e)})
+        elif not prod_id:
+            results.append({"sku": sku, "action": action, "status": "failed", "error": "Product not found"})
 
     await client.client.aclose()
     
