@@ -172,7 +172,10 @@ export function WizardNewPage() {
       throw new Error(errorData.detail?.message || 'Falha ao gerar plano');
     }
 
-    return await resp.json();
+    const planData = await resp.json();
+    console.log('DEBUG FRONTEND: Plan received from API:', planData);
+    console.log('DEBUG FRONTEND: Items with action:', planData.items.map(i => ({ sku: i.sku, action: i.action })).slice(0, 15));
+    return planData;
   }
 
   async function handleGeneratePlan() {

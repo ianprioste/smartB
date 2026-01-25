@@ -95,30 +95,37 @@ async def _check_bling_products_bulk(
             return result
         
         data = response.json()
+        logger.info(f"DEBUG: Bling response data keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
         
         if not data or "data" not in data:
             logger.warning(f"No 'data' field in Bling response for {len(skus)} SKUs")
+            logger.info(f"DEBUG: Full response: {data}")
             return result
         
         products = data.get("data", [])
-        logger.info(f"Found {len(products)} products in Bling response")
+        logger.info(f"Found {len(products)} products in Bling response for {len(skus)} requested SKUs")
+        logger.info(f"DEBUG: Products from Bling: {[p.get('codigo') for p in products[:10]]}...")
         
         # Process each product
         for product in products:
             sku = product.get("codigo")
-            if not sku or sku not in result:
+            if not sku:
+                logger.warning(f"Product from Bling has no 'codigo' field: {product.get('id')}")
+                continue
+            if sku not in result:
+                logger.warning(f"Product SKU {sku} not in requested list, skipping")
                 continue
                 
             product_id = product.get("id")
+            logger.info(f"Processing found product: {sku} (id={product_id})")
             
-            # Fetch full details for diffing
             detail = None
             if product_id:
                 try:
                     detail_resp = await bling_client.get_product(product_id)
                     detail = detail_resp.get("data") if detail_resp else None
                 except Exception as e:
-                    logger.warning(f"Error fetching full product for {sku} (ID: {product_id}): {e}")
+                    logger.warning(f"Error fetching full product for {sku} (ID: {product_id}): {str(e)}")
             
             enriched = detail or product
             
@@ -136,6 +143,7 @@ async def _check_bling_products_bulk(
             }
         
         logger.info(f"Bulk check complete: Found {len([v for v in result.values() if v])} of {len(skus)} products")
+        logger.info(f"DEBUG: Result dict populated with {len([v for v in result.values() if v is not None])} products")
         return result
         
     except Exception as e:
@@ -175,6 +183,11 @@ async def create_new_plan(
     - Execution: Only items with action in {CREATE, UPDATE} are processed
     - BLOCKED items remain for user review but are NOT executed by the worker
     """
+    print(f"\n{'='*80}")
+    print(f"CHAMOU /api/plans/new")
+    print(f"Models: {[m.code for m in request.models]}, Colors: {request.colors}")
+    print(f"{'='*80}\n")
+    
     logger.info(f"Creating plan for print {request.print.code}")
 
     try:
@@ -224,14 +237,31 @@ async def create_new_plan(
         
         # Collect all SKUs that will be needed
         required_skus = list(temp_builder.collect_all_required_skus(request))
+        print(f"DEBUG: Collected {len(required_skus)} required SKUs")
+        print(f"DEBUG: Required SKUs sample: {required_skus[:10]}")
         logger.info(f"Bulk checking {len(required_skus)} SKUs in Bling")
         
         # Make single bulk API call to Bling for all SKUs
         bling_products_cache = {}
         if required_skus and bling_client:
             try:
+                print(f"\nDEBUG: Iniciando bulk check de {len(required_skus)} SKUs")
                 bling_products_cache = await _check_bling_products_bulk(bling_client, required_skus)
+                found_count = sum(1 for v in bling_products_cache.values() if v is not None)
+                print(f"DEBUG: Bulk check completo: {found_count} de {len(required_skus)} encontrados")
+                
+                # Log which SKUs were found
+                found_skus = [sku for sku, prod in bling_products_cache.items() if prod is not None]
+                if found_skus:
+                    print(f"DEBUG: SKUs encontrados ({len(found_skus)}): {found_skus[:5]}")
+                    
+                not_found_skus = [sku for sku, prod in bling_products_cache.items() if prod is None]
+                if not_found_skus:
+                    print(f"DEBUG: SKUs NÃO encontrados ({len(not_found_skus)}): {not_found_skus[:5]}")
+                
+                logger.info(f"Bulk check complete: found {found_count}/{len(required_skus)} products in Bling")
             except Exception as e:
+                print(f"DEBUG: Erro no bulk check: {e}")
                 logger.warning(f"Error during bulk Bling check, continuing with empty cache: {e}")
                 bling_products_cache = {sku: None for sku in required_skus}
 
@@ -250,6 +280,12 @@ async def create_new_plan(
         )
 
         plan = await builder.build_plan(request)
+
+        # Debug: print all items with status
+        print("\n=== PLAN DEBUG: All items with status ===")
+        for item in plan.items:
+            print(f"  {item.sku}: action={item.action}, status={item.status}")
+        print("=========================================\n")
 
         logger.info(
             f"Plan created successfully: {plan.summary.total_skus} SKUs, "

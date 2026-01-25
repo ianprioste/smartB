@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     )
     
     # Logging
-    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "DEBUG")
     
     class Config:
         env_file = ".env"

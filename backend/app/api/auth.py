@@ -178,9 +178,7 @@ async def bling_callback(
         )
 
         logger.info(
-            "oauth_token_saved",
-            request_id=request_id,
-            tenant_id=str(tenant.id),
+            f"oauth_token_saved - request_id={request_id}, tenant_id={str(tenant.id)}"
         )
         return TokenAuthResponse(
             message="Connected to Bling successfully",

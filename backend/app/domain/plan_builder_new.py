@@ -88,18 +88,26 @@ class PlanBuilderNew:
         required_skus = set()
         
         try:
-            # Add all product SKUs (main products)
+            logger.info(f"Collecting SKUs for print={request.print.code}, models={[m.code for m in request.models]}, colors={request.colors}")
+            
+            # Add all product SKUs (printed products - e.g., CAMINFNOVO)
             for model_req in request.models:
                 model_code = model_req.code
                 sizes = model_req.sizes or self.models_data.get(model_code, {}).get("allowed_sizes", [])
                 
+                # Add parent printed SKU (e.g., CAMINFNOVO)
+                parent_sku = self.sku_engine.parent_printed(model_code, request.print.code)
+                required_skus.add(parent_sku)
+                logger.debug(f"Added parent printed SKU: {parent_sku}")
+                
+                # Add variation printed SKUs (e.g., CAMINFNOVOBR2)
                 for color_code in request.colors:
                     for size in sizes:
-                        # Main product SKU
-                        sku = self.sku_engine.base_plain(model_code, color_code, size)
-                        required_skus.add(sku)
+                        variation_sku = self.sku_engine.variation_printed(model_code, request.print.code, color_code, size)
+                        required_skus.add(variation_sku)
+                        logger.debug(f"Added variation printed SKU: {variation_sku}")
             
-            # Add seed SKUs (base products)
+            # Add seed SKUs (base products without print - e.g., CAMINF, CAMINFBR2)
             for model_req in request.models:
                 model_code = model_req.code
                 sizes = model_req.sizes or self.models_data.get(model_code, {}).get("allowed_sizes", [])
@@ -107,16 +115,20 @@ class PlanBuilderNew:
                 # BASE_PARENT
                 base_parent_sku = model_code.upper()
                 required_skus.add(base_parent_sku)
+                logger.debug(f"Added BASE_PARENT: {base_parent_sku}")
                 
                 # BASE_VARIATION for each color/size
                 for color_code in request.colors:
                     for size in sizes:
                         base_variation_sku = self.sku_engine.base_plain(model_code, color_code, size)
                         required_skus.add(base_variation_sku)
+                        logger.debug(f"Added BASE_VARIATION: {base_variation_sku}")
         except Exception as e:
             logger.warning(f"Error collecting required SKUs: {e}")
             return set()
         
+        logger.info(f"Collected {len(required_skus)} total SKUs for bulk check")
+        logger.debug(f"SKUs: {sorted(required_skus)[:20]}{'...' if len(required_skus) > 20 else ''}")
         return required_skus
 
     async def build_plan(self, request: PlanNewRequest) -> PlanResponse:
@@ -159,7 +171,13 @@ class PlanBuilderNew:
         # (This checks only seeds that SHOULD exist, not all possible SKUs)
         if not request.options.auto_seed_base_plain:
             all_possible_seeds = await self._get_all_possible_seeds(request)
+            print(f"DEBUG: all_possible_seeds count: {len(all_possible_seeds)}")
+            for seed in all_possible_seeds[:5]:
+                print(f"  - {seed.sku} ({seed.entity})")
             verified_manual_seeds = await self._verify_manually_created_seeds(all_possible_seeds)
+            print(f"DEBUG: verified_manual_seeds (found in Bling) count: {len(verified_manual_seeds)}")
+            for seed in verified_manual_seeds:
+                print(f"  - {seed.sku} ({seed.entity}) = {seed.action}")
             items_to_create.extend(verified_manual_seeds)
 
         # Generate all plan items
@@ -367,6 +385,7 @@ class PlanBuilderNew:
                         status=PlanItemActionEnum.NOOP,
                         reason="MANUALLY_CREATED",
                         message=f"{seed.entity} já existe no Bling (não será modificado)",
+                        existing_product=existing,
                         overrides_used={},
                         autoseed_candidate=True,
                         included=True,
@@ -526,7 +545,7 @@ class PlanBuilderNew:
             action = PlanItemActionEnum.CREATE
             reason_text = f"Seed auto-gerado para {entity.lower()}"
         else:
-            # Bases já existentes não serão modificadas
+            # Bases já existentes não serão modificadas (são apenas dependências)
             action = PlanItemActionEnum.NOOP
             reason_text = f"Seed existente (não será modificado)"
         
@@ -604,11 +623,21 @@ class PlanBuilderNew:
             Product data if found, None if not found
         """
         if sku in self._bling_cache:
-            return self._bling_cache[sku]
+            cached_value = self._bling_cache[sku]
+            if cached_value is not None:
+                logger.debug(f"Cache HIT for SKU {sku}: found in Bling")
+            else:
+                logger.debug(f"Cache HIT for SKU {sku}: NOT found in Bling")
+            return cached_value
         
         # Fetch and cache
+        logger.debug(f"Cache MISS for SKU {sku}, calling bling_checker")
         result = await self.bling_checker(sku)
         self._bling_cache[sku] = result
+        if result is not None:
+            logger.debug(f"Bling check returned product for {sku}: id={result.get('id')}")
+        else:
+            logger.debug(f"Bling check returned None for {sku}")
         return result
 
     async def _load_template_payloads(self) -> None:
@@ -944,6 +973,8 @@ class PlanBuilderNew:
 
         # Check if SKU exists in Bling
         existing_product = await self._check_bling_product(sku)
+        
+        logger.info(f"Creating plan item for SKU {sku}: existing_product={'FOUND' if existing_product else 'NOT_FOUND'}")
 
         if existing_product is None:
             # SKU doesn't exist - CHECK for template_payload
@@ -969,6 +1000,7 @@ class PlanBuilderNew:
                 )
             
             # Template payload exists - can proceed with CREATE
+            logger.info(f"Planning CREATE for {sku}")
             return PlanItem(
                 sku=sku,
                 entity=entity,
@@ -985,6 +1017,7 @@ class PlanBuilderNew:
             )
 
         # SKU exists - check if needs update
+        logger.info(f"SKU {sku} found in Bling (id={existing_product.get('id')}), checking if needs update")
         diff_fields = self._calculate_diff_summary(
             existing_product,
             computed_payload,
@@ -992,6 +1025,7 @@ class PlanBuilderNew:
         )
 
         if diff_fields:
+            logger.info(f"Planning UPDATE for {sku}: changed fields = {diff_fields}")
             return PlanItem(
                 sku=sku,
                 entity=entity,

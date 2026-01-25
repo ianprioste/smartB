@@ -135,10 +135,8 @@ async def get_job(
     job = JobRepository.get_by_id(db, job_id)
     
     if not job:
-        logger.warn(
-            "job_not_found",
-            request_id=request_id,
-            job_id=str(job_id),
+        logger.warning(
+            f"job_not_found - request_id={request_id}, job_id={str(job_id)}"
         )
         raise HTTPException(status_code=404, detail="Job not found")
     
@@ -163,20 +161,15 @@ async def get_job_detail(
     job = JobRepository.get_by_id(db, job_id)
     
     if not job:
-        logger.warn(
-            "job_not_found",
-            request_id=request_id,
-            job_id=str(job_id),
+        logger.warning(
+            f"job_not_found - request_id={request_id}, job_id={str(job_id)}"
         )
         raise HTTPException(status_code=404, detail="Job not found")
     
     items = JobItemRepository.get_by_job_id(db, job_id)
     
     logger.info(
-        "job_detail_retrieved",
-        request_id=request_id,
-        job_id=str(job_id),
-        items_count=len(items),
+        f"job_detail_retrieved - request_id={request_id}, job_id={str(job_id)}, items_count={len(items)}"
     )
     
     job_dict = JobResponse.from_orm(job).dict()
@@ -199,20 +192,15 @@ async def get_job_items(
     job = JobRepository.get_by_id(db, job_id)
     
     if not job:
-        logger.warn(
-            "job_not_found",
-            request_id=request_id,
-            job_id=str(job_id),
+        logger.warning(
+            f"job_not_found - request_id={request_id}, job_id={str(job_id)}"
         )
         raise HTTPException(status_code=404, detail="Job not found")
     
     items = JobItemRepository.get_by_job_id(db, job_id)
     
     logger.info(
-        "job_items_retrieved",
-        request_id=request_id,
-        job_id=str(job_id),
-        items_count=len(items),
+        f"job_items_retrieved - request_id={request_id}, job_id={str(job_id)}, items_count={len(items)}"
     )
     
     return [JobItemResponse.from_orm(item) for item in items]

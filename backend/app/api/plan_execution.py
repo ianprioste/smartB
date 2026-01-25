@@ -209,6 +209,30 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
             detail="Plan has no items to execute"
         )
     
+    # Collect all SKUs that need to be checked (for bulk fetch)
+    all_skus = set()
+    for item in items:
+        sku = item.get("sku")
+        if sku:
+            all_skus.add(sku)
+        # Also collect base SKUs from variations
+        if item.get("entity") == "VARIATION_PRINTED":
+            parent_sku, base_sku = extract_parent_and_base(item)
+            if base_sku:
+                all_skus.add(base_sku)
+            if parent_sku:
+                all_skus.add(parent_sku)
+    
+    # Bulk check all SKUs at once to avoid multiple GETs
+    from app.api.plans import _check_bling_products_bulk
+    sku_cache = await _check_bling_products_bulk(client, list(all_skus))
+    logger.info(f"Bulk checked {len(all_skus)} SKUs for execution: {sum(1 for v in sku_cache.values() if v)} found")
+    
+    # Helper to get product ID from cache
+    def get_id_from_cache(sku: str) -> Optional[int]:
+        product = sku_cache.get(sku)
+        return product.get("id") if product else None
+    
     # Build color code to name map from plan OR database
     raw_colors_from_plan = plan.get("colors", []) or []
     
@@ -235,7 +259,7 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
         parent_sku, base_sku = extract_parent_and_base(it)
         if not parent_sku or not base_sku:
             continue
-        base_id = await fetch_id_by_sku(client, base_sku)
+        base_id = get_id_from_cache(base_sku)
         if not base_id:
             logger.warning(f"Base {base_sku} not found for variation {it.get('sku')}")
             continue
@@ -279,13 +303,14 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
     parent_ids: Dict[str, int] = {}
     results = []
 
-    # Process BASE creates/updates - always upsert (create if not exists, update if exists)
+    # ==========================================
+    # STEP 1: CREATE BASE products (formato V com variações)
+    # ==========================================
     for item in items:
         entity = item.get("entity", "")
-        if not entity.startswith("BASE"):
-            continue
         action = item.get("action")
-        if action not in ["CREATE", "UPDATE"]:
+        
+        if entity != "BASE_PARENT" or action != "CREATE":
             continue
 
         sku = item["sku"]
@@ -293,48 +318,138 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
             sanitize_payload(item.get("computed_payload_preview", {})), sku
         )
         payload.setdefault("tipo", "P")
-        payload.setdefault("formato", payload.get("formato", "S"))
+        payload.setdefault("formato", "V")
+        
+        # Collect BASE_VARIATION children for this parent
+        base_variations = []
+        for var_item in items:
+            if var_item.get("entity") == "BASE_VARIATION":
+                var_parent = var_item.get("sku", "")[:len(sku)]
+                if var_parent == sku and var_item.get("action") == "CREATE":
+                    var_payload = var_item.get("computed_payload_preview", {})
+                    base_variations.append({
+                        "codigo": var_item.get("sku"),
+                        "nome": var_payload.get("nome", var_item.get("sku")),
+                        "preco": var_payload.get("preco", 0),
+                        "tipo": "P",
+                        "formato": "S",
+                        "situacao": "A",
+                        "variacao": var_payload.get("variacao", {})
+                    })
+        
+        payload["variacoes"] = base_variations
 
-        logger.info(f"Upserting base {sku} (action={action})")
+        logger.info(f"Creating base {sku} with {len(base_variations)} variations")
         created_id = await upsert_product(client, payload, sku)
         if created_id:
             base_ids[sku] = created_id
-            # Determine if it was created or updated
-            actual_action = "UPDATE" if action == "UPDATE" or await fetch_id_by_sku(client, sku) else "CREATE"
-            results.append({"sku": sku, "entity": "BASE", "action": actual_action, "id": created_id, "status": "success"})
+            results.append({"sku": sku, "entity": "BASE_PARENT", "action": "CREATE", "id": created_id, "status": "success"})
         else:
-            results.append({"sku": sku, "entity": "BASE", "action": action, "status": "failed"})
+            results.append({"sku": sku, "entity": "BASE_PARENT", "action": "CREATE", "status": "failed"})
 
-    # Process PARENT creates/updates - always upsert
+    # ==========================================
+    # STEP 2: CREATE PRODUTO (parent printed com variações e composições)
+    # ==========================================
     for item in items:
         entity = item.get("entity")
         action = item.get("action")
-        if entity != "PARENT_PRINTED" or action not in ["CREATE", "UPDATE"]:
+        
+        if entity != "PARENT_PRINTED" or action != "CREATE":
             continue
 
         sku = item["sku"]
         payload = normalize_parent_payload(item)
         payload["variacoes"] = children_map.get(sku, [])
         
-        logger.info(f"Upserting parent {sku} with {len(payload['variacoes'])} variations (action={action})")
+        logger.info(f"Creating produto {sku} with {len(payload['variacoes'])} variations with composition")
         created_id = await upsert_product(client, payload, sku)
         if created_id:
             parent_ids[sku] = created_id
-            variations_count = len(payload['variacoes'])
-            # Determine if it was created or updated
-            actual_action = "UPDATE" if action == "UPDATE" or await fetch_id_by_sku(client, sku) else "CREATE"
             results.append({
                 "sku": sku, 
-                "entity": "PARENT", 
-                "action": actual_action, 
+                "entity": "PARENT_PRINTED", 
+                "action": "CREATE", 
                 "id": created_id, 
                 "status": "success",
-                "variations_count": variations_count
+                "variations_count": len(payload['variacoes'])
             })
         else:
-            results.append({"sku": sku, "entity": "PARENT", "action": action, "status": "failed"})
+            results.append({"sku": sku, "entity": "PARENT_PRINTED", "action": "CREATE", "status": "failed"})
 
-    # Process UPDATEs and VARIATION creates
+    # ==========================================
+    # STEP 3: UPDATE PRODUTO (adiciona componentes às variações existentes)
+    # ==========================================
+    for item in items:
+        entity = item.get("entity")
+        action = item.get("action")
+        
+        if entity != "PARENT_PRINTED" or action != "UPDATE":
+            continue
+
+        sku = item["sku"]
+        existing_id = get_id_from_cache(sku)
+        if not existing_id:
+            logger.warning(f"Cannot update {sku} - not found in Bling")
+            results.append({"sku": sku, "entity": "PARENT_PRINTED", "action": "UPDATE", "status": "failed", "error": "Not found"})
+            continue
+        
+        try:
+            # Get existing product
+            existing_product = await client.get(f"/produtos/{existing_id}")
+            existing_variations = existing_product.get("data", {}).get("variacoes", [])
+            new_variations = children_map.get(sku, [])
+            
+            # Create map of new variations by codigo
+            new_var_map = {v.get("codigo"): v for v in new_variations if v.get("codigo")}
+            
+            merged_variations = []
+            for existing_var in existing_variations:
+                existing_code = existing_var.get("codigo")
+                if existing_code in new_var_map:
+                    # Update existing variation with structure/composition
+                    new_var = new_var_map[existing_code]
+                    updated_var = existing_var.copy()
+                    
+                    # Add composition structure (componentes)
+                    if "estrutura" in new_var:
+                        updated_var["estrutura"] = new_var["estrutura"]
+                    if "formato" in new_var:
+                        updated_var["formato"] = new_var["formato"]
+                    
+                    merged_variations.append(updated_var)
+                    del new_var_map[existing_code]
+                else:
+                    # Keep existing variation unchanged
+                    merged_variations.append(existing_var)
+            
+            # Add new variations that didn't exist before
+            merged_variations.extend(new_var_map.values())
+            
+            payload = normalize_parent_payload(item)
+            payload["variacoes"] = merged_variations
+            
+            logger.info(f"Updating produto {sku}: {len(merged_variations)} variations, adding components to {len([v for v in merged_variations if 'estrutura' in v])} variations")
+            
+            resp = await client.put(f"/produtos/{existing_id}", payload)
+            if resp:
+                parent_ids[sku] = existing_id
+                results.append({
+                    "sku": sku,
+                    "entity": "PARENT_PRINTED",
+                    "action": "UPDATE",
+                    "id": existing_id,
+                    "status": "success",
+                    "variations_count": len(merged_variations)
+                })
+            else:
+                results.append({"sku": sku, "entity": "PARENT_PRINTED", "action": "UPDATE", "status": "failed"})
+        except Exception as e:
+            logger.error(f"Error updating produto {sku}: {e}")
+            results.append({"sku": sku, "entity": "PARENT_PRINTED", "action": "UPDATE", "status": "failed", "error": str(e)})
+
+    # ==========================================
+    # STEP 4: Process remaining items (legacy code for other cases)
+    # ==========================================
     for item in items:
         action = item.get("action")
         entity = item.get("entity")
@@ -343,31 +458,17 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
         if action in ["NOOP", "BLOCKED"]:
             continue
             
-        # Skip items we already processed (BASE and PARENT)
+        # Skip items we already processed (BASE, PARENT, and VARIATIONS that belong to created/updated parents)
         if entity and (entity.startswith("BASE") or entity == "PARENT_PRINTED"):
+            continue
+        
+        # Skip VARIATION_PRINTED - they are handled together with their parent in STEP 2 and 3
+        if entity == "VARIATION_PRINTED":
             continue
 
         sku = item["sku"]
         existing = item.get("existing_product") or {}
-        prod_id = existing.get("id") or await fetch_id_by_sku(client, sku)
-        
-        # For VARIATION creates, we still need prod_id to be there
-        if not prod_id and action == "CREATE" and entity == "VARIATION_PRINTED":
-            logger.warning(f"Skipping variation {sku} - parent product not found")
-            results.append({"sku": sku, "action": action, "status": "failed", "error": "Product not found"})
-            continue
-        
-        if entity == "VARIATION_PRINTED":
-            parent_sku, base_sku = extract_parent_and_base(item)
-            parent_id = parent_ids.get(parent_sku) or await fetch_id_by_sku(client, parent_sku)
-            base_id = base_ids.get(base_sku) or await fetch_id_by_sku(client, base_sku)
-            if not parent_id or not base_id:
-                results.append({"sku": sku, "action": action, "status": "failed", "error": "Missing parent or base"})
-                continue
-            # Build composition payload for variation
-            payload = ensure_codigo(item.get("computed_payload_preview", {}), sku)
-        else:
-            payload = ensure_codigo(item.get("computed_payload_preview", {}), sku)
+        prod_id = existing.get("id") or get_id_from_cache(sku)
 
         # If product doesn't exist yet and action is CREATE or UPDATE, create it
         if not prod_id and action in ["CREATE", "UPDATE"]:
@@ -496,7 +597,7 @@ async def seed_missing_bases(plan: Dict[str, Any], db: Session = Depends(get_db)
             parent_to_variations.setdefault(parent_sku, [])
         
         if not parent_to_variations:
-            logger.warn("seed_bases_no_parents_found", variations=len(base_variation_skus))
+            logger.warning(f"seed_bases_no_parents_found - variations={len(base_variation_skus)}")
             return {
                 "results": [],
                 "summary": {
@@ -507,9 +608,7 @@ async def seed_missing_bases(plan: Dict[str, Any], db: Session = Depends(get_db)
                 }
             }
         
-        logger.info("seed_bases_start", 
-                   parents=len(parent_to_variations), 
-                   variations=len(base_variation_skus))
+        logger.info(f"seed_bases_start - parents={len(parent_to_variations)}, variations={len(base_variation_skus)}")
         
         # Process each parent with its variations
         for parent_sku, variations in parent_to_variations.items():

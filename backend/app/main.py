@@ -22,19 +22,11 @@ Base.metadata.create_all(bind=engine)
 async def lifespan(app: FastAPI):
     """Application startup and shutdown events."""
     
-    logger.info(
-        "application_startup",
-        request_id=str(uuid.uuid4()),
-        version=settings.VERSION,
-        debug=settings.DEBUG,
-    )
+    logger.info("application_startup - version=%s, debug=%s", settings.VERSION, settings.DEBUG)
     
     yield
     
-    logger.info(
-        "application_shutdown",
-        request_id=str(uuid.uuid4()),
-    )
+    logger.info("application_shutdown")
 
 
 def create_app() -> FastAPI:

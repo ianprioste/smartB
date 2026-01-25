@@ -104,9 +104,7 @@ class BlingClient:
             raise BlingAuthError("No refresh token available")
 
         logger.info(
-            "token_refresh_attempt",
-            request_id=self.request_id,
-            refresh_token_present=bool(self.refresh_token),
+            f"token_refresh_attempt - request_id={self.request_id}, refresh_token_present={bool(self.refresh_token)}"
         )
 
         try:
@@ -131,9 +129,7 @@ class BlingClient:
             self.token_expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
 
             logger.info(
-                "token_refresh_success",
-                request_id=self.request_id,
-                new_expiry=self.token_expires_at.isoformat(),
+                f"token_refresh_success - request_id={self.request_id}, new_expiry={self.token_expires_at.isoformat()}"
             )
             
             # Call callback to save new token
@@ -147,12 +143,9 @@ class BlingClient:
             except:
                 pass
             
+            status_code = e.response.status_code if hasattr(e, 'response') else None
             logger.error(
-                "token_refresh_failed",
-                request_id=self.request_id,
-                status_code=e.response.status_code if hasattr(e, 'response') else None,
-                error=str(e),
-                error_detail=error_detail,
+                f"token_refresh_failed - request_id={self.request_id}, status_code={status_code}, error={str(e)}, error_detail={error_detail}"
             )
             
             # Detect expired/invalid refresh token (400 Bad Request usually means invalid grant)
@@ -163,9 +156,7 @@ class BlingClient:
             raise BlingAuthError(f"Token refresh failed: {e}")
         except Exception as e:
             logger.error(
-                "token_refresh_failed_unexpected",
-                request_id=self.request_id,
-                error=str(e),
+                f"token_refresh_failed_unexpected - request_id={self.request_id}, error={str(e)}"
             )
             raise BlingAuthError(f"Token refresh failed: {e}")
 
@@ -189,9 +180,7 @@ class BlingClient:
                 # Check token before request
                 if self.access_token and self._is_token_expired():
                     logger.info(
-                        "token_expired_refreshing",
-                        request_id=self.request_id,
-                        path=path,
+                        f"token_expired_refreshing - request_id={self.request_id}, path={path}"
                     )
                     await self._refresh_token()
 
@@ -213,12 +202,7 @@ class BlingClient:
 
                 # Log request
                 logger.info(
-                    "api_request",
-                    request_id=self.request_id,
-                    method=method,
-                    path=path,
-                    status=response.status_code,
-                    attempt=attempt + 1,
+                    f"api_request - request_id={self.request_id}, method={method}, path={path}, status={response.status_code}, attempt={attempt + 1}"
                 )
 
                 # Handle rate limit and server errors
@@ -229,19 +213,14 @@ class BlingClient:
                 elif response.status_code == 404:
                     # Don't retry 404 - resource not found
                     logger.info(
-                        "api_resource_not_found",
-                        request_id=self.request_id,
-                        method=method,
-                        path=path,
+                        f"api_resource_not_found - request_id={self.request_id}, method={method}, path={path}"
                     )
                     raise BlingAPIError(f"Resource not found (404): {path}")
                 elif response.status_code == 401:
                     # Unauthorized - try refresh if token available
                     if self.access_token and self.refresh_token:
-                        logger.warn(
-                            "unauthorized_refreshing_token",
-                            request_id=self.request_id,
-                            path=path,
+                        logger.warning(
+                            f"unauthorized_refreshing_token - request_id={self.request_id}, path={path}"
                         )
                         await self._refresh_token()
                         continue  # Retry with new token
@@ -250,12 +229,7 @@ class BlingClient:
 
                 elif response.status_code >= 400:
                     logger.error(
-                        "api_client_error_body",
-                        request_id=self.request_id,
-                        method=method,
-                        path=path,
-                        status=response.status_code,
-                        body=response.text,
+                        f"api_client_error_body - request_id={self.request_id}, method={method}, path={path}, status={response.status_code}, body={response.text}"
                     )
                     response.raise_for_status()
 
@@ -265,11 +239,7 @@ class BlingClient:
             except BlingRefreshTokenExpiredError as e:
                 # Don't retry if refresh token is expired - fail fast
                 logger.error(
-                    "api_request_failed_refresh_token_expired",
-                    request_id=self.request_id,
-                    method=method,
-                    path=path,
-                    error=str(e),
+                    f"api_request_failed_refresh_token_expired - request_id={self.request_id}, method={method}, path={path}, error={str(e)}"
                 )
                 raise
             except Exception as e:
@@ -277,24 +247,13 @@ class BlingClient:
                 
                 if attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt)
-                    logger.warn(
-                        "api_request_retry",
-                        request_id=self.request_id,
-                        method=method,
-                        path=path,
-                        attempt=attempt + 1,
-                        delay_seconds=delay,
-                        error=str(e),
+                    logger.warning(
+                        f"api_request_retry - request_id={self.request_id}, method={method}, path={path}, attempt={attempt + 1}, delay_seconds={delay}, error={str(e)}"
                     )
                     await asyncio.sleep(delay)
                 else:
                     logger.error(
-                        "api_request_failed",
-                        request_id=self.request_id,
-                        method=method,
-                        path=path,
-                        attempts=max_retries,
-                        error=str(e),
+                        f"api_request_failed - request_id={self.request_id}, method={method}, path={path}, attempts={max_retries}, error={str(e)}"
                     )
 
         raise BlingAPIError(f"Request failed after {max_retries} attempts: {last_exception}")
