@@ -7,6 +7,7 @@ from uuid import UUID
 from app.infra.db import get_db
 from app.infra.bling_client import BlingClient, BlingRefreshTokenExpiredError
 from app.repositories.bling_token_repo import BlingTokenRepository
+from app.repositories.color_repo import ColorRepository
 from app.infra.logging import get_logger
 
 logger = get_logger(__name__)
@@ -53,9 +54,10 @@ def parse_variation_codes(var_sku: str, parent_sku: str) -> Dict[str, str]:
       CAMBRP  -> color=BR, size=P
       CAMBRGG -> color=BR, size=GG
       CAMBRXG -> color=BR, size=XG
+      CAMINFBR2 -> color=BR, size=2
     """
     suffix = var_sku[len(parent_sku):] if var_sku.startswith(parent_sku) else ""
-    size_codes = ["XG", "GG", "G", "M", "P"]  # order matters (longest first)
+    size_codes = ["XG", "GG", "G", "M", "P", "16", "14", "12", "10", "8", "6", "4", "2"]  # order matters (longest first)
     size = ""
     for code in size_codes:
         if suffix.endswith(code):
@@ -125,6 +127,20 @@ def extract_parent_and_base(item: Dict[str, Any]):
     return parent_sku, base_sku
 
 
+def parse_color_size_from_suffix(suffix: str) -> Dict[str, str]:
+    """Parse color and size from a suffix like BRP, BRGG, BRXG, BR2, BR4.
+    Order sizes longest-first to avoid partial matches.
+    """
+    size_codes = ["XG", "GG", "G", "M", "P", "16", "14", "12", "10", "8", "6", "4", "2"]
+    size = ""
+    for s in size_codes:
+        if suffix.endswith(s):
+            size = s
+            break
+    color = suffix[:-len(size)] if size else suffix
+    return {"color": color, "size": size}
+
+
 async def upsert_product(
     client: BlingClient, payload: Dict[str, Any], sku: str
 ) -> Optional[int]:
@@ -192,6 +208,24 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
             status_code=400,
             detail="Plan has no items to execute"
         )
+    
+    # Build color code to name map from plan OR database
+    raw_colors_from_plan = plan.get("colors", []) or []
+    
+    # If no colors in plan, fetch from database
+    if not raw_colors_from_plan:
+        db_colors = ColorRepository.list_active(db, TENANT_ID)
+        raw_colors_from_plan = [{"code": c.code, "name": c.name} for c in db_colors]
+    
+    color_map = {}
+    for c in raw_colors_from_plan:
+        if isinstance(c, dict):
+            code = c.get("code", "").upper()
+            name = c.get("name", code)
+            if code:
+                color_map[code] = name
+        elif isinstance(c, str):
+            color_map[c.upper()] = c
 
     # Build children map for parent variations
     children_map: Dict[str, list] = {}
@@ -211,10 +245,13 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
         variacao_data = preview.get("variacao") or {}
         variacao_nome = variacao_data.get("nome", "")
         sku = it.get("sku", "")
-        
-        # Generate unique variation name if empty or duplicate
+        # Build variation name from color/size if missing
         if not variacao_nome or variacao_nome == "Cor:Branca;Modelo:P":
-            variacao_nome = f"SKU:{sku}"
+            suffix = sku[len(parent_sku):] if parent_sku and sku.startswith(parent_sku) else sku
+            codes = parse_color_size_from_suffix(suffix)
+            color_code = codes['color']
+            color_name = color_map.get(color_code, color_code)
+            variacao_nome = f"Cor: {color_name};Tamanho: {codes['size']}"
         
         variacao_ordem = variacao_data.get("ordem", 0)
 
@@ -347,16 +384,11 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
 @router.post("/seed-bases")
 async def seed_missing_bases(plan: Dict[str, Any], db: Session = Depends(get_db)):
     """Create missing base products (plain, unprinted items)."""
-    print("=" * 80)
-    print("SEED-BASES ENDPOINT CALLED")
-    print("=" * 80)
-    
     client = await _get_bling_client(db)
     if not client:
         raise HTTPException(status_code=401, detail="Bling token not configured")
 
     seed_summary = plan.get("seed_summary", {})
-    print(f"SEED SUMMARY: {seed_summary}")
     if not seed_summary:
         raise HTTPException(status_code=400, detail="No seed_summary in plan")
 
@@ -371,28 +403,38 @@ async def seed_missing_bases(plan: Dict[str, Any], db: Session = Depends(get_db)
         # Build model and color lists from plan (ground truth for parent & variation parsing)
         raw_models = plan.get("models", []) or []
         model_codes = [m.get("code", "").upper() for m in raw_models if isinstance(m, dict) and m.get("code")]
+        
         raw_colors = plan.get("colors", []) or []
+        # If no colors in plan, fetch from database
+        if not raw_colors:
+            db_colors = ColorRepository.list_active(db, TENANT_ID)
+            raw_colors = [{"code": c.code, "name": c.name} for c in db_colors]
+        
         color_codes = []
+        color_map = {}
         for c in raw_colors:
             if isinstance(c, dict) and c.get("code"):
-                color_codes.append(c.get("code").upper())
+                code = c.get("code").upper()
+                color_codes.append(code)
+                color_map[code] = c.get("name", code)
             elif isinstance(c, str):
                 color_codes.append(c.upper())
-        print(f"MODELS FROM PLAN: {model_codes}")
-        print(f"COLORS FROM PLAN: {color_codes}")
+                color_map[c.upper()] = c
         
         # Group variations by parent = model code
         parent_to_variations: Dict[str, list] = {}
         
-        size_codes = ["XG", "GG", "G", "M", "P"]  # order matters
+        # Use both model codes from plan AND base_parent_missing as potential parents
+        all_potential_parents = list(set(model_codes + base_parent_skus))
+        
+        size_codes = ["XG", "GG", "G", "M", "P", "8", "6", "4", "2", "10", "12", "14", "16"]  # Include numeric sizes
         for var_sku in base_variation_skus:
-            print(f"\nFinding parent for variation: {var_sku}")
             parent_sku = None
 
-            # 1) Try direct match with model list
-            for model_code in model_codes:
-                if var_sku.startswith(model_code):
-                    parent_sku = model_code
+            # 1) Try direct match with potential parents (models + base_parent_missing)
+            for potential_parent in all_potential_parents:
+                if var_sku.startswith(potential_parent):
+                    parent_sku = potential_parent
                     break
 
             # 2) If not found, parse using size + color lists
@@ -411,27 +453,21 @@ async def seed_missing_bases(plan: Dict[str, Any], db: Session = Depends(get_db)
                             break
                     if matched_color:
                         parent_sku = prefix_without_size[: -len(matched_color)]
-                        print(f"  -> Parsed parent {parent_sku} from color/size (color={matched_color}, size={suffix_size})")
 
             # 3) Fallback assuming color length 2
             if not parent_sku:
                 for s in size_codes:
                     if var_sku.endswith(s) and len(var_sku) > len(s) + 2:
                         parent_sku = var_sku[: -(len(s) + 2)]
-                        print(f"  -> Fallback parent {parent_sku} (color length 2, size={s})")
                         break
 
             if parent_sku:
                 parent_to_variations.setdefault(parent_sku, []).append(var_sku)
-            else:
-                print(f"  -> No parent found for {var_sku}, skipping")
         
         # Ensure parents from base_parent_missing are present even if no variations
         for parent_sku in base_parent_skus:
             parent_to_variations.setdefault(parent_sku, [])
         
-        print(f"\nGROUPED BY PARENT: {parent_to_variations}")
-        print(f"Total parents to process: {len(parent_to_variations)}")
         if not parent_to_variations:
             logger.warn("seed_bases_no_parents_found", variations=len(base_variation_skus))
             return {
@@ -450,12 +486,8 @@ async def seed_missing_bases(plan: Dict[str, Any], db: Session = Depends(get_db)
         
         # Process each parent with its variations
         for parent_sku, variations in parent_to_variations.items():
-            print(f"\n>>> Processing parent: {parent_sku}")
-            print(f"    Found {len(variations)} variations: {variations}")
-            
             # Check if parent already exists
             existing_id = await fetch_id_by_sku(client, parent_sku)
-            print(f"    Existing ID: {existing_id}")
             
             if not variations:
                 # Simple product without variations
@@ -508,6 +540,8 @@ async def seed_missing_bases(plan: Dict[str, Any], db: Session = Depends(get_db)
                         for var_sku in variations:
                             if var_sku not in existing_var_skus:
                                 codes = parse_variation_codes(var_sku, parent_sku)
+                                color_code = codes['color']
+                                color_name = color_map.get(color_code, color_code)
                                 variacoes.append({
                                     "codigo": var_sku,
                                     "nome": f"Base {var_sku}",
@@ -516,7 +550,7 @@ async def seed_missing_bases(plan: Dict[str, Any], db: Session = Depends(get_db)
                                     "formato": "S",
                                     "situacao": "A",
                                     "variacao": {
-                                        "nome": f"Cor:{codes['color']} Tamanho:{codes['size']}",
+                                        "nome": f"Cor: {color_name};Tamanho: {codes['size']}",
                                         "ordem": len(variacoes)
                                     }
                                 })
@@ -549,6 +583,8 @@ async def seed_missing_bases(plan: Dict[str, Any], db: Session = Depends(get_db)
                     variacoes = []
                     for var_sku in variations:
                         codes = parse_variation_codes(var_sku, parent_sku)
+                        color_code = codes['color']
+                        color_name = color_map.get(color_code, color_code)
                         variacoes.append({
                             "codigo": var_sku,
                             "nome": f"Base {var_sku}",
@@ -557,7 +593,7 @@ async def seed_missing_bases(plan: Dict[str, Any], db: Session = Depends(get_db)
                             "formato": "S",
                             "situacao": "A",
                             "variacao": {
-                                "nome": f"Cor:{codes['color']} Tamanho:{codes['size']}",
+                                "nome": f"Cor: {color_name};Tamanho: {codes['size']}",
                                 "ordem": len(variacoes)
                             }
                         })
