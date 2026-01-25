@@ -969,7 +969,8 @@ function SeedResultsModal({ results, onClose }) {
   if (!results) return null;
 
   const { summary, results: items } = results;
-  const successItems = items.filter(r => r.status === 'created');
+  const createdItems = items.filter(r => r.status === 'created');
+  const updatedItems = items.filter(r => r.status === 'updated');
   const failedItems = items.filter(r => r.status === 'failed');
 
   return (
@@ -977,27 +978,36 @@ function SeedResultsModal({ results, onClose }) {
       <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '600px' }}>
         <h3>✅ Bases Criadas</h3>
         
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', marginBottom: '20px' }}>
-          <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: '8px', padding: '16px', textAlign: 'center' }}>
-            <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#16a34a' }}>
-              {summary.created_products}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '12px', marginBottom: '20px' }}>
+          <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: '8px', padding: '14px', textAlign: 'center' }}>
+            <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#16a34a' }}>
+              {summary.created_products || 0}
             </div>
-            <div style={{ color: '#15803d', marginTop: '4px', fontSize: '13px' }}>
-              {summary.created_products === 1 ? 'Produto' : 'Produtos'}
-            </div>
-          </div>
-          
-          <div style={{ background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '8px', padding: '16px', textAlign: 'center' }}>
-            <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#2563eb' }}>
-              {summary.created_variations}
-            </div>
-            <div style={{ color: '#1e40af', marginTop: '4px', fontSize: '13px' }}>
-              {summary.created_variations === 1 ? 'Variação' : 'Variações'}
+            <div style={{ color: '#15803d', marginTop: '2px', fontSize: '12px' }}>
+              Criados
             </div>
           </div>
           
-          <div style={{ background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: '8px', padding: '16px', textAlign: 'center' }}>
-            <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#d97706' }}>
+          <div style={{ background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '8px', padding: '14px', textAlign: 'center' }}>
+            <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#2563eb' }}>
+              {summary.updated_products || 0}
+            </div>
+            <div style={{ color: '#1e40af', marginTop: '2px', fontSize: '12px' }}>
+              Atualizados
+            </div>
+          </div>
+          
+          <div style={{ background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: '8px', padding: '14px', textAlign: 'center' }}>
+            <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#d97706' }}>
+              {summary.created_variations || 0}
+            </div>
+            <div style={{ color: '#b45309', marginTop: '2px', fontSize: '12px' }}>
+              Variações
+            </div>
+          </div>
+          
+          <div style={{ background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: '8px', padding: '14px', textAlign: 'center' }}>
+            <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#d97706' }}>
               {summary.total_items}
             </div>
             <div style={{ color: '#b45309', marginTop: '4px', fontSize: '13px' }}>
@@ -1006,11 +1016,11 @@ function SeedResultsModal({ results, onClose }) {
           </div>
         </div>
 
-        {successItems.length > 0 && (
+        {createdItems.length > 0 && (
           <div style={{ marginBottom: '20px' }}>
             <h4 style={{ marginBottom: '12px', color: '#059669' }}>Produtos Criados:</h4>
             <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
-              {successItems.map((item, idx) => (
+              {createdItems.map((item, idx) => (
                 <div 
                   key={idx} 
                   style={{
@@ -1025,6 +1035,32 @@ function SeedResultsModal({ results, onClose }) {
                   <div style={{ fontSize: '13px', color: '#6b7280' }}>
                     ID: {item.id}
                     {item.variations_count > 0 && ` • ${item.variations_count} variações`}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {updatedItems.length > 0 && (
+          <div style={{ marginBottom: '20px' }}>
+            <h4 style={{ marginBottom: '12px', color: '#2563eb' }}>Produtos Atualizados:</h4>
+            <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+              {updatedItems.map((item, idx) => (
+                <div 
+                  key={idx} 
+                  style={{
+                    padding: '12px',
+                    background: '#f9fafb',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '6px',
+                    marginBottom: '8px'
+                  }}
+                >
+                  <div style={{ fontWeight: '600', marginBottom: '4px' }}>{item.sku}</div>
+                  <div style={{ fontSize: '13px', color: '#6b7280' }}>
+                    ID: {item.id}
+                    {item.variations_count > 0 && ` • ${item.variations_count} variações adicionadas`}
                   </div>
                 </div>
               ))}

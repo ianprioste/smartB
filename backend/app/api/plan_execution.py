@@ -34,19 +34,54 @@ async def _get_bling_client(db: Session) -> Optional[BlingClient]:
     )
 
 
+async def find_parent_sku(client: BlingClient, variation_sku: str) -> Optional[str]:
+    """Find parent SKU by progressively removing characters from variation SKU."""
+    # Try removing characters from the end until we find an existing product
+    for i in range(2, len(variation_sku) - 1):
+        potential_parent = variation_sku[:-i]
+        existing_id = await fetch_id_by_sku(client, potential_parent)
+        if existing_id:
+            return potential_parent
+    return None
+
+
+def parse_variation_codes(var_sku: str, parent_sku: str) -> Dict[str, str]:
+    """Extract color and size from a variation SKU using the parent SKU as prefix.
+
+    Base SKU format: {MODEL}{COLOR}{SIZE}
+    Examples:
+      CAMBRP  -> color=BR, size=P
+      CAMBRGG -> color=BR, size=GG
+      CAMBRXG -> color=BR, size=XG
+    """
+    suffix = var_sku[len(parent_sku):] if var_sku.startswith(parent_sku) else ""
+    size_codes = ["XG", "GG", "G", "M", "P"]  # order matters (longest first)
+    size = ""
+    for code in size_codes:
+        if suffix.endswith(code):
+            size = code
+            break
+    color = suffix[:-len(size)] if size else suffix
+    return {"color": color, "size": size}
+
+
 async def fetch_id_by_sku(client: BlingClient, sku: str) -> Optional[int]:
     """Fetch product ID by SKU from Bling."""
-    resp = await client.get(
-        "/produtos",
-        params={"codigos[]": [sku], "tipo": "T", "limite": 1},
-    )
-    data = resp.get("data") if isinstance(resp, dict) else None
-    if not data:
+    try:
+        resp = await client.get(
+            "/produtos",
+            params={"codigos[]": sku, "tipo": "T", "limite": 1},
+        )
+        data = resp.get("data") if isinstance(resp, dict) else None
+        if not data:
+            return None
+        for item in data:
+            if item.get("codigo") == sku:
+                return item.get("id")
         return None
-    for item in data:
-        if item.get("codigo") == sku:
-            return item.get("id")
-    return None
+    except Exception as e:
+        logger.error(f"Error fetching product by SKU {sku}: {e}")
+        return None
 
 
 def ensure_codigo(payload: Dict[str, Any], sku: str) -> Dict[str, Any]:
@@ -111,10 +146,17 @@ async def upsert_product(
 
 async def create_product(client: BlingClient, payload: Dict[str, Any]) -> Optional[int]:
     """Create product directly without checking if exists. Returns product id."""
-    resp = await client.post("/produtos", payload)
-    if isinstance(resp, dict):
-        return resp.get("data", {}).get("id")
-    return None
+    try:
+        resp = await client.post("/produtos", payload)
+        if isinstance(resp, dict):
+            product_id = resp.get("data", {}).get("id")
+            if product_id:
+                return product_id
+        logger.error(f"Create product failed - unexpected response: {resp}")
+        return None
+    except Exception as e:
+        logger.error(f"Error creating product: {e}")
+        return None
 
 
 @router.post("/{plan_id}/execute")
@@ -305,11 +347,16 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
 @router.post("/seed-bases")
 async def seed_missing_bases(plan: Dict[str, Any], db: Session = Depends(get_db)):
     """Create missing base products (plain, unprinted items)."""
+    print("=" * 80)
+    print("SEED-BASES ENDPOINT CALLED")
+    print("=" * 80)
+    
     client = await _get_bling_client(db)
     if not client:
         raise HTTPException(status_code=401, detail="Bling token not configured")
 
     seed_summary = plan.get("seed_summary", {})
+    print(f"SEED SUMMARY: {seed_summary}")
     if not seed_summary:
         raise HTTPException(status_code=400, detail="No seed_summary in plan")
 
@@ -318,15 +365,110 @@ async def seed_missing_bases(plan: Dict[str, Any], db: Session = Depends(get_db)
         base_parent_skus = seed_summary.get("base_parent_missing", [])
         base_variation_skus = seed_summary.get("base_variation_missing", [])
         
-        logger.info(f"Creating {len(base_parent_skus)} base parents with {len(base_variation_skus)} variations")
-        logger.info(f"Creating {len(base_parent_skus)} base parents with {len(base_variation_skus)} variations")
+        print(f"PARENTS MISSING: {base_parent_skus}")
+        print(f"VARIATIONS MISSING: {base_variation_skus}")
         
-        # Create each base parent with its variations
+        # Build model and color lists from plan (ground truth for parent & variation parsing)
+        raw_models = plan.get("models", []) or []
+        model_codes = [m.get("code", "").upper() for m in raw_models if isinstance(m, dict) and m.get("code")]
+        raw_colors = plan.get("colors", []) or []
+        color_codes = []
+        for c in raw_colors:
+            if isinstance(c, dict) and c.get("code"):
+                color_codes.append(c.get("code").upper())
+            elif isinstance(c, str):
+                color_codes.append(c.upper())
+        print(f"MODELS FROM PLAN: {model_codes}")
+        print(f"COLORS FROM PLAN: {color_codes}")
+        
+        # Group variations by parent = model code
+        parent_to_variations: Dict[str, list] = {}
+        
+        size_codes = ["XG", "GG", "G", "M", "P"]  # order matters
+        for var_sku in base_variation_skus:
+            print(f"\nFinding parent for variation: {var_sku}")
+            parent_sku = None
+
+            # 1) Try direct match with model list
+            for model_code in model_codes:
+                if var_sku.startswith(model_code):
+                    parent_sku = model_code
+                    break
+
+            # 2) If not found, parse using size + color lists
+            if not parent_sku:
+                suffix_size = ""
+                for s in size_codes:
+                    if var_sku.endswith(s):
+                        suffix_size = s
+                        break
+                if suffix_size:
+                    prefix_without_size = var_sku[: -len(suffix_size)]
+                    matched_color = ""
+                    for c in color_codes:
+                        if prefix_without_size.endswith(c):
+                            matched_color = c
+                            break
+                    if matched_color:
+                        parent_sku = prefix_without_size[: -len(matched_color)]
+                        print(f"  -> Parsed parent {parent_sku} from color/size (color={matched_color}, size={suffix_size})")
+
+            # 3) Fallback assuming color length 2
+            if not parent_sku:
+                for s in size_codes:
+                    if var_sku.endswith(s) and len(var_sku) > len(s) + 2:
+                        parent_sku = var_sku[: -(len(s) + 2)]
+                        print(f"  -> Fallback parent {parent_sku} (color length 2, size={s})")
+                        break
+
+            if parent_sku:
+                parent_to_variations.setdefault(parent_sku, []).append(var_sku)
+            else:
+                print(f"  -> No parent found for {var_sku}, skipping")
+        
+        # Ensure parents from base_parent_missing are present even if no variations
         for parent_sku in base_parent_skus:
-            variations = [v for v in base_variation_skus if v.startswith(parent_sku) and v != parent_sku]
+            parent_to_variations.setdefault(parent_sku, [])
+        
+        print(f"\nGROUPED BY PARENT: {parent_to_variations}")
+        print(f"Total parents to process: {len(parent_to_variations)}")
+        if not parent_to_variations:
+            logger.warn("seed_bases_no_parents_found", variations=len(base_variation_skus))
+            return {
+                "results": [],
+                "summary": {
+                    "created_products": 0,
+                    "updated_products": 0,
+                    "created_variations": 0,
+                    "total_items": 0
+                }
+            }
+        
+        logger.info("seed_bases_start", 
+                   parents=len(parent_to_variations), 
+                   variations=len(base_variation_skus))
+        
+        # Process each parent with its variations
+        for parent_sku, variations in parent_to_variations.items():
+            print(f"\n>>> Processing parent: {parent_sku}")
+            print(f"    Found {len(variations)} variations: {variations}")
+            
+            # Check if parent already exists
+            existing_id = await fetch_id_by_sku(client, parent_sku)
+            print(f"    Existing ID: {existing_id}")
             
             if not variations:
                 # Simple product without variations
+                if existing_id:
+                    logger.info(f"Parent {parent_sku} already exists (id: {existing_id}), skipping")
+                    results.append({
+                        "sku": parent_sku, 
+                        "id": existing_id, 
+                        "status": "skipped",
+                        "message": "Already exists"
+                    })
+                    continue
+                
                 payload = {
                     "codigo": parent_sku,
                     "nome": f"Base {parent_sku}",
@@ -335,55 +477,128 @@ async def seed_missing_bases(plan: Dict[str, Any], db: Session = Depends(get_db)
                     "situacao": "A",
                     "preco": 0
                 }
+                
+                created_id = await create_product(client, payload)
+                if created_id:
+                    results.append({
+                        "sku": parent_sku, 
+                        "id": created_id, 
+                        "status": "created",
+                        "variations_count": 0
+                    })
+                    logger.info(f"✓ Created simple base {parent_sku} (id: {created_id})")
+                else:
+                    results.append({"sku": parent_sku, "status": "failed"})
+                    logger.error(f"✗ Failed to create base {parent_sku}")
             else:
                 # Parent with variations
-                variacoes = []
-                for var_sku in variations:
-                    color = var_sku.replace(parent_sku, "")
-                    variacoes.append({
-                        "codigo": var_sku,
-                        "nome": f"Base {var_sku}",
-                        "preco": 0,
+                if existing_id:
+                    # Get existing product to merge variations
+                    logger.info(f"Parent {parent_sku} exists (id: {existing_id}), fetching existing data")
+                    try:
+                        existing_product = await client.get(f"/produtos/{existing_id}")
+                        existing_data = existing_product.get("data", {})
+                        existing_variations = existing_data.get("variacoes", [])
+                        existing_var_skus = {v.get("codigo") for v in existing_variations if v.get("codigo")}
+                        
+                        logger.info(f"Existing variations for {parent_sku}: {existing_var_skus}")
+                        
+                        # Build new variations list (keep existing + add new)
+                        variacoes = list(existing_variations)  # Start with existing
+                        for var_sku in variations:
+                            if var_sku not in existing_var_skus:
+                                codes = parse_variation_codes(var_sku, parent_sku)
+                                variacoes.append({
+                                    "codigo": var_sku,
+                                    "nome": f"Base {var_sku}",
+                                    "preco": 0,
+                                    "tipo": "P",
+                                    "formato": "S",
+                                    "situacao": "A",
+                                    "variacao": {
+                                        "nome": f"Cor:{codes['color']} Tamanho:{codes['size']}",
+                                        "ordem": len(variacoes)
+                                    }
+                                })
+                        
+                        payload = {
+                            "codigo": parent_sku,
+                            "nome": existing_data.get("nome", f"Base {parent_sku}"),
+                            "tipo": "P",
+                            "formato": "V",
+                            "situacao": "A",
+                            "preco": existing_data.get("preco", 0),
+                            "variacoes": variacoes
+                        }
+                        
+                        logger.info(f"Updating {parent_sku} with {len(variacoes)} total variations")
+                        result = await client.put(f"/produtos/{existing_id}", payload)
+                        logger.info(f"PUT response for {parent_sku}: {result}")
+                        results.append({
+                            "sku": parent_sku, 
+                            "id": existing_id, 
+                            "status": "updated",
+                            "variations_count": len(variacoes) - len(existing_variations)
+                        })
+                        logger.info(f"✓ Updated parent {parent_sku}, added {len(variacoes) - len(existing_variations)} new variations")
+                    except Exception as e:
+                        logger.error(f"✗ Failed to update parent {parent_sku}: {e}", exc_info=True)
+                        results.append({"sku": parent_sku, "status": "failed", "error": str(e)})
+                else:
+                    # Create new parent with variations
+                    variacoes = []
+                    for var_sku in variations:
+                        codes = parse_variation_codes(var_sku, parent_sku)
+                        variacoes.append({
+                            "codigo": var_sku,
+                            "nome": f"Base {var_sku}",
+                            "preco": 0,
+                            "tipo": "P",
+                            "formato": "S",
+                            "situacao": "A",
+                            "variacao": {
+                                "nome": f"Cor:{codes['color']} Tamanho:{codes['size']}",
+                                "ordem": len(variacoes)
+                            }
+                        })
+                    
+                    payload = {
+                        "codigo": parent_sku,
+                        "nome": f"Base {parent_sku}",
                         "tipo": "P",
-                        "formato": "S",
+                        "formato": "V",
                         "situacao": "A",
-                        "variacao": {"nome": f"Cor:{color}", "ordem": len(variacoes)}
-                    })
-                
-                payload = {
-                    "codigo": parent_sku,
-                    "nome": f"Base {parent_sku}",
-                    "tipo": "P",
-                    "formato": "V",
-                    "situacao": "A",
-                    "preco": 0,
-                    "variacoes": variacoes
-                }
-            
-            created_id = await create_product(client, payload)
-            if created_id:
-                results.append({
-                    "sku": parent_sku, 
-                    "id": created_id, 
-                    "status": "created",
-                    "variations_count": len(variations) if variations else 0
-                })
-                logger.info(f"✓ Created base {parent_sku} (id: {created_id})")
-            else:
-                results.append({"sku": parent_sku, "status": "failed"})
-                logger.error(f"✗ Failed to create base {parent_sku}")
+                        "preco": 0,
+                        "variacoes": variacoes
+                    }
+                    
+                    logger.info(f"Creating new parent {parent_sku} with {len(variations)} variations")
+                    created_id = await create_product(client, payload)
+                    if created_id:
+                        results.append({
+                            "sku": parent_sku, 
+                            "id": created_id, 
+                            "status": "created",
+                            "variations_count": len(variations)
+                        })
+                        logger.info(f"✓ Created parent {parent_sku} (id: {created_id}) with {len(variations)} variations")
+                    else:
+                        results.append({"sku": parent_sku, "status": "failed"})
+                        logger.error(f"✗ Failed to create parent {parent_sku}")
         
         await client.client.aclose()
         
-        success_results = [r for r in results if r["status"] == "created"]
-        total_variations = sum(r.get("variations_count", 0) for r in success_results)
+        created_results = [r for r in results if r["status"] == "created"]
+        updated_results = [r for r in results if r["status"] == "updated"]
+        total_variations = sum(r.get("variations_count", 0) for r in created_results + updated_results)
         
         return {
             "results": results,
             "summary": {
-                "created_products": len(success_results),
+                "created_products": len(created_results),
+                "updated_products": len(updated_results),
                 "created_variations": total_variations,
-                "total_items": len(success_results) + total_variations
+                "total_items": len(created_results) + len(updated_results) + total_variations
             }
         }
     

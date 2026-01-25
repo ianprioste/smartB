@@ -6,8 +6,33 @@ from datetime import datetime, timedelta
 from app.settings import settings
 from app.infra.logging import get_logger
 import uuid
+import time
 
 logger = get_logger(__name__)
+
+
+class RateLimiter:
+    """
+    Rate limiter to respect Bling API limits:
+    - 3 requests per second
+    - 120,000 requests per day
+    """
+    def __init__(self, requests_per_second: float = 3.0):
+        self.min_interval = 1.0 / requests_per_second  # 0.333 seconds between requests
+        self.last_request_time = 0.0
+        self._lock = asyncio.Lock()
+    
+    async def acquire(self):
+        """Wait if necessary to respect rate limit."""
+        async with self._lock:
+            now = time.time()
+            time_since_last = now - self.last_request_time
+            
+            if time_since_last < self.min_interval:
+                wait_time = self.min_interval - time_since_last
+                await asyncio.sleep(wait_time)
+            
+            self.last_request_time = time.time()
 
 
 class BlingAuthError(Exception):
@@ -31,8 +56,12 @@ class BlingClient:
     - OAuth2 token management
     - Automatic token refresh
     - Exponential backoff retry
+    - Rate limiting (3 req/s)
     - Structured logging
     """
+    
+    # Global rate limiter shared across all instances
+    _rate_limiter = RateLimiter(requests_per_second=3.0)
 
     def __init__(self, access_token: Optional[str] = None, refresh_token: Optional[str] = None, token_expires_at: Optional[datetime] = None, on_token_refresh=None):
         """Initialize BlingClient.
@@ -154,6 +183,9 @@ class BlingClient:
 
         for attempt in range(max_retries):
             try:
+                # Rate limiting - wait if necessary
+                await self._rate_limiter.acquire()
+                
                 # Check token before request
                 if self.access_token and self._is_token_expired():
                     logger.info(
