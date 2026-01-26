@@ -33,10 +33,10 @@ class JobRepository:
         db.commit()
 
         logger.info(
-            "job_created",
-            job_id=str(job.id),
-            job_type=job_type,
-            tenant_id=str(tenant_id),
+            "job_created job_id=%s job_type=%s tenant_id=%s",
+            str(job.id),
+            job_type,
+            str(tenant_id),
         )
 
         return job
@@ -72,9 +72,9 @@ class JobRepository:
         db.commit()
 
         logger.info(
-            "job_status_updated",
-            job_id=str(job_id),
-            status=status.value,
+            "job_status_updated job_id=%s status=%s",
+            str(job_id),
+            status.value,
         )
 
         return job
@@ -99,9 +99,9 @@ class JobRepository:
         db.commit()
 
         logger.info(
-            "jobs_cleared",
-            deleted_jobs=deleted_jobs,
-            deleted_items=deleted_items,
+            "jobs_cleared deleted_jobs=%s deleted_items=%s",
+            deleted_jobs,
+            deleted_items,
         )
 
         return deleted_jobs
@@ -127,9 +127,9 @@ class JobItemRepository:
         db.commit()
 
         logger.info(
-            "job_item_created",
-            job_item_id=str(item.id),
-            job_id=str(job_id),
+            "job_item_created job_item_id=%s job_id=%s",
+            str(item.id),
+            str(job_id),
         )
 
         return item
@@ -173,9 +173,9 @@ class JobItemRepository:
         db.commit()
 
         logger.info(
-            "job_item_status_updated",
-            job_item_id=str(item_id),
-            status=status.value,
+            "job_item_status_updated job_item_id=%s status=%s",
+            str(item_id),
+            status.value,
         )
 
         return item

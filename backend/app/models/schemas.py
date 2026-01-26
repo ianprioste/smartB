@@ -196,6 +196,8 @@ class ModelTemplateCreateRequest(BaseModel):
     bling_product_id: int = Field(description="Bling product ID")
     bling_product_sku: Optional[str] = Field(None, description="Optional SKU from search result to avoid extra fetch")
     bling_product_name: Optional[str] = Field(None, description="Optional name from search result to avoid extra fetch")
+    
+    model_config = {"protected_namespaces": ()}
 
 
 class ModelTemplateResponse(BaseModel):
@@ -210,8 +212,7 @@ class ModelTemplateResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = {"protected_namespaces": (), "from_attributes": True}
 
 
 # Bling Product Search

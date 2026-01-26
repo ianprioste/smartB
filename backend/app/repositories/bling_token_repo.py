@@ -28,9 +28,9 @@ class BlingTokenRepository:
         ).first()
 
         logger.info(
-            "token_save",
-            tenant_id=str(tenant_id),
-            action="update" if existing_token else "create",
+            "token_save tenant_id=%s action=%s",
+            str(tenant_id),
+            "update" if existing_token else "create",
         )
 
         if existing_token:

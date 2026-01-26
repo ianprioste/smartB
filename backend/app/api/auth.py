@@ -43,10 +43,7 @@ async def bling_connect_redirect():
     }
     auth_url = f"{settings.BLING_AUTH_URL}?{urlencode(auth_params)}"
     
-    logger.info(
-        "oauth_authorize_redirect",
-        state=state,
-    )
+    logger.info("oauth_authorize_redirect state=%s", state)
     
     return RedirectResponse(url=auth_url)
 
@@ -76,10 +73,7 @@ async def get_bling_auth_url():
     }
     auth_url = f"{settings.BLING_AUTH_URL}?{urlencode(auth_params)}"
     
-    logger.info(
-        "oauth_authorize_url_generated",
-        state=state,
-    )
+    logger.info("oauth_authorize_url_generated state=%s", state)
     
     return BlingAuthUrlResponse(authorization_url=auth_url)
 
@@ -110,19 +104,13 @@ async def bling_callback(
     
     # Validate state
     if state not in _oauth_states:
-        logger.error(
-            "invalid_oauth_state",
-            state=state,
-        )
+        logger.error("invalid_oauth_state state=%s", state)
         raise HTTPException(status_code=400, detail="Invalid state parameter")
     
     # Clean up old states
     _oauth_states.pop(state, None)
     
-    logger.info(
-        "oauth_callback_received",
-        code_length=len(code) if code else 0,
-    )
+    logger.info("oauth_callback_received code_length=%s", len(code) if code else 0)
     
     try:
         # Exchange code for tokens using Basic Auth
@@ -145,8 +133,8 @@ async def bling_callback(
         
         # Log response for debugging
         logger.info(
-            "oauth_token_request_succeeded",
-            status_code=token_response.status_code,
+            "oauth_token_request_succeeded status_code=%s",
+            token_response.status_code,
         )
         
         token_response.raise_for_status()
@@ -161,10 +149,10 @@ async def bling_callback(
         expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
         
         logger.info(
-            "oauth_saving_token",
-            expires_in=expires_in,
-            expires_at=expires_at.isoformat(),
-            now=datetime.utcnow().isoformat(),
+            "oauth_saving_token expires_in=%s expires_at=%s now=%s",
+            expires_in,
+            expires_at.isoformat(),
+            datetime.utcnow().isoformat(),
         )
         
         BlingTokenRepository.create_or_update(
@@ -187,19 +175,16 @@ async def bling_callback(
 
     except httpx.HTTPError as e:
         logger.error(
-            "oauth_token_exchange_failed",
-            error=str(e),
-            response_status=getattr(e.response, 'status_code', 'N/A') if hasattr(e, 'response') else 'N/A',
+            "oauth_token_exchange_failed error=%s response_status=%s",
+            str(e),
+            getattr(e.response, 'status_code', 'N/A') if hasattr(e, 'response') else 'N/A',
         )
         raise HTTPException(
             status_code=400,
             detail="Failed to exchange code for tokens",
         )
     except Exception as e:
-        logger.error(
-            "oauth_callback_error",
-            error=str(e),
-        )
+        logger.error("oauth_callback_error error=%s", str(e))
         raise HTTPException(
             status_code=500,
             detail="Internal server error",
@@ -235,10 +220,10 @@ async def check_bling_token_status(db: Session = Depends(get_db)):
         now = datetime.utcnow()
         
         logger.info(
-            "checking_token_validity",
-            token_expires_at=token.expires_at.isoformat() if token.expires_at else "None",
-            now=now.isoformat(),
-            is_expired=token.expires_at <= now if token.expires_at else "no_expiry",
+            "checking_token_validity token_expires_at=%s now=%s is_expired=%s",
+            token.expires_at.isoformat() if token.expires_at else "None",
+            now.isoformat(),
+            token.expires_at <= now if token.expires_at else "no_expiry",
         )
         
         if token.expires_at and token.expires_at <= now:

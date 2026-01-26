@@ -10,7 +10,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
-from app.models import Base
+from app.infra.db import Base
 
 
 # Generic type variables

@@ -199,38 +199,3 @@ Content-Type: application/json
   "has_blockers": false
 }
 ```
-
-## ✅ Critérios de Sucesso
-
-A Sprint 3 está funcionando se:
-
-1. ✅ Consigo acessar o wizard
-2. ✅ Consigo preencher os 3 passos
-3. ✅ Preview é gerado sem erros
-4. ✅ SKUs aparecem corretamente formatados
-5. ✅ Status coloridos aparecem
-6. ✅ Bloqueios funcionam quando template falta
-7. ✅ Nenhum produto é criado no Bling
-8. ✅ Interface é clara e compreensível
-
-## 🔜 Próxima Sprint (Sprint 4)
-
-A Sprint 4 implementará:
-- Execução real do plano
-- Criação de produtos no Bling
-- Jobs assíncronos
-- Tracking de progresso
-
-**POR ENQUANTO:** O botão "Executar" não faz nada - isso é esperado!
-
-## 📞 Feedback
-
-Se encontrar problemas:
-1. Verificar console do navegador (F12)
-2. Verificar logs do backend
-3. Conferir configurações de modelos/cores/templates
-4. Verificar se Bling está acessível (se houver auth)
-
----
-
-**Bom teste! 🚀**

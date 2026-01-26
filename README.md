@@ -7,19 +7,17 @@ Integração SaaS com Bling ERP (API v3) com **Sprint 1 (Foundation) + Sprint 2 
 ## 📚 Documentação
 
 ### 🏃 Comece Aqui
+- **[INDEX.md](doc/INDEX.md)** - Hub da documentação
 - **[QUICKSTART.md](doc/QUICKSTART.md)** ⭐ - 5 minutos para rodar
 
-### 📖 Documentação por Sprint
-- **[SPRINT1_SUMMARY.md](doc/SPRINT1_SUMMARY.md)** - OAuth2, Jobs, Foundation ✅
-- **[SPRINT2_SUMMARY.md](doc/SPRINT2_SUMMARY.md)** - Modelos, Cores, Templates ✅
-
-### 📖 Documentação Técnica
-- **[README.md](doc/README.md)** - Visão geral completa
-- **[DEVELOPMENT.md](doc/DEVELOPMENT.md)** - Arquitetura
+### 📖 Guias Principais
+- **[ARCHITECTURE.md](doc/ARCHITECTURE.md)** - Visão completa e diagramas
+- **[API.md](doc/API.md)** - Endpoints, exemplos e erros
+- **[TESTING.md](doc/TESTING.md)** - Estratégia de testes e fixtures
+- **[DEPLOYMENT.md](doc/DEPLOYMENT.md)** - Dev/Staging/Produção e checklists
 - **[PROJECT_STRUCTURE.md](doc/PROJECT_STRUCTURE.md)** - Estrutura de código
-- **[EXAMPLES.md](doc/EXAMPLES.md)** - Exemplos práticos
-- **[CODE_REVIEW.md](doc/CODE_REVIEW.md)** - Análise e melhorias
-- **[WINDOWS_SETUP.md](doc/WINDOWS_SETUP.md)** - Windows específico
+- **[DEVELOPMENT.md](doc/DEVELOPMENT.md)** - Fluxo de desenvolvimento
+- **[WINDOWS_SETUP.md](doc/WINDOWS_SETUP.md)** - Setup para Windows
 
 ---
 
@@ -261,7 +259,7 @@ curl http://localhost:8000/jobs
 curl http://localhost:8000/jobs/{id}
 ```
 
-Mais exemplos em [EXAMPLES.md](doc/EXAMPLES.md)
+Para fluxos completos, consulte a coleção de exemplos nos endpoints em [doc/API.md](doc/API.md).
 
 ---
 

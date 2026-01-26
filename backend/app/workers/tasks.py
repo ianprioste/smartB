@@ -36,9 +36,9 @@ def process_job_task(self, job_id: str):
     
     try:
         logger.info(
-            "job_processing_started",
-            task_id=self.request.id,
-            job_id=str(job_id),
+            "job_processing_started task_id=%s job_id=%s",
+            self.request.id,
+            str(job_id),
         )
         
         # Get job
@@ -46,9 +46,9 @@ def process_job_task(self, job_id: str):
         
         if not job:
             logger.error(
-                "job_not_found_in_worker",
-                task_id=self.request.id,
-                job_id=str(job_id),
+                "job_not_found_in_worker task_id=%s job_id=%s",
+                self.request.id,
+                str(job_id),
             )
             return {"error": "Job not found"}
         
@@ -68,10 +68,10 @@ def process_job_task(self, job_id: str):
         )
         
         logger.info(
-            "job_item_created_by_worker",
-            task_id=self.request.id,
-            job_id=str(job_id),
-            item_id=str(item.id),
+            "job_item_created_by_worker task_id=%s job_id=%s item_id=%s",
+            self.request.id,
+            str(job_id),
+            str(item.id),
         )
         
         # Update item status to RUNNING
@@ -84,10 +84,10 @@ def process_job_task(self, job_id: str):
         
         # Simulate work (minimal for Sprint 1)
         logger.info(
-            "job_processing_work",
-            task_id=self.request.id,
-            job_id=str(job_id),
-            message="Simulating work for 2 seconds",
+            "job_processing_work task_id=%s job_id=%s message=%s",
+            self.request.id,
+            str(job_id),
+            "Simulating work for 2 seconds",
         )
         
         time.sleep(2)  # Simulate some processing
@@ -110,9 +110,9 @@ def process_job_task(self, job_id: str):
         )
         
         logger.info(
-            "job_processing_completed",
-            task_id=self.request.id,
-            job_id=str(job_id),
+            "job_processing_completed task_id=%s job_id=%s",
+            self.request.id,
+            str(job_id),
         )
         
         return {
@@ -122,10 +122,10 @@ def process_job_task(self, job_id: str):
     
     except Exception as e:
         logger.error(
-            "job_processing_error",
-            task_id=self.request.id,
-            job_id=str(job_id),
-            error=str(e),
+            "job_processing_error task_id=%s job_id=%s error=%s",
+            self.request.id,
+            str(job_id),
+            str(e),
         )
         
         # Update job to FAILED
@@ -138,10 +138,10 @@ def process_job_task(self, job_id: str):
             )
         except Exception as update_error:
             logger.error(
-                "failed_to_update_job_status_after_error",
-                task_id=self.request.id,
-                job_id=str(job_id),
-                error=str(update_error),
+                "failed_to_update_job_status_after_error task_id=%s job_id=%s error=%s",
+                self.request.id,
+                str(job_id),
+                str(update_error),
             )
         
         raise

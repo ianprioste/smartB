@@ -129,7 +129,7 @@ def _prepare_base_payload(sku: str, name: Optional[str] = None) -> Dict[str, Any
 
 def _prepare_parent_payload(item: Dict[str, Any]) -> Dict[str, Any]:
     """Build parent product payload (formato V)."""
-    computed = item.get("computed_payload_preview", {})
+    computed = item.get("computed_payload_preview") or {}
     payload = _prepare_base_payload(item["sku"], computed.get("nome"))
     
     payload["formato"] = "V"
@@ -170,7 +170,7 @@ def _build_variation_with_composition(
 ) -> Dict[str, Any]:
     """Build variation with composition (estructura)."""
     sku = variation_item.get("sku", "")
-    computed = variation_item.get("computed_payload_preview", {})
+    computed = variation_item.get("computed_payload_preview") or {}
     
     # Parse color/size from SKU
     suffix = sku[len(parent_sku):] if sku.startswith(parent_sku) else sku
@@ -354,7 +354,7 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
             if var_item.get("entity") == "BASE_VARIATION" and var_item.get("action") == "CREATE":
                 var_sku = var_item.get("sku", "")
                 if var_sku.startswith(sku):
-                    computed = var_item.get("computed_payload_preview", {})
+                    computed = var_item.get("computed_payload_preview") or {}
                     var = _build_variation_item(var_sku, computed, formato="S", variacao=computed.get("variacao", {}))
                     base_variations.append(var)
         

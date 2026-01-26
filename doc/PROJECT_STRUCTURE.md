@@ -13,14 +13,14 @@ smartBling-v2/                          ← 🌟 Raiz do Projeto
 │
 ├── doc/                                 ← 📚 Documentação
 │   ├── INDEX.md                         ← Mapa de documentação
-│   ├── README.md                        ← Overview
 │   ├── QUICKSTART.md                    ← 5 minutos
-│   ├── DEVELOPMENT.md                   ← Arquitetura
+│   ├── ARCHITECTURE.md                  ← Arquitetura
+│   ├── API.md                           ← Endpoints
+│   ├── TESTING.md                       ← Testes
+│   ├── DEPLOYMENT.md                    ← Deploy
 │   ├── PROJECT_STRUCTURE.md             ← Este arquivo
-│   ├── EXAMPLES.md                      ← Exemplos
-│   ├── SPRINT1_SUMMARY.md               ← Entrega
-│   ├── CODE_REVIEW.md                   ← Análise
-│   └── WINDOWS_SETUP.md                 ← Windows
+│   ├── WINDOWS_SETUP.md                 ← Windows
+│   └── archive/                         ← Materiais legados
 │
 ├── scripts/                             ← 🔧 Scripts
 │   ├── start_server.{bat,sh}

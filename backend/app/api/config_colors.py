@@ -79,7 +79,7 @@ def create_color(
             },
         )
     
-    color = ColorRepository.create(db, DEFAULT_TENANT_ID, request)
+    color = ColorRepository.create_from_request(db, DEFAULT_TENANT_ID, request)
     logger.info("color_created", extra={
         "tenant_id": str(DEFAULT_TENANT_ID),
         "color_id": str(color.id),
@@ -127,7 +127,7 @@ def update_color(
         "code": code,
     })
     
-    color = ColorRepository.update(db, DEFAULT_TENANT_ID, code, request)
+    color = ColorRepository.update_from_request(db, DEFAULT_TENANT_ID, code, request)
     if not color:
         logger.warning("color_not_found", extra={
             "tenant_id": str(DEFAULT_TENANT_ID),
@@ -159,7 +159,7 @@ def delete_color(
         "code": code,
     })
     
-    success = ColorRepository.delete(db, DEFAULT_TENANT_ID, code)
+    success = ColorRepository.soft_delete(db, DEFAULT_TENANT_ID, code)
     if not success:
         logger.warning("color_not_found", extra={
             "tenant_id": str(DEFAULT_TENANT_ID),

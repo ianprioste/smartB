@@ -14,31 +14,35 @@
 
 ### 2. **[../README.md](../README.md)**
    - Visão geral do projeto
-   - Arquitetura e tecnologias
-   - Endpoints principais
-   - Troubleshooting
+   - Principais links técnicos
+   - Troubleshooting rápido
 
 ---
 
 ## 📖 Documentação Técnica
 
-### 3. **[DEVELOPMENT.md](DEVELOPMENT.md)**
-   - Arquitetura detalhada
-   - Decisões de design
-   - Padrões utilizados (Clean Architecture, DDD)
-   - Fluxos de dados
+### 3. **[ARCHITECTURE.md](ARCHITECTURE.md)**
+   - Visão completa e diagramas
+   - Padrões (Repo, Multi-tenant, Services)
+   - Segurança, performance e escalabilidade
 
 ### 4. **[PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)**
-   - Estrutura completa de pastas
+   - Estrutura de pastas
    - Responsabilidade de cada camada
-   - Dependências entre módulos
    - Onde adicionar novos recursos
 
-### 5. **[EXAMPLES.md](EXAMPLES.md)**
-   - Exemplos práticos com cURL
-   - Fluxos end-to-end
-   - Casos de uso reais
-   - Payloads de exemplo
+### 5. **[API.md](API.md)**
+   - Endpoints, exemplos e erros
+   - Autenticação e rate limiting
+
+### 6. **[TESTING.md](TESTING.md)**
+   - Estratégia de testes
+   - Estrutura de pastas e fixtures
+   - Como rodar com cobertura
+
+### 7. **[DEPLOYMENT.md](DEPLOYMENT.md)**
+   - Dev/Staging/Prod
+   - Checklists de segurança e saúde
 
 ---
 
@@ -57,40 +61,9 @@
 
 ---
 
-## 📊 Sprints e Releases
+## 📊 Sprints e Status (arquivados)
 
-### 8. **[SPRINT1_SUMMARY.md](SPRINT1_SUMMARY.md)**
-   - Sprint 1: Foundation + OAuth2
-   - Jobs system
-   - Token management
-   - Features completas
-
-### 9. **[SPRINT2_SUMMARY.md](SPRINT2_SUMMARY.md)**
-   - Sprint 2: Governance
-   - Models, Colors, Templates
-   - Admin UI
-   - CRUD completo
-
-### 10. **[SPRINT3_SUMMARY.md](SPRINT3_SUMMARY.md)**
-   - Sprint 3: Plan Builder
-   - Dry-run preview
-   - Wizard UI
-   - Validações completas
-
-### 11. **[SPRINT3_TESTING.md](SPRINT3_TESTING.md)**
-   - Cenários de teste Sprint 3
-   - Casos de sucesso e bloqueio
-   - Dados de teste
-
----
-
-## 🔧 Manutenção e Melhorias
-
-### 12. **[../REFACTORING_RECOMMENDATIONS.md](../REFACTORING_RECOMMENDATIONS.md)** 🆕
-   - Análise completa do código
-   - Oportunidades de otimização
-   - Plano de refatoração
-   - Estimativas de esforço
+- Ver arquivos legados em `doc/archive/` (ex: SPRINT3_SUMMARY.md, SPRINT3_TESTING.md)
 
 ---
 
@@ -125,9 +98,13 @@ frontend/
 doc/
 ├── INDEX.md           # Este arquivo
 ├── QUICKSTART.md      # Setup rápido
-├── DEVELOPMENT.md     # Arquitetura
-├── SPRINTx_SUMMARY.md # Releases
-└── ...
+├── ARCHITECTURE.md    # Arquitetura
+├── API.md             # Endpoints
+├── TESTING.md         # Testes
+├── DEPLOYMENT.md      # Deploy
+├── PROJECT_STRUCTURE.md # Estrutura
+├── WINDOWS_SETUP.md   # Windows
+└── archive/           # Materiais legados
 ```
 
 ---
@@ -138,18 +115,16 @@ doc/
 1. [QUICKSTART.md](QUICKSTART.md) - Setup
 2. [../README.md](../README.md) - Visão geral
 3. [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) - Estrutura
-4. [DEVELOPMENT.md](DEVELOPMENT.md) - Arquitetura
+4. [ARCHITECTURE.md](ARCHITECTURE.md) - Arquitetura
 
 ### Para Contribuidores
-1. [DEVELOPMENT.md](DEVELOPMENT.md) - Padrões
-2. [GIT_COMMIT.md](GIT_COMMIT.md) - Commits
-3. [SPRINTx_SUMMARY.md](SPRINT3_SUMMARY.md) - Estado atual
-4. [../REFACTORING_RECOMMENDATIONS.md](../REFACTORING_RECOMMENDATIONS.md) - Melhorias
+1. [ARCHITECTURE.md](ARCHITECTURE.md) - Padrões
+2. [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) - Estrutura de código
+3. Histórico: ver `doc/archive/` (ex: SPRINT3_SUMMARY.md)
 
 ### Para Testes e QA
-1. [EXAMPLES.md](EXAMPLES.md) - Casos de uso
-2. [SPRINT3_TESTING.md](SPRINT3_TESTING.md) - Cenários de teste
-3. [QUICKSTART.md](QUICKSTART.md) - Como rodar
+1. [API.md](API.md) - Casos de uso e payloads
+2. [QUICKSTART.md](QUICKSTART.md) - Como rodar
 
 ---
 
@@ -157,7 +132,6 @@ doc/
 
 ### Documentação Consolidada (22/01/2026)
 - ✅ Removido duplicação (QUICKSTART_v2, doc/README)
-- ✅ Criado REFACTORING_RECOMMENDATIONS.md
 - ✅ Atualizado INDEX.md
 
 ### Próximas Sprints
@@ -194,18 +168,17 @@ Quer entender tudo?
     ↓
 Quer ver exemplos?
     ↓
-[EXAMPLES.md] ← Práticos
-    ↓
+[API.md] ← Exemplos e payloads
+   ↓
 Quer estudar arquitetura?
-    ↓
-[DEVELOPMENT.md] ← Design
-[PROJECT_STRUCTURE.md] ← Estructura
-    ↓
+   ↓
+[ARCHITECTURE.md] ← Design
+[PROJECT_STRUCTURE.md] ← Estrutura
+   ↓
 Quer histórico do Sprint?
-    ↓
-[SPRINT1_SUMMARY.md] ← Entrega
-[CODE_REVIEW.md] ← Análise
-    ↓
+   ↓
+Arquivos legados em `doc/archive/`
+   ↓
 Problema no Windows?
     ↓
 [WINDOWS_SETUP.md] ← Solução
@@ -215,11 +188,11 @@ Problema no Windows?
 
 ## 📋 Checklist de Leitura
 
-- [ ] **Novo desenvolvedor**: QUICKSTART → README → EXAMPLES
-- [ ] **Arquiteto**: DEVELOPMENT → PROJECT_STRUCTURE → CODE_REVIEW
+- [ ] **Novo desenvolvedor**: QUICKSTART → README → API
+- [ ] **Arquiteto**: ARCHITECTURE → PROJECT_STRUCTURE → API
 - [ ] **DevOps**: WINDOWS_SETUP → README (Troubleshooting)
-- [ ] **Reviewer**: SPRINT1_SUMMARY → CODE_REVIEW → DEVELOPMENT
-- [ ] **Usuário Final**: QUICKSTART → EXAMPLES
+- [ ] **Reviewer**: ARCHITECTURE
+- [ ] **Usuário Final**: QUICKSTART → API
 
 ---
 
@@ -229,11 +202,9 @@ Problema no Windows?
 |-----------|------|-------|
 | QUICKSTART | Rodar rápido | 5 min |
 | README | Overview | 10 min |
-| EXAMPLES | Ver na prática | 15 min |
-| DEVELOPMENT | Estudar design | 30 min |
+| API | Ver payloads/exemplos | 15 min |
+| ARCHITECTURE | Estudar design | 30 min |
 | PROJECT_STRUCTURE | Entender código | 20 min |
-| SPRINT1_SUMMARY | Histórico | 10 min |
-| CODE_REVIEW | Melhorias | 15 min |
 | WINDOWS_SETUP | Troubleshoot | 10 min |
 
 **Total: ~2h para estudo completo**
@@ -247,9 +218,9 @@ Problema no Windows?
 | Não consigo rodar | QUICKSTART (seção Troubleshooting) |
 | OAuth não funciona | README (seção Bling Setup) |
 | Worker não inicia | WINDOWS_SETUP |
-| Não entendo arquitetura | DEVELOPMENT + PROJECT_STRUCTURE |
-| Quero exemplos | EXAMPLES |
-| Quer saber o que foi feito | SPRINT1_SUMMARY |
+| Não entendo arquitetura | ARCHITECTURE + PROJECT_STRUCTURE |
+| Quero exemplos/payloads | API |
+| Quer saber o que foi feito | ARCHITECTURE |
 
 ---
 
@@ -257,18 +228,18 @@ Problema no Windows?
 
 ### Iniciante
 1. QUICKSTART (get it running)
-2. EXAMPLES (see it work)
+2. API (see it work)
 3. README (understand overview)
 
 ### Intermediário
-1. DEVELOPMENT (how it's designed)
+1. ARCHITECTURE (how it's designed)
 2. PROJECT_STRUCTURE (where's what)
-3. CODE_REVIEW (best practices)
+3. API (payloads)
 
 ### Avançado
-1. CODE_REVIEW (patterns)
-2. DEVELOPMENT (deep dive)
-3. Código-fonte em `/backend/app/`
+1. ARCHITECTURE (patterns)
+2. Código-fonte em `/backend/app/`
+3. API/TESTING para contratos e cobertura
 
 ---
 

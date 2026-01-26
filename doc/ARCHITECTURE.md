@@ -418,5 +418,3 @@ npm run dev                         # Frontend
 2. **FASE 3** - Documentação de API (OpenAPI/Swagger)
 3. **FASE 4** - Testes automatizados (80%+ coverage)
 4. **FASE 5** - CI/CD (GitHub Actions)
-
-Veja [REFACTORING_PLAN.md](../REFACTORING_PLAN.md) para detalhes completos.

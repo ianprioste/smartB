@@ -86,7 +86,7 @@ def create_model(
             },
         )
     
-    model = ModelRepository.create(db, DEFAULT_TENANT_ID, request)
+    model = ModelRepository.create_from_request(db, DEFAULT_TENANT_ID, request)
     logger.info("model_created", extra={
         "tenant_id": str(DEFAULT_TENANT_ID),
         "model_id": str(model.id),
@@ -134,7 +134,7 @@ def update_model(
         "code": code,
     })
     
-    model = ModelRepository.update(db, DEFAULT_TENANT_ID, code, request)
+    model = ModelRepository.update_from_request(db, DEFAULT_TENANT_ID, code, request)
     if not model:
         logger.warning("model_not_found", extra={
             "tenant_id": str(DEFAULT_TENANT_ID),
@@ -166,7 +166,7 @@ def delete_model(
         "code": code,
     })
     
-    success = ModelRepository.delete(db, DEFAULT_TENANT_ID, code)
+    success = ModelRepository.soft_delete(db, DEFAULT_TENANT_ID, code)
     if not success:
         logger.warning("model_not_found", extra={
             "tenant_id": str(DEFAULT_TENANT_ID),

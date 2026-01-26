@@ -81,10 +81,7 @@ async def create_job(
     
     request_id = str(uuid.uuid4())
     
-    logger.info(
-        "job_create_request",
-        job_type=request.type,
-    )
+    logger.info("job_create_request job_type=%s", request.type)
     
     try:
         job = JobRepository.create(
@@ -103,18 +100,15 @@ async def create_job(
         )
         
         logger.info(
-            "job_created_and_queued",
-            job_id=str(job.id),
-            job_type=request.type,
+            "job_created_and_queued job_id=%s job_type=%s",
+            str(job.id),
+            request.type,
         )
         
         return JobResponse.from_orm(job)
     
     except Exception as e:
-        logger.error(
-            "job_create_error",
-            error=str(e),
-        )
+        logger.error("job_create_error error=%s", str(e))
         raise HTTPException(status_code=500, detail="Failed to create job")
 
 
@@ -140,11 +134,7 @@ async def get_job(
         )
         raise HTTPException(status_code=404, detail="Job not found")
     
-    logger.info(
-        "job_retrieved",
-        job_id=str(job_id),
-        status=job.status.value,
-    )
+    logger.info("job_retrieved job_id=%s status=%s", str(job_id), job.status.value)
     
     return JobResponse.from_orm(job)
 
