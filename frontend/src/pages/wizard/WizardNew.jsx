@@ -1,11 +1,23 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { Layout } from '../../components/Layout';
 import '../../styles/wizard.css';
 
 const API_BASE = 'http://localhost:8000';
+const PRODUCTS_CACHE_KEY = 'smartb_products_catalog_v1';
+const PRODUCTS_CACHE_SAVED_AT_KEY = 'smartb_products_catalog_saved_at_v1';
 
 export function WizardNewPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const editProduct = location.state?.editProduct || null;
+
+  // Derive print code: first segment of SKU before '-', e.g. "STPV-CAM" → "STPV"
+  const initialPrintCode = editProduct
+    ? (editProduct.codigo || '').split('-')[0].toUpperCase()
+    : '';
+  const initialPrintName = editProduct ? (editProduct.nome || '') : '';
+
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -15,15 +27,21 @@ export function WizardNewPage() {
   const [colors, setColors] = useState([]);
 
   // Form data
-  const [printInfo, setPrintInfo] = useState({ code: '', name: '' });
+  const [printInfo, setPrintInfo] = useState({ code: initialPrintCode, name: initialPrintName });
   const [selectedModels, setSelectedModels] = useState([]); // [{code, name, allowed_sizes, selected_sizes}]
   const [selectedColors, setSelectedColors] = useState([]);
   const [overrides, setOverrides] = useState({
     short_description: '',
     complement_description: '',
     complement_same_as_short: true,
-    category_override_id: '',
+    ncm: '6109.10.00',
+    cest: '28.059.00',
   });
+
+  const [stockType, setStockType] = useState('virtual');
+  const shortDescriptionRef = useRef(null);
+  const shortDescriptionHtmlRef = useRef(null);
+  const [showHtmlEditor, setShowHtmlEditor] = useState(false);
 
   // Plan data
   const [plan, setPlan] = useState(null);
@@ -33,10 +51,149 @@ export function WizardNewPage() {
   const [pendingRetryAfterReauth, setPendingRetryAfterReauth] = useState(false);
   const [seedResultsModal, setSeedResultsModal] = useState(null);
   const [executionResultsModal, setExecutionResultsModal] = useState(null);
+  const [lastExecutedPlan, setLastExecutedPlan] = useState(null);
 
   useEffect(() => {
     fetchConfiguration();
   }, []);
+
+  useEffect(() => {
+    if (!editProduct?.id) return;
+    fetchEditProductDetails(editProduct.id);
+  }, [editProduct?.id]);
+
+  function extractApiErrorMessage(errorData, fallbackMessage) {
+    if (!errorData) return fallbackMessage;
+    if (typeof errorData === 'string') return errorData;
+    if (typeof errorData.detail === 'string') return errorData.detail;
+    if (typeof errorData.detail?.message === 'string') return errorData.detail.message;
+    if (typeof errorData.message === 'string') return errorData.message;
+    if (typeof errorData.error === 'string') return errorData.error;
+    return fallbackMessage;
+  }
+
+  function extractAffectedSkusFromExecutionResult(executionResult) {
+    const skus = new Set();
+    const resultItems = executionResult?.results || [];
+
+    resultItems.forEach((item) => {
+      if (item?.sku) skus.add(String(item.sku).toUpperCase());
+      if (Array.isArray(item?.removed_variations)) {
+        item.removed_variations.forEach((sku) => {
+          if (sku) skus.add(String(sku).toUpperCase());
+        });
+      }
+    });
+
+    return Array.from(skus);
+  }
+
+  function readProductsCacheSafe() {
+    try {
+      const raw = localStorage.getItem(PRODUCTS_CACHE_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  async function fetchCatalogPage(page, limit, includeHierarchy, q = '') {
+    const params = new URLSearchParams({
+      page: String(page),
+      limit: String(limit),
+      include_hierarchy: includeHierarchy ? 'true' : 'false',
+    });
+    if (q) params.set('q', q);
+
+    const resp = await fetch(`${API_BASE}/bling/products/list/all?${params}`);
+    if (!resp.ok) throw new Error('Falha ao sincronizar cache local de produtos');
+    return await resp.json();
+  }
+
+  async function refreshProductsCacheIncremental(targetSkus) {
+    const normalizedSkus = Array.from(
+      new Set((targetSkus || []).map((s) => String(s || '').trim().toUpperCase()).filter(Boolean))
+    );
+    if (normalizedSkus.length === 0) return 0;
+
+    const currentCatalog = readProductsCacheSafe();
+    const byId = new Map(currentCatalog.map((item) => [item.id, item]));
+
+    // Process sequentially to avoid triggering Bling rate limits on burst updates.
+    for (const sku of normalizedSkus) {
+      try {
+        const data = await fetchCatalogPage(1, 100, false, sku);
+        const foundItems = (data?.items || []).filter(
+          (item) => String(item?.codigo || '').trim().toUpperCase() === sku
+        );
+
+        if (foundItems.length > 0) {
+          foundItems.forEach((item) => {
+            if (item?.id != null) byId.set(item.id, item);
+          });
+        } else {
+          // SKU no longer exists in Bling: remove stale cache entry.
+          const idsToDelete = [];
+          byId.forEach((item, id) => {
+            if (String(item?.codigo || '').trim().toUpperCase() === sku) {
+              idsToDelete.push(id);
+            }
+          });
+          idsToDelete.forEach((id) => byId.delete(id));
+        }
+      } catch (err) {
+        console.warn(`Falha no refresh incremental do SKU ${sku}:`, err);
+      }
+    }
+
+    const catalog = Array.from(byId.values());
+    localStorage.setItem(PRODUCTS_CACHE_KEY, JSON.stringify(catalog));
+    localStorage.setItem(PRODUCTS_CACHE_SAVED_AT_KEY, new Date().toISOString());
+    return catalog.length;
+  }
+
+  async function refreshProductsCacheFromBling(options = {}) {
+    const targetSkus = options?.skus || [];
+    const existingCatalog = readProductsCacheSafe();
+
+    if (targetSkus.length > 0 && existingCatalog.length > 0) {
+      return await refreshProductsCacheIncremental(targetSkus);
+    }
+
+    const pageSize = 100;
+    const firstData = await fetchCatalogPage(1, pageSize, false);
+    const firstItems = firstData.items || [];
+    const totalCatalogPages = Math.ceil((firstData.total || 0) / pageSize);
+
+    const restItems = [];
+    for (let pageNum = 2; pageNum <= totalCatalogPages; pageNum += 1) {
+      let data = null;
+      try {
+        data = await fetchCatalogPage(pageNum, pageSize, false);
+      } catch (e) {
+        continue;
+      }
+      restItems.push(...(data.items || []));
+    }
+
+    const dedupedById = new Map();
+    [...firstItems, ...restItems].forEach((item) => dedupedById.set(item.id, item));
+    const catalog = Array.from(dedupedById.values());
+
+    localStorage.setItem(PRODUCTS_CACHE_KEY, JSON.stringify(catalog));
+    localStorage.setItem(PRODUCTS_CACHE_SAVED_AT_KEY, new Date().toISOString());
+    return catalog.length;
+  }
+
+  useEffect(() => {
+    if (!shortDescriptionRef.current || showHtmlEditor) return;
+    if (document.activeElement === shortDescriptionRef.current) return;
+    const nextHtml = overrides.short_description || '';
+    if (shortDescriptionRef.current.innerHTML !== nextHtml) {
+      shortDescriptionRef.current.innerHTML = nextHtml;
+    }
+  }, [overrides.short_description, showHtmlEditor]);
 
   async function fetchConfiguration() {
     try {
@@ -53,22 +210,35 @@ export function WizardNewPage() {
       const modelsData = await modelsResp.json();
       const colorsData = await colorsResp.json();
 
-      console.log('Models data:', modelsData);
-      console.log('Colors data:', colorsData);
-
       const activeModels = modelsData.filter(m => m.is_active);
       const activeColors = colorsData.filter(c => c.is_active);
-      
-      console.log('Active models:', activeModels);
-      console.log('Active colors:', activeColors);
 
       setModels(activeModels);
       setColors(activeColors);
     } catch (err) {
-      console.error('Error fetching configuration:', err);
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function fetchEditProductDetails(productId) {
+    try {
+      const resp = await fetch(`${API_BASE}/bling/products/${productId}`);
+      if (!resp.ok) return;
+
+      const detail = await resp.json();
+      const existingDescription =
+        detail.descricao_curta || detail.descricaoCurta || detail.descricao || '';
+
+      if (existingDescription) {
+        setOverrides(prev => ({
+          ...prev,
+          short_description: existingDescription,
+        }));
+      }
+    } catch (err) {
+      // Keep wizard usable even if detail fetch fails.
     }
   }
 
@@ -125,6 +295,56 @@ export function WizardNewPage() {
     }
   }
 
+  function simplifyShortDescriptionHtml() {
+    if (!shortDescriptionRef.current) return;
+    const html = shortDescriptionRef.current.innerHTML;
+    setOverrides(prev => ({ ...prev, short_description: html || '' }));
+  }
+
+  function handleShortDescriptionInput() {
+    simplifyShortDescriptionHtml();
+  }
+
+  function handleShortDescriptionKeyDown(event) {
+    // Allow all keys including Enter for multi-line input
+  }
+
+  function handleShortDescriptionPaste(event) {
+    // Allow paste with formatting
+    setTimeout(() => {
+      simplifyShortDescriptionHtml();
+    }, 0);
+  }
+
+  function applyShortDescriptionFormat(command) {
+    if (!shortDescriptionRef.current) return;
+    shortDescriptionRef.current.focus();
+    try {
+      document.execCommand(command, false, null);
+    } catch (e) {}
+    simplifyShortDescriptionHtml();
+  }
+
+  function toggleHtmlEditor() {
+    if (!showHtmlEditor) {
+      // Switch to HTML mode - sync from visual to HTML textarea
+      if (shortDescriptionHtmlRef.current) {
+        shortDescriptionHtmlRef.current.value = overrides.short_description || '';
+      }
+    } else {
+      // Switch back to visual mode - sync from HTML textarea to visual
+      if (shortDescriptionHtmlRef.current) {
+        const html = shortDescriptionHtmlRef.current.value || '';
+        setOverrides(prev => ({ ...prev, short_description: html }));
+      }
+    }
+    setShowHtmlEditor(!showHtmlEditor);
+  }
+
+  function handleHtmlChange(event) {
+    setOverrides(prev => ({ ...prev, short_description: event.target.value }));
+  }
+
   async function generatePlanRequest(autoSeedBasePlain = false) {
     const payload = {
       print: {
@@ -139,17 +359,17 @@ export function WizardNewPage() {
       colors: selectedColors,
       overrides: {
         short_description: overrides.short_description || null,
-        complement_description: overrides.complement_same_as_short
-          ? null
-          : overrides.complement_description || null,
-        complement_same_as_short: overrides.complement_same_as_short,
-        category_override_id: overrides.category_override_id
-          ? parseInt(overrides.category_override_id, 10)
-          : null,
+        complement_description: null,
+        complement_same_as_short: true,
+        category_override_id: null,
+        ncm: overrides.ncm || null,
+        cest: overrides.cest || null,
       },
       options: {
         auto_seed_base_plain: autoSeedBasePlain,
+        stock_type: stockType,
       },
+      edit_parent_id: editProduct ? editProduct.id : null,
     };
 
     const resp = await fetch(`${API_BASE}/plans/new`, {
@@ -159,7 +379,7 @@ export function WizardNewPage() {
     });
 
     if (!resp.ok) {
-      const errorData = await resp.json();
+      const errorData = await resp.json().catch(() => ({}));
       
       // Check for token expiration
       if (resp.status === 401 && errorData.detail?.code === 'BLING_TOKEN_EXPIRED') {
@@ -169,12 +389,10 @@ export function WizardNewPage() {
         throw error;
       }
       
-      throw new Error(errorData.detail?.message || 'Falha ao gerar plano');
+      throw new Error(extractApiErrorMessage(errorData, 'Falha ao gerar plano'));
     }
 
     const planData = await resp.json();
-    console.log('DEBUG FRONTEND: Plan received from API:', planData);
-    console.log('DEBUG FRONTEND: Items with action:', planData.items.map(i => ({ sku: i.sku, action: i.action })).slice(0, 15));
     return planData;
   }
 
@@ -272,13 +490,25 @@ export function WizardNewPage() {
   }
 
   return (
+    <Layout>
     <div className="wizard-container">
       <header className="wizard-header">
-        <h1>🪄 Assistente de Novo Cadastro</h1>
-        <button className="btn-secondary" onClick={() => navigate('/admin/models')}>
+        <h1>{editProduct ? '✏️ Assistente de Atualização' : '🪄 Assistente de Novo Cadastro'}</h1>
+        <button className="btn-secondary" onClick={() => navigate(editProduct ? '/products' : '/admin/models')}>
           ← Voltar
         </button>
       </header>
+
+      {editProduct && (
+        <div style={{
+          background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: 8,
+          padding: '12px 18px', marginBottom: 16, fontSize: 13, color: '#1e40af',
+        }}>
+          ✏️ <strong>Editando produto:</strong> {editProduct.nome}
+          {' '}<code style={{ background: '#dbeafe', padding: '2px 6px', borderRadius: 4 }}>{editProduct.codigo}</code>
+          {' '}— O código da estampa foi extraído automaticamente do SKU. Ajuste se necessário antes de continuar.
+        </div>
+      )}
 
       <div className="wizard-progress">
         <div className={`wizard-step ${step >= 1 ? 'active' : ''} ${step > 1 ? 'completed' : ''}`}>
@@ -334,50 +564,120 @@ export function WizardNewPage() {
             />
           </div>
           <div className="form-grid">
-            <div className="form-group">
-              <label>Descrição Curta (opcional)</label>
-              <textarea
-                value={overrides.short_description}
-                onChange={e => setOverrides({ ...overrides, short_description: e.target.value })}
-                placeholder="Ex: Santa Teresinha | Camiseta | Marca"
-                rows={2}
-              />
-            </div>
-            <div className="form-group">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={overrides.complement_same_as_short}
-                  onChange={e =>
-                    setOverrides({
-                      ...overrides,
-                      complement_same_as_short: e.target.checked,
-                      // If toggled on, clear manual complement to avoid confusion
-                      ...(e.target.checked ? { complement_description: '' } : {}),
-                    })
-                  }
-                />{' '}
-                Usar descrição curta também como complementar
-              </label>
-              {!overrides.complement_same_as_short && (
+            <div className="form-group form-group-full">
+              <div className="description-header">
+                <label>Descrição</label>
+                <button
+                  type="button"
+                  className="html-toggle-btn"
+                  onClick={toggleHtmlEditor}
+                  title={showHtmlEditor ? 'Voltar para editor visual' : 'Editar HTML diretamente'}
+                >
+                  &lt;/&gt;
+                </button>
+              </div>
+              {!showHtmlEditor ? (
+                <div className="richtext-editor">
+                  <div className="richtext-toolbar">
+                    <button type="button" onClick={() => applyShortDescriptionFormat('undo')} title="Desfazer">↶</button>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('redo')} title="Refazer">↷</button>
+                    <div className="richtext-divider"></div>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('bold')} title="Negrito">B</button>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('italic')} title="Itálico"><em>I</em></button>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('underline')} title="Sublinhado"><u>U</u></button>
+                    <div className="richtext-divider"></div>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('insertUnorderedList')} title="Lista com Marcadores">• Lista</button>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('insertOrderedList')} title="Lista Numerada">1. Lista</button>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('indent')} title="Aumentar Recuo">&gt;&gt;</button>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('outdent')} title="Diminuir Recuo">&lt;&lt;</button>
+                    <div className="richtext-divider"></div>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('justifyLeft')} title="Alinhar à Esquerda">⬅</button>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('justifyCenter')} title="Centralizar">⬍</button>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('justifyRight')} title="Alinhar à Direita">➡</button>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('justifyFull')} title="Justificar">⬌</button>
+                  </div>
+                  <div
+                    ref={shortDescriptionRef}
+                    className="richtext-input"
+                    contentEditable
+                    suppressContentEditableWarning
+                    onInput={handleShortDescriptionInput}
+                    onKeyDown={handleShortDescriptionKeyDown}
+                    onPaste={handleShortDescriptionPaste}
+                  />
+                </div>
+              ) : (
                 <textarea
-                  value={overrides.complement_description}
-                  onChange={e => setOverrides({ ...overrides, complement_description: e.target.value })}
-                  placeholder="Descrição complementar"
-                  rows={2}
+                  ref={shortDescriptionHtmlRef}
+                  className="html-editor"
+                  value={overrides.short_description || ''}
+                  onChange={handleHtmlChange}
+                  placeholder="Digite o HTML aqui..."
+                  spellCheck="false"
                 />
               )}
+              <small>A descrição complementar e a categoria sempre usarão o template padrão</small>
             </div>
-            <div className="form-group">
-              <label>Categoria (ID) opcional</label>
-              <input
-                type="number"
-                value={overrides.category_override_id}
-                onChange={e => setOverrides({ ...overrides, category_override_id: e.target.value })}
-                placeholder="ID da categoria no Bling"
-                min="0"
-              />
-              <small>Deixe em branco para manter a categoria do template</small>
+            <div className="ncm-cest-row">
+              <div className="form-group">
+                <label>NCM (opcional)</label>
+                <input
+                  type="text"
+                  value={overrides.ncm}
+                  onChange={e => setOverrides({ ...overrides, ncm: e.target.value })}
+                  placeholder="Ex: 61091000"
+                  maxLength={16}
+                />
+                <small>Aplicado em produtos e subprodutos criados/atualizados</small>
+              </div>
+              <div className="form-group">
+                <label>CEST (opcional)</label>
+                <input
+                  type="text"
+                  value={overrides.cest}
+                  onChange={e => setOverrides({ ...overrides, cest: e.target.value })}
+                  placeholder="Ex: 28.038.00"
+                  maxLength={16}
+                />
+                <small>Aplicado em produtos e subprodutos criados/atualizados</small>
+              </div>
+            </div>
+          </div>
+
+          <div className="stock-type-group">
+            <h3 className="stock-type-title">Tipo de Estoque</h3>
+            <div className="stock-type-grid">
+              <label className={`stock-type-card ${stockType === 'virtual' ? 'selected' : ''}`}>
+                <input
+                  type="radio"
+                  name="stockType"
+                  value="virtual"
+                  checked={stockType === 'virtual'}
+                  onChange={() => setStockType('virtual')}
+                />
+                <div className="stock-type-content">
+                  <div className="stock-type-header">
+                    <strong>Estoque Virtual</strong>
+                  </div>
+                  <small>Composicao com base lisa (formato E)</small>
+                </div>
+              </label>
+
+              <label className={`stock-type-card ${stockType === 'physical' ? 'selected' : ''}`}>
+                <input
+                  type="radio"
+                  name="stockType"
+                  value="physical"
+                  checked={stockType === 'physical'}
+                  onChange={() => setStockType('physical')}
+                />
+                <div className="stock-type-content">
+                  <div className="stock-type-header">
+                    <strong>Estoque Fisico</strong>
+                  </div>
+                  <small>Variacao simples herdando dados do pai (formato S)</small>
+                </div>
+              </label>
             </div>
           </div>
         </div>
@@ -474,11 +774,23 @@ export function WizardNewPage() {
               });
               
               if (!response.ok) {
-                const error = await response.json();
-                throw new Error(error.detail || 'Erro ao executar plano');
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(extractApiErrorMessage(errorData, 'Erro ao executar plano'));
               }
               
               const result = await response.json();
+              const affectedSkus = extractAffectedSkusFromExecutionResult(result);
+
+              // Keep product base aligned with Bling after execute (creates/updates).
+              setLoadingStatus('Sincronizando base local de produtos...');
+              try {
+                await refreshProductsCacheFromBling({ skus: affectedSkus });
+              } catch (syncErr) {
+                // Do not block success flow if cache sync fails.
+                console.warn('Falha ao sincronizar cache local de produtos:', syncErr);
+              }
+
+              setLastExecutedPlan(currentPlan);
               setLoadingStatus('');
               setGeneratingPlan(false);
               setExecutionResultsModal(result);
@@ -600,10 +912,66 @@ export function WizardNewPage() {
       {executionResultsModal && (
         <ExecutionResultsModal 
           results={executionResultsModal} 
+          executedPlan={lastExecutedPlan}
+          onRecreateFailedUpdates={async (failedUpdateSkus) => {
+            if (!lastExecutedPlan || !failedUpdateSkus?.length) return null;
+
+            const confirmed = window.confirm(
+              `Nao foi possivel atualizar ${failedUpdateSkus.length} produto(s). Deseja apagar esses produtos e cria-los novamente?`
+            );
+            if (!confirmed) return null;
+
+            setGeneratingPlan(true);
+            setLoadingStatus('Apagando e recriando produtos com falha de atualizacao...');
+
+            try {
+              const resp = await fetch('/api/plans/recreate-failed-updates', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  plan: lastExecutedPlan,
+                  failed_update_skus: failedUpdateSkus,
+                }),
+              });
+
+              const data = await resp.json().catch(() => ({}));
+              if (!resp.ok) {
+                throw new Error(data?.detail?.message || data?.detail || data?.message || 'Falha ao recriar produtos');
+              }
+
+              const recreated = data?.summary?.recreated || 0;
+              const failed = data?.summary?.failed || 0;
+              const inPlaceRecovered = (data?.results || []).filter(
+                (r) => r?.status === 'recreated' && r?.recovery_mode === 'in_place_update'
+              ).length;
+              const affectedSkus = extractAffectedSkusFromExecutionResult(data);
+
+              // Re-sync local product cache after delete/recreate flow.
+              try {
+                await refreshProductsCacheFromBling({ skus: affectedSkus });
+              } catch (syncErr) {
+                console.warn('Falha ao sincronizar cache local de produtos:', syncErr);
+              }
+
+              if (inPlaceRecovered > 0) {
+                alert(
+                  `Recriacao concluida: ${recreated} recuperado(s), ${failed} falha(s). ` +
+                  `${inPlaceRecovered} item(ns) foram recuperados no mesmo ID porque o Bling bloqueou a exclusao.`
+                );
+              } else {
+                alert(`Recriacao concluida: ${recreated} recriado(s), ${failed} falha(s).`);
+              }
+              return data;
+            } finally {
+              setGeneratingPlan(false);
+              setLoadingStatus('');
+            }
+          }}
           onClose={() => setExecutionResultsModal(null)} 
         />
       )}
     </div>
+    </Layout>
   );
 }
 
@@ -877,6 +1245,8 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan, o
               <th>Tipo</th>
               <th>Ação</th>
               <th>Preço</th>
+              <th>NCM</th>
+              <th>CEST</th>
               <th>Desc. Curta</th>
               <th>Dependências</th>
               <th>Template</th>
@@ -906,6 +1276,8 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan, o
                 <td>
                   {item.computed_payload_preview?.preco ?? item.overrides_used?.price ?? '-'}
                 </td>
+                <td>{item.computed_payload_preview?.ncm || '-'}</td>
+                <td>{item.computed_payload_preview?.cest || '-'}</td>
                 <td className="desc-cell">
                   {item.computed_payload_preview?.descricaoCurta || '-'}
                 </td>
@@ -1111,8 +1483,13 @@ function SeedResultsModal({ results, onClose }) {
           <div style={{ marginBottom: '20px' }}>
             <h4 style={{ marginBottom: '12px', color: '#dc2626' }}>Falhas:</h4>
             {failedItems.map((item, idx) => (
-              <div key={idx} style={{ padding: '8px', color: '#dc2626' }}>
-                • {item.sku}
+              <div key={idx} style={{ padding: '8px', color: '#dc2626', marginBottom: '8px' }}>
+                <div style={{ fontWeight: '600' }}>• {item.sku}</div>
+                {item.error && (
+                  <div style={{ fontSize: '12px', color: '#991b1b', marginTop: '4px', marginLeft: '16px', background: '#fee2e2', padding: '6px', borderRadius: '4px' }}>
+                    {item.error}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -1128,7 +1505,7 @@ function SeedResultsModal({ results, onClose }) {
   );
 }
 
-function ExecutionResultsModal({ results, onClose }) {
+function ExecutionResultsModal({ results, executedPlan, onRecreateFailedUpdates, onClose }) {
   if (!results) return null;
 
   const { summary, results: items } = results;
@@ -1137,16 +1514,36 @@ function ExecutionResultsModal({ results, onClose }) {
   
   const createdItems = successItems.filter(r => r.action === 'CREATE');
   const updatedItems = successItems.filter(r => r.action === 'UPDATE');
+  const failedUpdateItems = failedItems.filter(r => r.action === 'UPDATE');
+
+  // Derive accurate counters from executed items when backend summary is absent/incomplete.
+  const createdParentsCount = summary?.created_parents ??
+    successItems.filter(r => r.action === 'CREATE' && r.entity === 'PARENT_PRINTED').length;
+  const createdBasesCount = summary?.created_bases ??
+    successItems.filter(r => r.action === 'CREATE' && r.entity === 'BASE_PARENT').length;
+  const createdVariationsCount = summary?.created_variations ??
+    createdItems.reduce((acc, item) => acc + Number(item.variations_count || 0), 0);
+
+  const updatedParentsCount = summary?.updated_parents ??
+    successItems.filter(r => r.action === 'UPDATE' && r.entity === 'PARENT_PRINTED').length;
+  const updatedVariationsCount = summary?.updated_variations ??
+    updatedItems.reduce((acc, item) => acc + Number(item.variations_count || 0), 0);
+  const removedVariationsCount =
+    summary?.removed_variations ??
+    updatedItems.reduce((acc, item) => acc + Number(item.removed_variations_count || 0), 0);
+  const updatedDisplayCount = (updatedVariationsCount > 0)
+    ? updatedVariationsCount
+    : updatedParentsCount;
 
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '700px' }}>
         <h3>✅ Plano Executado com Sucesso</h3>
         
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '10px', marginBottom: '20px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '10px', marginBottom: '20px' }}>
           <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
             <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#16a34a' }}>
-              {summary.created_parents || 0}
+              {createdParentsCount}
             </div>
             <div style={{ color: '#15803d', marginTop: '2px', fontSize: '11px' }}>
               Pais
@@ -1155,7 +1552,7 @@ function ExecutionResultsModal({ results, onClose }) {
           
           <div style={{ background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
             <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#2563eb' }}>
-              {summary.created_variations || 0}
+              {createdVariationsCount}
             </div>
             <div style={{ color: '#1e40af', marginTop: '2px', fontSize: '11px' }}>
               Variações
@@ -1164,7 +1561,7 @@ function ExecutionResultsModal({ results, onClose }) {
           
           <div style={{ background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
             <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#d97706' }}>
-              {summary.created_bases || 0}
+              {createdBasesCount}
             </div>
             <div style={{ color: '#b45309', marginTop: '2px', fontSize: '11px' }}>
               Bases
@@ -1173,10 +1570,19 @@ function ExecutionResultsModal({ results, onClose }) {
           
           <div style={{ background: '#f3e8ff', border: '1px solid #c084fc', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
             <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#9333ea' }}>
-              {updatedItems.length}
+              {updatedDisplayCount}
             </div>
             <div style={{ color: '#7e22ce', marginTop: '2px', fontSize: '11px' }}>
               Atualizados
+            </div>
+          </div>
+
+          <div style={{ background: '#fff7ed', border: '1px solid #fdba74', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
+            <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#c2410c' }}>
+              {removedVariationsCount}
+            </div>
+            <div style={{ color: '#9a3412', marginTop: '2px', fontSize: '11px' }}>
+              Removidas
             </div>
           </div>
           
@@ -1238,10 +1644,29 @@ function ExecutionResultsModal({ results, onClose }) {
                     marginBottom: '6px'
                   }}
                 >
-                  <span style={{ fontWeight: '600' }}>{item.sku}</span>
-                  <span style={{ fontSize: '12px', color: '#6b7280', marginLeft: '8px' }}>
-                    {item.entity}
-                  </span>
+                  <div>
+                    <span style={{ fontWeight: '600' }}>{item.sku}</span>
+                    <span style={{ fontSize: '12px', color: '#6b7280', marginLeft: '8px' }}>
+                      {item.entity}
+                    </span>
+                    <div style={{ fontSize: '12px', color: '#1e3a8a', marginTop: '4px' }}>
+                      Mantidas/selecionadas: {Number(item.selected_variations_count || item.variations_count || 0)}
+                      {' • '}
+                      Removidas: {Number(item.removed_variations_count || 0)}
+                      {' • '}
+                      Deletadas no Bling: {Number(item.removed_variations_deleted_count || 0)}
+                    </div>
+                    {Array.isArray(item.removed_variations) && item.removed_variations.length > 0 && (
+                      <div style={{ fontSize: '11px', color: '#9a3412', marginTop: '4px' }}>
+                        Excluídas: {item.removed_variations.join(', ')}
+                      </div>
+                    )}
+                    {Array.isArray(item.removed_variations_delete_failed) && item.removed_variations_delete_failed.length > 0 && (
+                      <div style={{ fontSize: '11px', color: '#991b1b', marginTop: '4px', background: '#fee2e2', borderRadius: '4px', padding: '4px 6px' }}>
+                        Falha ao excluir: {item.removed_variations_delete_failed.join(' | ')}
+                      </div>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -1251,13 +1676,93 @@ function ExecutionResultsModal({ results, onClose }) {
         {failedItems.length > 0 && (
           <div style={{ marginBottom: '20px' }}>
             <h4 style={{ marginBottom: '12px', color: '#dc2626' }}>✗ Falhas ({failedItems.length}):</h4>
-            <div style={{ background: '#fef2f2', borderRadius: '6px', padding: '12px', maxHeight: '150px', overflowY: 'auto' }}>
-              {failedItems.map((item, idx) => (
-                <div key={idx} style={{ padding: '6px 0', color: '#dc2626', fontSize: '14px' }}>
-                  • {item.sku} <span style={{ fontSize: '12px', color: '#991b1b' }}>({item.entity})</span>
-                </div>
-              ))}
+            <div style={{ background: '#fef2f2', borderRadius: '6px', padding: '12px', maxHeight: '300px', overflowY: 'auto' }}>
+              {failedItems.map((item, idx) => {
+                const isOrphan = item.error_type === 'orphan_composition_variations';
+                const errorText = item.error || item.error_message || item.message || item.detail;
+                const isDuplicateCodeError =
+                  typeof errorText === 'string' &&
+                  errorText.toLowerCase().includes('já foi cadastrado');
+                return (
+                  <div key={idx} style={{ padding: '10px 0', fontSize: '14px', borderBottom: '1px solid #fecaca' }}>
+                    <div style={{ color: '#dc2626' }}>
+                      • {item.sku} <span style={{ fontSize: '12px', color: '#991b1b' }}>({item.entity})</span>
+                    </div>
+                    {isOrphan ? (
+                      <div style={{ marginTop: '8px', marginLeft: '16px', background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: '6px', padding: '10px' }}>
+                        <div style={{ fontWeight: 600, color: '#9a3412', marginBottom: '6px', fontSize: '13px' }}>
+                          ⚠️ Variações com composição inválida no Bling
+                        </div>
+                        <div style={{ color: '#7c2d12', fontSize: '12px', marginBottom: '8px' }}>
+                          O produto <strong>{item.sku}</strong> possui {item.orphan_variations?.length || 'algumas'} variação(ões) que foram criadas
+                          em execuções anteriores com formato "Com composição" mas sem componentes definidos.
+                          O Bling não aceita atualizar o produto enquanto essas variações existirem.
+                        </div>
+                        <div style={{ color: '#7c2d12', fontSize: '12px', marginBottom: '8px' }}>
+                          <strong>Como corrigir:</strong>
+                          <ol style={{ margin: '6px 0 0 16px', padding: 0 }}>
+                            <li>Acesse o produto <strong>{item.sku}</strong> (ID: {item.bling_product_id}) no Bling</li>
+                            <li>Vá em Variações e localize as variações problemáticas</li>
+                            <li>Exclua as variações listadas abaixo</li>
+                            <li>Execute o plano novamente</li>
+                          </ol>
+                        </div>
+                        {item.orphan_variations?.length > 0 && (
+                          <div style={{ background: '#fee2e2', borderRadius: '4px', padding: '6px 8px' }}>
+                            <div style={{ fontSize: '11px', color: '#991b1b', fontWeight: 600, marginBottom: '4px' }}>Variações a excluir no Bling:</div>
+                            {item.orphan_variations.map((v, i) => (
+                              <div key={i} style={{ fontSize: '12px', color: '#7f1d1d', fontFamily: 'monospace' }}>• {v}</div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      errorText && (
+                        <div style={{ marginTop: '4px', marginLeft: '16px' }}>
+                          <div style={{ fontSize: '12px', color: '#991b1b', background: '#fee2e2', padding: '6px', borderRadius: '4px' }}>
+                            {errorText}
+                          </div>
+                          {isDuplicateCodeError && (
+                            <div style={{ marginTop: '6px', fontSize: '12px', color: '#7f1d1d', background: '#fff7ed', border: '1px solid #fed7aa', padding: '8px', borderRadius: '4px' }}>
+                              Esse erro indica conflito de SKU no Bling.
+                              Verifique se o produto pai já existe e se as variações já estão cadastradas.
+                              Nesse caso, o fluxo correto costuma ser atualizar o pai existente em vez de criar um novo pai com os mesmos SKUs de variação.
+                            </div>
+                          )}
+                        </div>
+                      )
+                    )}
+                  </div>
+                );
+              })}
             </div>
+
+            {failedUpdateItems.length > 0 && executedPlan && onRecreateFailedUpdates && (
+              <div style={{ marginTop: '12px' }}>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const skus = failedUpdateItems.map(item => item.sku).filter(Boolean);
+                    const recreateResult = await onRecreateFailedUpdates(skus);
+                    if (recreateResult) {
+                      onClose();
+                    }
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    border: '1px solid #f59e0b',
+                    borderRadius: '6px',
+                    background: '#f59e0b',
+                    color: '#fff',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Apagar e recriar itens com falha de atualizacao
+                </button>
+              </div>
+            )}
           </div>
         )}
 

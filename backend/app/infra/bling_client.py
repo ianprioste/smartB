@@ -98,6 +98,34 @@ class BlingClient:
         buffer = timedelta(minutes=5)
         return datetime.utcnow() >= (self.token_expires_at - buffer)
 
+    def _extract_response_error_detail(self, response: httpx.Response) -> str:
+        """Extract best available error detail from Bling response."""
+        try:
+            data = response.json()
+        except Exception:
+            data = None
+
+        if isinstance(data, dict):
+            if isinstance(data.get("detail"), str):
+                return data["detail"]
+            if isinstance(data.get("message"), str):
+                return data["message"]
+            if isinstance(data.get("error"), str):
+                return data["error"]
+            if isinstance(data.get("error"), dict):
+                err = data["error"]
+                if isinstance(err.get("message"), str):
+                    return err["message"]
+                if isinstance(err.get("description"), str):
+                    return err["description"]
+                if isinstance(err.get("type"), str):
+                    return err["type"]
+
+        text = (response.text or "").strip()
+        if text:
+            return text
+        return "Sem detalhes retornados pela API"
+
     async def _refresh_token(self) -> None:
         """Refresh access token using refresh_token."""
         if not self.refresh_token:
@@ -228,10 +256,13 @@ class BlingClient:
                         raise BlingAuthError("Unauthorized (401) - No valid refresh token available")
 
                 elif response.status_code >= 400:
+                    detail = self._extract_response_error_detail(response)
                     logger.error(
                         f"api_client_error_body - request_id={self.request_id}, method={method}, path={path}, status={response.status_code}, body={response.text}"
                     )
-                    response.raise_for_status()
+                    raise BlingAPIError(
+                        f"Client error ({response.status_code}) on {path}: {detail}"
+                    )
 
                 response.raise_for_status()
                 return response
@@ -241,6 +272,9 @@ class BlingClient:
                 logger.error(
                     f"api_request_failed_refresh_token_expired - request_id={self.request_id}, method={method}, path={path}, error={str(e)}"
                 )
+                raise
+            except BlingAPIError:
+                # Don't retry explicit client/business errors
                 raise
             except Exception as e:
                 last_exception = e

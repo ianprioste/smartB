@@ -173,7 +173,7 @@ def delete_template(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid template ID format")
     
-    success = ModelTemplateRepository.delete(db, DEFAULT_TENANT_ID, template_uuid)
+    success = ModelTemplateRepository.delete_by_id(db, DEFAULT_TENANT_ID, template_uuid)
     if not success:
         logger.warning("template_not_found", extra={
             "tenant_id": str(DEFAULT_TENANT_ID),

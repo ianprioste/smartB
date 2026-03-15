@@ -9,7 +9,7 @@ from app.infra.logging import get_logger, RequestIdMiddleware
 from app.models.database import Base
 from app.infra.db import engine
 from app.models.schemas import HealthResponse
-from app.api import auth, jobs, config_models, config_colors, config_templates, bling_products, plans, plan_execution
+from app.api import auth, jobs, config_models, config_colors, config_templates, bling_products, plans, plan_execution, dashboard
 
 logger = get_logger(__name__)
 
@@ -60,6 +60,7 @@ def create_app() -> FastAPI:
     app.include_router(bling_products.router)
     app.include_router(plans.router)
     app.include_router(plan_execution.router)
+    app.include_router(dashboard.router)
     
     # Health check endpoint
     @app.get("/health", response_model=HealthResponse)

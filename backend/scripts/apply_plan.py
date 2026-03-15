@@ -85,12 +85,41 @@ def sanitize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
-def normalize_parent_payload(item: Dict[str, Any]) -> Dict[str, Any]:
-    payload = ensure_codigo(sanitize_payload(item.get("computed_payload_preview", {})), item["sku"])
-    payload.setdefault("tipo", "P")
-    # Create as product with variations (V) - Bling will create all children at once
+def normalize_parent_payload(item: Dict[str, Any], existing_product: Dict[str, Any] = None) -> Dict[str, Any]:
+    """Build parent payload, preserving existing product data (especially images/links).
+    
+    Strategy: Start with existing product and only update specific fields.
+    """
+    preview = item.get("computed_payload_preview", {})
+    sku = item["sku"]
+    
+    # When updating, start with existing product to preserve ALL metadata
+    if existing_product:
+        payload = dict(existing_product)  # Copy all existing fields
+    else:
+        payload = ensure_codigo(sanitize_payload(preview), sku)
+    
+    # Update these specific fields
+    payload["codigo"] = sku
+    payload["tipo"] = "P"
     payload["formato"] = "V"
-    payload.pop("variacoes", None)
+    
+    # Only update if provided in preview (don't override if not provided)
+    if "nome" in preview:
+        payload["nome"] = preview["nome"]
+    if "descricaoCurta" in preview:
+        payload["descricaoCurta"] = preview.get("descricaoCurta", "")
+    if "descricaoComplementar" in preview:
+        payload["descricaoComplementar"] = preview.get("descricaoComplementar", "")
+    if "preco" in preview:
+        payload["preco"] = preview.get("preco", 0)
+    
+    # Remove fields that should not be in update payload
+    payload.pop("id", None)
+    payload.pop("dataCriacao", None)
+    payload.pop("dataAlteracao", None)
+    payload.pop("variacoes", None)  # Will be set separately
+    
     return payload
 
 
@@ -260,7 +289,15 @@ async def main(argv):
             continue
 
         if item.get("entity") == "PARENT_PRINTED":
-            payload = normalize_parent_payload(item)
+            # Fetch full existing product to preserve images
+            try:
+                existing_full = await client.get(f"/produtos/{prod_id}")
+                existing_product_data = existing_full.get("data", {}) if isinstance(existing_full, dict) else existing
+            except Exception as e:
+                print(f"[UPDATE] {sku} -> warning: could not fetch existing product: {e}")
+                existing_product_data = existing
+            
+            payload = normalize_parent_payload(item, existing_product_data)
             # Do NOT include variacoes on update - children maintain their own linkage
         elif item.get("entity") == "VARIATION_PRINTED":
             parent_sku, base_sku = extract_parent_and_base(item)

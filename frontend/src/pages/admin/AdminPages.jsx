@@ -1,48 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
+import { Layout } from '../../components/Layout';
 
 const API_BASE = 'http://localhost:8000';
-
-export function AdminLayout({ children }) {
-  const location = useLocation();
-
-  return (
-    <div className="admin-layout">
-      <header className="admin-header">
-        <h1>✨ smartBling Admin</h1>
-        <nav className="admin-nav">
-          <a 
-            href="/admin/models" 
-            className={location.pathname === '/admin/models' ? 'active' : ''}
-          >
-            📐 Modelos
-          </a>
-          <a 
-            href="/admin/colors" 
-            className={location.pathname === '/admin/colors' ? 'active' : ''}
-          >
-            🎨 Cores
-          </a>
-          <a 
-            href="/admin/templates" 
-            className={location.pathname === '/admin/templates' ? 'active' : ''}
-          >
-            📋 Templates
-          </a>
-          <a 
-            href="/wizard/new" 
-            className="btn-wizard"
-          >
-            🪄 Novo Cadastro
-          </a>
-        </nav>
-      </header>
-      <main className="admin-main">
-        {children}
-      </main>
-    </div>
-  );
-}
 
 // ============ Models Page ============
 
@@ -159,7 +118,8 @@ export function ModelsPage() {
   }
 
   return (
-    <AdminLayout>
+    <Layout>
+      <div className="page-inner">
       <h2>Modelos</h2>
       {error && <div className="error">{error}</div>}
       
@@ -268,7 +228,8 @@ export function ModelsPage() {
           </div>
         </div>
       )}
-    </AdminLayout>
+      </div>
+    </Layout>
   );
 }
 
@@ -356,7 +317,8 @@ export function ColorsPage() {
   }
 
   return (
-    <AdminLayout>
+    <Layout>
+      <div className="page-inner">
       <h2>Cores</h2>
       {error && <div className="error">{error}</div>}
       
@@ -424,7 +386,8 @@ export function ColorsPage() {
           </div>
         </div>
       )}
-    </AdminLayout>
+      </div>
+    </Layout>
   );
 }
 
@@ -444,6 +407,8 @@ export function TemplatesPage() {
   const [showReauthModal, setShowReauthModal] = useState(false);
   const [pendingRetryAfterReauth, setPendingRetryAfterReauth] = useState(false);
   const [infoBoxExpanded, setInfoBoxExpanded] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState(null);
+  const [confirmDeleteTemplate, setConfirmDeleteTemplate] = useState(null);
 
   useEffect(() => {
     fetchModels();
@@ -470,14 +435,20 @@ export function TemplatesPage() {
       const resp = await fetch(url);
       if (!resp.ok) throw new Error('Failed to fetch templates');
       const data = await resp.json();
+
+      const sortByModel = (list) => [...list].sort((a, b) => {
+        const modelCompare = (a.model_code || '').localeCompare(b.model_code || '', 'pt-BR', { sensitivity: 'base' });
+        if (modelCompare !== 0) return modelCompare;
+        return (a.template_kind || '').localeCompare(b.template_kind || '', 'pt-BR', { sensitivity: 'base' });
+      });
       
       // Filter out templates from inactive models only if models are loaded
       if (models && models.length > 0) {
         const activeModelCodes = models.filter(m => m.is_active).map(m => m.code);
         const filteredTemplates = data.filter(t => activeModelCodes.includes(t.model_code));
-        setTemplates(filteredTemplates);
+        setTemplates(sortByModel(filteredTemplates));
       } else {
-        setTemplates(data);
+        setTemplates(sortByModel(data));
       }
     } catch (err) {
       setError(err.message);
@@ -549,10 +520,51 @@ export function TemplatesPage() {
 
       setSearchQuery('');
       setSearchResults([]);
+      setEditingTemplate(null);
       fetchTemplates();
     } catch (err) {
       setError(err.message);
     }
+  }
+
+  function handleEditTemplate(template) {
+    setEditingTemplate(template);
+    setSelectedModel(template.model_code);
+    setTemplateKind(template.template_kind);
+    setError(null);
+    setSearchResults([]);
+    setSearchQuery(template.bling_product_sku || template.bling_product_name || '');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  async function handleDeleteTemplate(templateId) {
+    try {
+      const resp = await fetch(`${API_BASE}/config/templates/${templateId}`, {
+        method: 'DELETE',
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail?.message || 'Falha ao excluir template');
+      }
+
+      setConfirmDeleteTemplate(null);
+      if (editingTemplate?.id === templateId) {
+        setEditingTemplate(null);
+      }
+      fetchTemplates();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function handleBackFromTemplateForm() {
+    setEditingTemplate(null);
+    setSelectedModel('');
+    setTemplateKind('BASE_PLAIN');
+    setSearchQuery('');
+    setSearchResults([]);
+    setError(null);
   }
 
   useEffect(() => {
@@ -562,7 +574,8 @@ export function TemplatesPage() {
   }, [selectedModel, models]);
 
   return (
-    <AdminLayout>
+    <Layout>
+      <div className="page-inner">
       <h2>Templates de Produtos</h2>
       
       <div className="info-box" style={{ cursor: 'pointer' }}>
@@ -599,7 +612,12 @@ export function TemplatesPage() {
 
       {selectedModel && (
         <div className="section">
-          <h3>2️⃣ Associar Produto do Bling como Template</h3>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <h3 style={{ margin: 0 }}>2️⃣ Associar Produto do Bling como Template</h3>
+            <button type="button" onClick={handleBackFromTemplateForm} style={{ background: '#64748b' }}>
+              ← Voltar
+            </button>
+          </div>
           <p className="helper-text">
             Modelo selecionado: <strong>{models.find(m => m.code === selectedModel)?.name}</strong>
           </p>
@@ -614,6 +632,29 @@ export function TemplatesPage() {
               <option value="VARIATION_PRINTED">Variação Estampada - Variação específica (cor/tamanho)</option>
             </select>
           </div>
+
+          {editingTemplate && (
+            <div className="info-box" style={{ marginBottom: '16px', background: '#fff7ed', borderColor: '#fdba74' }}>
+              <p style={{ marginBottom: 8 }}>
+                <strong>✏️ Editando Template:</strong> {editingTemplate.model_code} / {
+                  editingTemplate.template_kind === 'BASE_PLAIN' ? 'Base Lisa' :
+                  editingTemplate.template_kind === 'PARENT_PRINTED' ? 'Principal Estampado' :
+                  editingTemplate.template_kind === 'VARIATION_PRINTED' ? 'Variação Estampada' :
+                  editingTemplate.template_kind
+                }
+              </p>
+              <p style={{ marginBottom: 12, fontSize: 14, color: '#7c2d12' }}>
+                Selecione um novo produto abaixo e clique em "Usar este Produto" para atualizar o template.
+              </p>
+              <button
+                type="button"
+                onClick={() => setEditingTemplate(null)}
+                style={{ background: '#64748b' }}
+              >
+                Cancelar edição
+              </button>
+            </div>
+          )}
 
           <div className="search-box">
             <input
@@ -663,6 +704,7 @@ export function TemplatesPage() {
                   <th>Tipo</th>
                   <th>SKU Bling</th>
                   <th>Nome Bling</th>
+                  <th>Ações</th>
                 </tr>
               </thead>
               <tbody>
@@ -677,6 +719,18 @@ export function TemplatesPage() {
                     }</td>
                     <td>{t.bling_product_sku}</td>
                     <td>{t.bling_product_name}</td>
+                    <td>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button type="button" onClick={() => handleEditTemplate(t)}>Editar</button>
+                        <button
+                          type="button"
+                          style={{ background: '#dc2626' }}
+                          onClick={() => setConfirmDeleteTemplate(t)}
+                        >
+                          Excluir
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -684,6 +738,27 @@ export function TemplatesPage() {
           )
         )}
       </div>
+
+      {confirmDeleteTemplate && (
+        <div className="modal-overlay" onClick={() => setConfirmDeleteTemplate(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>Confirmar exclusão</h3>
+            <p>
+              Tem certeza que deseja excluir o template <strong>{confirmDeleteTemplate.model_code}</strong> / <strong>{
+                confirmDeleteTemplate.template_kind === 'BASE_PLAIN' ? 'Base Lisa' :
+                confirmDeleteTemplate.template_kind === 'PARENT_PRINTED' ? 'Principal Estampado' :
+                confirmDeleteTemplate.template_kind === 'VARIATION_PRINTED' ? 'Variação Estampada' :
+                confirmDeleteTemplate.template_kind
+              }</strong>?
+            </p>
+            <p className="helper-text">Esta ação remove o vínculo com o produto do Bling.</p>
+            <div className="modal-actions">
+              <button onClick={() => setConfirmDeleteTemplate(null)} style={{ background: '#64748b' }}>Cancelar</button>
+              <button onClick={() => handleDeleteTemplate(confirmDeleteTemplate.id)} style={{ background: '#dc2626' }}>Excluir</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showReauthModal && (
         <div className="modal-overlay">
@@ -735,6 +810,7 @@ export function TemplatesPage() {
           </div>
         </div>
       )}
-    </AdminLayout>
+      </div>
+    </Layout>
   );
 }

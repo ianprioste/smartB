@@ -223,6 +223,8 @@ class BlingProductSearchItem(BaseModel):
     nome: str
     formato: Optional[str] = None
     situacao: Optional[str] = None
+    tipo_estoque: Optional[str] = None
+    pai: Optional[int] = None  # Parent product ID if this is a variation
 
 
 class BlingProductSearchResponse(BaseModel):
@@ -231,6 +233,7 @@ class BlingProductSearchResponse(BaseModel):
     page: int
     limit: int
     items: List[BlingProductSearchItem]
+    total_items: Optional[int] = None
 
 
 class BlingProductDetailResponse(BaseModel):
@@ -241,6 +244,8 @@ class BlingProductDetailResponse(BaseModel):
     formato: Optional[str]
     situacao: Optional[str]
     descricao: Optional[str]
+    descricao_curta: Optional[str] = None
+    descricao_complementar: Optional[str] = None
     preco: Optional[float]
     categoria_id: Optional[int]
     
@@ -281,6 +286,8 @@ class PlanOverrides(BaseModel):
     complement_description: Optional[str] = Field(None, description="Override for descricaoComplementar")
     complement_same_as_short: bool = Field(default=True, description="If true, complement = short description")
     category_override_id: Optional[int] = Field(None, description="Override for category id; null keeps template category")
+    ncm: Optional[str] = Field(None, description="Override for NCM")
+    cest: Optional[str] = Field(None, description="Override for CEST")
 
     class Config:
         protected_namespaces = ()
@@ -289,6 +296,7 @@ class PlanOverrides(BaseModel):
 class PlanOptions(BaseModel):
     """Plan execution options and toggles."""
     auto_seed_base_plain: bool = Field(default=False, description="Auto-seed missing base plain (BASE_PARENT, BASE_VARIATION) templates")
+    stock_type: str = Field(default="virtual", description="Stock type: 'virtual' (composition, tipoEstoque=V) or 'physical' (variation, utilizarDadosDoPai=true)")
 
     class Config:
         protected_namespaces = ()
@@ -301,6 +309,7 @@ class PlanNewRequest(BaseModel):
     colors: List[str] = Field(min_items=1, description="Color codes to use")
     overrides: PlanOverrides = Field(default_factory=PlanOverrides, description="Optional overrides for variable fields")
     options: PlanOptions = Field(default_factory=PlanOptions, description="Plan execution options and toggles")
+    edit_parent_id: Optional[int] = Field(None, description="Bling product ID being edited (track by ID instead of by SKU)")
 
 
 # Plan Item
@@ -338,6 +347,7 @@ class PlanItem(BaseModel):
     computed_payload_preview: Optional[Dict[str, Any]] = Field(None, description="Merged payload (template + overrides + SKU/Name)")
     autoseed_candidate: bool = Field(default=False, description="Whether this is an auto-seed candidate")
     included: bool = Field(default=True, description="Whether this item is included in the plan")
+    force_update_id: Optional[int] = Field(None, description="Bling product ID to use directly for update (bypasses SKU lookup)")
 
 
 class PlanSummary(BaseModel):

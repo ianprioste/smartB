@@ -88,7 +88,7 @@ class PlanBuilderNew:
         required_skus = set()
         
         try:
-            logger.info(f"Collecting SKUs for print={request.print.code}, models={[m.code for m in request.models]}, colors={request.colors}")
+            logger.debug(f"Collecting SKUs for print={request.print.code}")
             
             # Add all product SKUs (printed products - e.g., CAMINFNOVO)
             for model_req in request.models:
@@ -127,8 +127,7 @@ class PlanBuilderNew:
             logger.warning(f"Error collecting required SKUs: {e}")
             return set()
         
-        logger.info(f"Collected {len(required_skus)} total SKUs for bulk check")
-        logger.debug(f"SKUs: {sorted(required_skus)[:20]}{'...' if len(required_skus) > 20 else ''}")
+        logger.debug(f"Collected {len(required_skus)} total SKUs for bulk check")
         return required_skus
 
     async def build_plan(self, request: PlanNewRequest) -> PlanResponse:
@@ -144,10 +143,11 @@ class PlanBuilderNew:
         Raises:
             PlanBuilderError: If validation fails
         """
-        logger.info(f"Building plan for print {request.print.code}")
+        logger.debug(f"Building plan for print {request.print.code}")
 
         # Execution flags
         self._auto_seed_base_plain = request.options.auto_seed_base_plain
+        self._physical_stock = getattr(request.options, 'stock_type', 'virtual') == 'physical'
         self._planned_base_skus = set()
 
         # Validate input
@@ -171,13 +171,7 @@ class PlanBuilderNew:
         # (This checks only seeds that SHOULD exist, not all possible SKUs)
         if not request.options.auto_seed_base_plain:
             all_possible_seeds = await self._get_all_possible_seeds(request)
-            print(f"DEBUG: all_possible_seeds count: {len(all_possible_seeds)}")
-            for seed in all_possible_seeds[:5]:
-                print(f"  - {seed.sku} ({seed.entity})")
             verified_manual_seeds = await self._verify_manually_created_seeds(all_possible_seeds)
-            print(f"DEBUG: verified_manual_seeds (found in Bling) count: {len(verified_manual_seeds)}")
-            for seed in verified_manual_seeds:
-                print(f"  - {seed.sku} ({seed.entity}) = {seed.action}")
             items_to_create.extend(verified_manual_seeds)
 
         # Generate all plan items
@@ -226,9 +220,8 @@ class PlanBuilderNew:
         )
 
         logger.info(
-            f"Plan generated: {summary.total_skus} SKUs, "
-            f"CREATE={summary.create_count}, UPDATE={summary.update_count}, "
-            f"NOOP={summary.noop_count}, BLOCKED={summary.blocked_count}"
+            f"Plan {request.print.code}: {summary.total_skus} SKUs "
+            f"(CREATE={summary.create_count}, UPDATE={summary.update_count})"
         )
 
         return plan
@@ -247,6 +240,10 @@ class PlanBuilderNew:
         Returns:
             List of detected seed items (as seeds, not for adding to plan yet)
         """
+        # Physical stock doesn't need BASE_PLAIN seeds at all
+        if self._physical_stock:
+            return []
+
         detected_seeds = []
         existing_skus = {item.sku for item in items}
         created_seeds: Dict[str, PlanItem] = {}
@@ -754,8 +751,8 @@ class PlanBuilderNew:
             hard_deps.append(parent_sku)
             
             # Hard: BASE_PLAIN must exist to build composition with the base as component
-            # This ensures the plan is execution-ready for the next stage in Bling
-            if color_code and size:
+            # Only required for virtual stock; physical stock uses simple variation (no BASE)
+            if color_code and size and not getattr(self, '_physical_stock', False):
                 base_sku = self.sku_engine.base_plain(model_code, color_code, size)
                 hard_deps.append(base_sku)
 
@@ -778,6 +775,7 @@ class PlanBuilderNew:
         model_codes = request.models
 
         # First pass: create PARENT_PRINTED for each model
+        force_update_id_assigned = False
         for model_req in model_codes:
             model_code = model_req.code
             model_info = self.models_data[model_code]
@@ -804,6 +802,15 @@ class PlanBuilderNew:
                 model_name=model_name,
                 print_name=print_name,
             )
+
+            # If editing by ID, attach force_update_id so execution uses it directly.
+            # Apply to only one parent item to avoid cross-updating multiple models
+            # with the same target product id.
+            edit_parent_id = getattr(request, 'edit_parent_id', None)
+            if edit_parent_id and parent_item.action == PlanItemActionEnum.UPDATE and not force_update_id_assigned:
+                parent_item.force_update_id = edit_parent_id
+                force_update_id_assigned = True
+
             items.append(parent_item)
             
             # Add parent SKU to cache so VARIATION items don't think it's missing
@@ -827,10 +834,7 @@ class PlanBuilderNew:
             for color_code in request.colors:
                 color_name = self.colors_data.get(color_code, color_code)
                 for size in sizes:
-                    # BASE_PLAIN reference as soft dependency
-                    base_sku = self.sku_engine.base_plain(model_code, color_code, size)
-
-                    # Create VARIATION_PRINTED item
+                    # CREATE VARIATION_PRINTED item
                     variation_sku = self.sku_engine.variation_printed(
                         model_code, print_code, color_code, size
                     )
@@ -1142,6 +1146,8 @@ class PlanBuilderNew:
             ("precoVenda", "precoVenda"),
             ("descricaoCurta", "descricaoCurta"),
             ("descricaoComplementar", "descricaoComplementar"),
+            ("ncm", "ncm"),
+            ("cest", "cest"),
         ]
 
         for existing_field, computed_field in fields_to_compare:

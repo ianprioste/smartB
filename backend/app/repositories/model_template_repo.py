@@ -161,3 +161,19 @@ class ModelTemplateRepository(BaseRepository[ModelTemplateModel]):
         db.delete(template)
         db.commit()
         return True
+
+    @classmethod
+    def delete_by_id(
+        cls,
+        db: Session,
+        tenant_id: UUID,
+        template_id: UUID,
+    ) -> bool:
+        """Delete a template by id with tenant scoping."""
+        template = cls.get_by_id(db, tenant_id, template_id)
+        if not template:
+            return False
+
+        db.delete(template)
+        db.commit()
+        return True

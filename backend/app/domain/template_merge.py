@@ -66,4 +66,10 @@ class TemplateMerge:
         if overrides.category_override_id is not None:
             base["categoria_id"] = overrides.category_override_id
 
+        # Fiscal classification overrides
+        if overrides.ncm:
+            base["ncm"] = overrides.ncm
+        if overrides.cest:
+            base["cest"] = overrides.cest
+
         return base

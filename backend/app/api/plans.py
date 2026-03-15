@@ -68,6 +68,9 @@ async def _check_bling_products_bulk(
         Dictionary mapping SKU -> product data (or None if not found)
     """
     result: Dict[str, Optional[Dict[str, Any]]] = {sku: None for sku in skus}
+    requested_key_by_norm = {
+        (sku or "").strip().upper(): sku for sku in skus
+    }
     
     if not bling_client or not skus:
         return result
@@ -77,6 +80,8 @@ async def _check_bling_products_bulk(
         # Build params as list of tuples to properly handle multiple codigos[] params
         # This creates URL like: /produtos?codigos[]=SKU1&codigos[]=SKU2&limite=100
         params = [("codigos[]", sku) for sku in skus]
+        # Include product variations in lookup (critical for size/color SKUs).
+        params.append(("tipo", "T"))
         params.append(("limite", str(min(len(skus) + 10, 100))))
         
         logger.info(f"Bulk checking {len(skus)} SKUs in Bling: {skus[:5]}..." if len(skus) > 5 else f"Bulk checking SKUs: {skus}")
@@ -112,26 +117,21 @@ async def _check_bling_products_bulk(
             if not sku:
                 logger.warning(f"Product from Bling has no 'codigo' field: {product.get('id')}")
                 continue
-            if sku not in result:
+
+            requested_key = requested_key_by_norm.get(str(sku).strip().upper())
+            if not requested_key:
                 logger.warning(f"Product SKU {sku} not in requested list, skipping")
                 continue
                 
             product_id = product.get("id")
             logger.info(f"Processing found product: {sku} (id={product_id})")
             
-            detail = None
-            if product_id:
-                try:
-                    detail_resp = await bling_client.get_product(product_id)
-                    detail = detail_resp.get("data") if detail_resp else None
-                except Exception as e:
-                    logger.warning(f"Error fetching full product for {sku} (ID: {product_id}): {str(e)}")
+            # Keep bulk check lightweight: list payload is enough for plan decisions.
+            enriched = product
             
-            enriched = detail or product
-            
-            result[sku] = {
+            result[requested_key] = {
                 "id": enriched.get("id", product_id),
-                "codigo": enriched.get("codigo", sku),
+                "codigo": enriched.get("codigo", requested_key),
                 "nome": enriched.get("nome"),
                 "formato": enriched.get("formato"),
                 "situacao": enriched.get("situacao"),
@@ -141,6 +141,54 @@ async def _check_bling_products_bulk(
                 "descricaoComplementar": enriched.get("descricaoComplementar"),
                 "categoria_id": enriched.get("categoria_id") or enriched.get("categoriaId"),
             }
+
+        # Fallback for rare false negatives from bulk endpoint.
+        # Use ONE extra bulk retry (chunked) instead of per-SKU calls.
+        missing_skus = [sku for sku, product in result.items() if product is None]
+        if missing_skus:
+            chunk_size = 100
+            for i in range(0, len(missing_skus), chunk_size):
+                chunk = missing_skus[i:i + chunk_size]
+                try:
+                    retry_params = [("codigos[]", sku) for sku in chunk]
+                    retry_params.append(("tipo", "T"))
+                    retry_params.append(("limite", str(min(len(chunk) + 10, 100))))
+
+                    fallback_resp = await bling_client.client.get(
+                        "/produtos",
+                        params=retry_params,
+                        headers=bling_client._get_headers(),
+                    )
+                    if fallback_resp.status_code != 200:
+                        logger.warning(
+                            f"Fallback bulk returned status {fallback_resp.status_code} for {len(chunk)} SKU(s)"
+                        )
+                        continue
+
+                    fallback_data = fallback_resp.json() if fallback_resp.content else {}
+                    fallback_items = (fallback_data or {}).get("data") or []
+
+                    for fallback_item in fallback_items:
+                        fallback_code = str((fallback_item or {}).get("codigo", "")).strip().upper()
+                        requested_key = requested_key_by_norm.get(fallback_code)
+                        if not requested_key:
+                            continue
+                        product_id = fallback_item.get("id")
+                        result[requested_key] = {
+                            "id": fallback_item.get("id", product_id),
+                            "codigo": fallback_item.get("codigo", requested_key),
+                            "nome": fallback_item.get("nome"),
+                            "formato": fallback_item.get("formato"),
+                            "situacao": fallback_item.get("situacao"),
+                            "preco": fallback_item.get("preco"),
+                            "precoVenda": fallback_item.get("precoVenda"),
+                            "descricaoCurta": fallback_item.get("descricaoCurta"),
+                            "descricaoComplementar": fallback_item.get("descricaoComplementar"),
+                            "categoria_id": fallback_item.get("categoria_id") or fallback_item.get("categoriaId"),
+                        }
+                        logger.info(f"Fallback bulk found SKU {requested_key} (id={product_id})")
+                except Exception as fallback_error:
+                    logger.warning(f"Fallback bulk lookup failed for chunk of {len(chunk)} SKU(s): {fallback_error}")
         
         logger.info(f"Bulk check complete: Found {len([v for v in result.values() if v])} of {len(skus)} products")
         logger.info(f"DEBUG: Result dict populated with {len([v for v in result.values() if v is not None])} products")
@@ -264,6 +312,23 @@ async def create_new_plan(
                 print(f"DEBUG: Erro no bulk check: {e}")
                 logger.warning(f"Error during bulk Bling check, continuing with empty cache: {e}")
                 bling_products_cache = {sku: None for sku in required_skus}
+
+        # If editing an existing product by ID, fetch it and inject into cache
+        # under the new parent SKU so the plan builder sees it as UPDATE (not CREATE)
+        if request.edit_parent_id and bling_client and request.models:
+            try:
+                from app.domain.sku_engine import SkuEngine as _SkuEngine
+                _sku_engine = _SkuEngine()
+                existing_resp = await bling_client.get(f"/produtos/{request.edit_parent_id}")
+                existing_data = (existing_resp or {}).get("data", {})
+                if existing_data:
+                    # Inject for the first model (edit mode targets one parent product)
+                    first_model_code = request.models[0].code
+                    new_parent_sku = _sku_engine.parent_printed(first_model_code, request.print.code)
+                    bling_products_cache[new_parent_sku] = existing_data
+                    logger.info(f"edit_parent_id={request.edit_parent_id}: injected into cache as {new_parent_sku}")
+            except Exception as e:
+                logger.warning(f"Could not fetch edit_parent_id {request.edit_parent_id}: {e}")
 
         # Create final builder with pre-loaded cache
         async def bling_checker_cached(sku: str) -> Optional[Dict[str, Any]]:
