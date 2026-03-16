@@ -53,6 +53,9 @@ class Settings(BaseSettings):
         "redis://localhost:6379/2"
     )
     
+    # CORS
+    CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:80")
+
     # Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "DEBUG")
     
