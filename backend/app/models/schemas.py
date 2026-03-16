@@ -312,6 +312,19 @@ class PlanNewRequest(BaseModel):
     edit_parent_id: Optional[int] = Field(None, description="Bling product ID being edited (track by ID instead of by SKU)")
 
 
+class PlanPlainRequest(BaseModel):
+    """Create plain product plan request."""
+    parent_sku: str = Field(min_length=1, max_length=100, description="Parent SKU defined by user")
+    parent_name: str = Field(min_length=1, max_length=255, description="Parent product name defined by user")
+    model_code: str = Field(min_length=1, max_length=50, description="Model code to use templates/sizes")
+    sizes: Optional[List[str]] = Field(None, description="Sizes for this model (if not provided, use allowed_sizes)")
+    colors: List[str] = Field(min_items=1, description="Color codes to use")
+    price: float = Field(gt=0, description="Required price for parent/children")
+    overrides: PlanOverrides = Field(default_factory=PlanOverrides, description="Optional overrides for variable fields")
+    options: PlanOptions = Field(default_factory=PlanOptions, description="Plan execution options and toggles")
+    edit_parent_id: Optional[int] = Field(None, description="Bling product ID being edited (optional)")
+
+
 # Plan Item
 class PlanItemTemplate(BaseModel):
     """Template information for plan item."""
@@ -348,6 +361,7 @@ class PlanItem(BaseModel):
     autoseed_candidate: bool = Field(default=False, description="Whether this is an auto-seed candidate")
     included: bool = Field(default=True, description="Whether this item is included in the plan")
     force_update_id: Optional[int] = Field(None, description="Bling product ID to use directly for update (bypasses SKU lookup)")
+    planned_deletions: List[str] = Field(default_factory=list, description="Variation SKUs expected to be removed on UPDATE sync")
 
 
 class PlanSummary(BaseModel):

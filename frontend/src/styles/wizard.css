@@ -1,8 +1,10 @@
 /* Wizard Container */
 .wizard-container {
-  max-width: 1200px;
+  width: 100%;
+  max-width: min(1800px, calc(100vw - 2.5rem));
   margin: 0 auto;
-  padding: 2rem;
+  padding: clamp(0.75rem, 1.6vw, 1.5rem);
+  box-sizing: border-box;
 }
 
 .wizard-header {
@@ -23,6 +25,7 @@
   justify-content: space-between;
   margin-bottom: 3rem;
   position: relative;
+  gap: 0.35rem;
 }
 
 .wizard-progress::before {
@@ -38,6 +41,7 @@
 
 .wizard-step {
   flex: 1;
+  min-width: 120px;
   text-align: center;
   font-weight: 500;
   color: #999;
@@ -65,9 +69,29 @@
   background: white;
   padding: 2rem;
   border-radius: 12px;
+  border: 1px solid #dbe2ea;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
   margin-bottom: 2rem;
-  min-height: 400px;
+  min-height: clamp(480px, 62vh, 760px);
+  box-sizing: border-box;
+}
+
+@media (max-width: 1024px) {
+  .wizard-container {
+    max-width: calc(100vw - 1.2rem);
+    padding: 0.6rem;
+  }
+
+  .wizard-content {
+    padding: 1.1rem;
+    min-height: clamp(420px, 58vh, 680px);
+  }
+
+  .wizard-step {
+    min-width: 90px;
+    margin: 0 2px;
+    font-size: 0.88rem;
+  }
 }
 
 .wizard-content h2 {
@@ -728,6 +752,42 @@
   background: #ffebee;
   color: #c62828;
   border-left-color: #f44336;
+}
+
+.table-deletion-summary {
+  margin-bottom: 0.75rem;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid #ffe08a;
+  background: #fff9e6;
+  color: #7a5a00;
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
+.delete-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 160px;
+}
+
+.delete-count {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #f59e0b;
+  border-radius: 999px;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.delete-count.zero {
+  background: #f3f4f6;
+  color: #6b7280;
+  border-color: #d1d5db;
 }
 
 /* Actions */

@@ -120,6 +120,26 @@ export function WizardNewPage() {
     const currentCatalog = readProductsCacheSafe();
     const byId = new Map(currentCatalog.map((item) => [item.id, item]));
 
+    const replaceParentGroupInCache = (groupItems) => {
+      if (!Array.isArray(groupItems) || groupItems.length === 0) return;
+
+      const parentItem = groupItems.find((item) => item?.pai == null) || groupItems[0];
+      const parentId = parentItem?.pai || parentItem?.id;
+      if (parentId == null) return;
+
+      const idsToDelete = [];
+      byId.forEach((item, id) => {
+        if (id === parentId || item?.pai === parentId) {
+          idsToDelete.push(id);
+        }
+      });
+      idsToDelete.forEach((id) => byId.delete(id));
+
+      groupItems.forEach((item) => {
+        if (item?.id != null) byId.set(item.id, item);
+      });
+    };
+
     // Process sequentially to avoid triggering Bling rate limits on burst updates.
     for (const sku of normalizedSkus) {
       try {
@@ -129,9 +149,28 @@ export function WizardNewPage() {
         );
 
         if (foundItems.length > 0) {
-          foundItems.forEach((item) => {
-            if (item?.id != null) byId.set(item.id, item);
-          });
+          const matchedItem = foundItems[0];
+          const isParentSku = matchedItem && matchedItem.pai == null && String(matchedItem.formato || '').toUpperCase() === 'V';
+
+          if (isParentSku) {
+            try {
+              // For parent SKUs, fetch full hierarchy to keep children in sync.
+              const hierarchyData = await fetchCatalogPage(1, 100, true, sku);
+              const hierarchyItems = hierarchyData?.items || [];
+              if (hierarchyItems.length > 0) {
+                replaceParentGroupInCache(hierarchyItems);
+              } else {
+                if (matchedItem?.id != null) byId.set(matchedItem.id, matchedItem);
+              }
+            } catch (hierarchyErr) {
+              // Fallback to at least updating parent when hierarchy fetch fails.
+              if (matchedItem?.id != null) byId.set(matchedItem.id, matchedItem);
+            }
+          } else {
+            foundItems.forEach((item) => {
+              if (item?.id != null) byId.set(item.id, item);
+            });
+          }
         } else {
           // SKU no longer exists in Bling: remove stale cache entry.
           const idsToDelete = [];
@@ -493,7 +532,7 @@ export function WizardNewPage() {
     <Layout>
     <div className="wizard-container">
       <header className="wizard-header">
-        <h1>{editProduct ? '✏️ Assistente de Atualização' : '🪄 Assistente de Novo Cadastro'}</h1>
+        <h1>{editProduct ? '🪄 Wizard: Assistente de Atualização' : '🪄 Assistente de Novo Cadastro'}</h1>
         <button className="btn-secondary" onClick={() => navigate(editProduct ? '/products' : '/admin/models')}>
           ← Voltar
         </button>
@@ -983,6 +1022,10 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan, o
   const [seedResultsModal, setSeedResultsModal] = React.useState(null);
   const [includeExistingProducts, setIncludeExistingProducts] = React.useState(false);
 
+  React.useEffect(() => {
+    setPlan(initialPlan);
+  }, [initialPlan]);
+
   async function handleToggleAutoSeed(newValue) {
     setAutoSeedBasePlain(newValue);
     setIsRegenerating(true);
@@ -1094,6 +1137,16 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan, o
     BLOCKED: plan.items.filter(i => i.action === 'BLOCKED'),
   };
 
+  const plannedDeletionCount = React.useMemo(() => {
+    const uniqueSkus = new Set();
+    plan.items.forEach((item) => {
+      (item.planned_deletions || []).forEach((sku) => {
+        if (sku) uniqueSkus.add(String(sku).trim().toUpperCase());
+      });
+    });
+    return uniqueSkus.size;
+  }, [plan.items]);
+
   function getPlanForExecution() {
     if (includeExistingProducts) {
       // Convert NOOP items to CREATE/UPDATE
@@ -1127,16 +1180,12 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan, o
 
       <div className="plan-summary">
         <div className="summary-card">
-          <strong>{plan.summary.models}</strong>
-          <span>Modelos</span>
-        </div>
-        <div className="summary-card">
-          <strong>{plan.summary.colors}</strong>
-          <span>Cores</span>
-        </div>
-        <div className="summary-card">
           <strong>{plan.summary.total_skus}</strong>
           <span>Total SKUs</span>
+        </div>
+        <div className="summary-card status-blocked">
+          <strong>{plannedDeletionCount}</strong>
+          <span>🗑️ Excluir</span>
         </div>
         <div className="summary-card status-create">
           <strong>{plan.summary.create_count}</strong>
@@ -1238,12 +1287,16 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan, o
       )}
 
       <div className="plan-table-container">
+        <div className="table-deletion-summary">
+          <strong>🗑️ Itens previstos para exclusão:</strong> {plannedDeletionCount}
+        </div>
         <table className="plan-table">
           <thead>
             <tr>
               <th>SKU</th>
               <th>Tipo</th>
               <th>Ação</th>
+              <th>Excluir</th>
               <th>Preço</th>
               <th>NCM</th>
               <th>CEST</th>
@@ -1272,6 +1325,20 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan, o
                     {item.action === 'NOOP' && 'OK'}
                     {item.action === 'BLOCKED' && 'Bloqueado'}
                   </span>
+                </td>
+                <td>
+                  {item.planned_deletions && item.planned_deletions.length > 0 ? (
+                    <div className="delete-cell">
+                      <div className="delete-count">{item.planned_deletions.length} item(ns)</div>
+                      <div className="warnings">
+                        {item.planned_deletions.map((sku) => (
+                          <div key={sku} className="warning-item">- {sku}</div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <span className="delete-count zero">0</span>
+                  )}
                 </td>
                 <td>
                   {item.computed_payload_preview?.preco ?? item.overrides_used?.price ?? '-'}

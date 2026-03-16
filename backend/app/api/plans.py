@@ -9,18 +9,24 @@ from app.infra.bling_client import BlingClient, BlingRefreshTokenExpiredError
 from app.settings import settings
 from app.models.schemas import (
     PlanNewRequest,
+    PlanPlainRequest,
     PlanResponse,
+    PlanItem,
+    PlanItemTemplate,
+    PlanSummary,
+    PlanOverrides,
     PlanSaveRequest,
     PlanSavedResponse,
     ErrorResponse,
 )
-from app.models.enums import PlanTypeEnum
+from app.models.enums import PlanTypeEnum, PlanItemActionEnum, TemplateKindEnum
 from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.model_repo import ModelRepository
 from app.repositories.color_repo import ColorRepository
 from app.repositories.model_template_repo import ModelTemplateRepository
 from app.repositories.plan_repo import PlanRepository
 from app.domain.plan_builder_new import PlanBuilderNew, PlanBuilderError
+from app.domain.template_merge import TemplateMerge
 from app.infra.logging import get_logger
 
 logger = get_logger(__name__)
@@ -28,6 +34,341 @@ router = APIRouter(prefix="/plans", tags=["Plans"])
 
 # TODO: Replace with real tenant resolution
 TENANT_ID = UUID("00000000-0000-0000-0000-000000000001")
+
+
+def _calculate_diff_summary_plain(
+    existing_product: Dict[str, Any],
+    computed_payload: Dict[str, Any],
+    *,
+    category_override_active: bool,
+) -> list[str]:
+    """Compare existing product with computed payload and return changed fields."""
+    if not existing_product:
+        return ["*"]
+
+    diff_fields: list[str] = []
+    fields_to_compare = [
+        ("preco", "preco"),
+        ("nome", "nome"),
+        ("precoVenda", "precoVenda"),
+        ("descricaoCurta", "descricaoCurta"),
+        ("descricaoComplementar", "descricaoComplementar"),
+        ("ncm", "ncm"),
+        ("cest", "cest"),
+    ]
+
+    for existing_field, computed_field in fields_to_compare:
+        expected = computed_payload.get(computed_field)
+        actual = existing_product.get(existing_field)
+        if expected is None:
+            continue
+        if actual != expected:
+            diff_fields.append(existing_field)
+
+    if category_override_active:
+        expected_cat = computed_payload.get("categoria_id")
+        actual_cat = existing_product.get("categoria_id")
+        if expected_cat is not None and actual_cat != expected_cat:
+            diff_fields.append("categoria_id")
+
+    return diff_fields
+
+
+@router.post(
+    "/new-plain",
+    response_model=PlanResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+    },
+)
+async def create_new_plain_plan(
+    request: PlanPlainRequest,
+    db: Session = Depends(get_db),
+):
+    """Create plain product plan (parent + variations) with parent SKU/name defined by user."""
+    logger.info(f"Creating plain plan for parent_sku={request.parent_sku}")
+
+    try:
+        model_repo = ModelRepository
+        color_repo = ColorRepository
+        template_repo = ModelTemplateRepository
+
+        models = model_repo.list_all(db, TENANT_ID)
+        models_data = {
+            m.code: {
+                "name": m.name,
+                "allowed_sizes": m.allowed_sizes,
+                "size_order": m.size_order,
+            }
+            for m in models
+        }
+
+        colors = color_repo.list_all(db, TENANT_ID)
+        colors_data = {c.code: c.name for c in colors}
+
+        templates = template_repo.list_all(db, TENANT_ID)
+        templates_data: Dict[str, Dict[str, int]] = {}
+        for template in templates:
+            if template.model_code not in templates_data:
+                templates_data[template.model_code] = {}
+            templates_data[template.model_code][template.template_kind.value] = template.bling_product_id
+
+        model_code = request.model_code
+        if model_code not in models_data:
+            raise PlanBuilderError(f"Model {model_code} not found in configuration")
+
+        for color_code in request.colors:
+            if color_code not in colors_data:
+                raise PlanBuilderError(f"Color {color_code} not found in configuration")
+
+        sizes = request.sizes or models_data[model_code].get("allowed_sizes", [])
+        if not sizes:
+            raise PlanBuilderError(f"No sizes available for model {model_code}")
+
+        parent_sku = request.parent_sku.strip().upper()
+        parent_name = request.parent_name.strip()
+
+        if not parent_sku:
+            raise PlanBuilderError("parent_sku is required")
+        if not parent_name:
+            raise PlanBuilderError("parent_name is required")
+
+        required_skus = {parent_sku}
+        child_skus: list[tuple[str, str, str]] = []
+        for color_code in request.colors:
+            for size in sizes:
+                child_sku = f"{parent_sku}{color_code}{size}".upper()
+                child_skus.append((child_sku, color_code, size))
+                required_skus.add(child_sku)
+
+        bling_client = await _get_bling_client(db)
+        bling_products_cache: Dict[str, Optional[Dict[str, Any]]] = {sku: None for sku in required_skus}
+        if bling_client:
+            bling_products_cache = await _check_bling_products_bulk(bling_client, list(required_skus))
+
+        if request.edit_parent_id and bling_client:
+            try:
+                existing_resp = await bling_client.get(f"/produtos/{request.edit_parent_id}")
+                existing_data = (existing_resp or {}).get("data", {})
+                if existing_data:
+                    bling_products_cache[parent_sku] = existing_data
+            except Exception as e:
+                logger.warning(f"Could not fetch edit_parent_id {request.edit_parent_id}: {e}")
+
+        model_name = models_data[model_code].get("name", model_code)
+
+        model_templates = templates_data.get(model_code, {})
+        parent_template_kind = (
+            TemplateKindEnum.BASE_PARENT.value
+            if TemplateKindEnum.BASE_PARENT.value in model_templates
+            else TemplateKindEnum.BASE_PLAIN.value
+        )
+        parent_template_id = model_templates.get(parent_template_kind)
+        child_template_id = model_templates.get(TemplateKindEnum.BASE_PLAIN.value)
+
+        parent_template_payload: Dict[str, Any] = {}
+        child_template_payload: Dict[str, Any] = {}
+        if bling_client and parent_template_id:
+            try:
+                parent_template_payload = ((await bling_client.get_product(parent_template_id)) or {}).get("data") or {}
+            except Exception as e:
+                logger.warning(f"Failed to fetch parent template payload for {model_code}: {e}")
+        if bling_client and child_template_id:
+            try:
+                child_template_payload = ((await bling_client.get_product(child_template_id)) or {}).get("data") or {}
+            except Exception as e:
+                logger.warning(f"Failed to fetch child template payload for {model_code}: {e}")
+
+        category_override_active = request.overrides.category_override_id is not None
+
+        items: list[PlanItem] = []
+
+        parent_payload = TemplateMerge.merge(
+            parent_template_payload,
+            sku=parent_sku,
+            name=parent_name,
+            overrides=request.overrides,
+            price=request.price,
+            model_name=model_name,
+            print_name="Produto Liso",
+        )
+        parent_existing = bling_products_cache.get(parent_sku)
+
+        if parent_existing is None:
+            if not parent_template_payload:
+                parent_action = PlanItemActionEnum.BLOCKED
+                parent_reason = "MISSING_TEMPLATE_PAYLOAD"
+                parent_diff = []
+                parent_message = "Template do pai liso sem payload - não é possível executar CREATE"
+            else:
+                parent_action = PlanItemActionEnum.CREATE
+                parent_reason = None
+                parent_diff = []
+                parent_message = "Parent plain product will be created"
+        else:
+            parent_diff = _calculate_diff_summary_plain(
+                parent_existing,
+                parent_payload,
+                category_override_active=category_override_active,
+            )
+            if parent_diff:
+                parent_action = PlanItemActionEnum.UPDATE
+                parent_reason = None
+                parent_message = "Product exists but needs update"
+            else:
+                parent_action = PlanItemActionEnum.NOOP
+                parent_reason = None
+                parent_message = "Product already up to date"
+
+        items.append(
+            PlanItem(
+                sku=parent_sku,
+                entity="BASE_PARENT",
+                action=parent_action,
+                hard_dependencies=[],
+                soft_dependencies=[],
+                template=PlanItemTemplate(model=model_code, kind=parent_template_kind, fallback_used=(parent_template_kind == TemplateKindEnum.BASE_PLAIN.value)),
+                status=parent_action,
+                reason=parent_reason,
+                message=parent_message,
+                warnings=[],
+                diff_summary=parent_diff,
+                existing_product=parent_existing,
+                template_ref={
+                    "model_code": model_code,
+                    "template_kind": parent_template_kind,
+                    "bling_product_id": parent_template_id,
+                    "bling_product_sku": parent_template_payload.get("codigo") if parent_template_payload else None,
+                },
+                overrides_used={
+                    "price": request.price,
+                    "short_description": parent_payload.get("descricaoCurta"),
+                    "complement_description": parent_payload.get("descricaoComplementar"),
+                    "category_override_id": request.overrides.category_override_id,
+                    "complement_same_as_short": request.overrides.complement_same_as_short,
+                },
+                computed_payload_preview=parent_payload,
+            )
+        )
+
+        for child_sku, color_code, size in child_skus:
+            color_name = colors_data.get(color_code, color_code)
+            child_name = f"{parent_name} Cor: {color_name};Tamanho: {size}"
+            child_payload = TemplateMerge.merge(
+                child_template_payload,
+                sku=child_sku,
+                name=child_name,
+                overrides=request.overrides,
+                price=request.price,
+                model_name=model_name,
+                print_name="Produto Liso",
+            )
+            child_existing = bling_products_cache.get(child_sku)
+
+            if child_existing is None:
+                if not child_template_payload:
+                    child_action = PlanItemActionEnum.BLOCKED
+                    child_reason = "MISSING_TEMPLATE_PAYLOAD"
+                    child_diff = []
+                    child_message = "Template da variação lisa sem payload - não é possível executar CREATE"
+                else:
+                    child_action = PlanItemActionEnum.CREATE
+                    child_reason = None
+                    child_diff = []
+                    child_message = "Child plain variation will be created"
+            else:
+                child_diff = _calculate_diff_summary_plain(
+                    child_existing,
+                    child_payload,
+                    category_override_active=category_override_active,
+                )
+                if child_diff:
+                    child_action = PlanItemActionEnum.UPDATE
+                    child_reason = None
+                    child_message = "Product exists but needs update"
+                else:
+                    child_action = PlanItemActionEnum.NOOP
+                    child_reason = None
+                    child_message = "Product already up to date"
+
+            items.append(
+                PlanItem(
+                    sku=child_sku,
+                    entity="BASE_VARIATION",
+                    action=child_action,
+                    hard_dependencies=[parent_sku],
+                    soft_dependencies=[],
+                    template=PlanItemTemplate(model=model_code, kind=TemplateKindEnum.BASE_PLAIN.value, fallback_used=False),
+                    status=child_action,
+                    reason=child_reason,
+                    message=child_message,
+                    warnings=[],
+                    diff_summary=child_diff,
+                    existing_product=child_existing,
+                    template_ref={
+                        "model_code": model_code,
+                        "template_kind": TemplateKindEnum.BASE_PLAIN.value,
+                        "bling_product_id": child_template_id,
+                        "bling_product_sku": child_template_payload.get("codigo") if child_template_payload else None,
+                    },
+                    overrides_used={
+                        "price": request.price,
+                        "short_description": child_payload.get("descricaoCurta"),
+                        "complement_description": child_payload.get("descricaoComplementar"),
+                        "category_override_id": request.overrides.category_override_id,
+                        "complement_same_as_short": request.overrides.complement_same_as_short,
+                    },
+                    computed_payload_preview=child_payload,
+                )
+            )
+
+        summary = PlanSummary(
+            models=1,
+            colors=len(request.colors),
+            total_skus=len(items),
+            create_count=sum(1 for i in items if i.action == PlanItemActionEnum.CREATE),
+            update_count=sum(1 for i in items if i.action == PlanItemActionEnum.UPDATE),
+            noop_count=sum(1 for i in items if i.action == PlanItemActionEnum.NOOP),
+            blocked_count=sum(1 for i in items if i.action == PlanItemActionEnum.BLOCKED),
+        )
+
+        return PlanResponse(
+            planVersion="1.0",
+            type="NEW_PLAIN",
+            summary=summary,
+            items=items,
+            has_blockers=summary.blocked_count > 0,
+            options=request.options,
+        )
+
+    except PlanBuilderError as e:
+        logger.error(f"Plain plan builder error: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "PLAN_BUILDER_ERROR",
+                "message": str(e),
+            },
+        )
+    except BlingRefreshTokenExpiredError as e:
+        logger.error(f"Bling token expired during plain plan generation: {e}")
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "BLING_TOKEN_EXPIRED",
+                "message": "Token do Bling expirado. É necessário autenticar novamente. Acesse /auth/bling/connect para obter novo token.",
+            },
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error creating plain plan: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "INTERNAL_ERROR",
+                "message": f"Erro inesperado: {str(e)}",
+            },
+        )
 
 
 async def _get_bling_client(db: Session) -> Optional[BlingClient]:

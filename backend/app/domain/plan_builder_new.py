@@ -10,7 +10,7 @@ Responsibilities:
 - Produce preview with CREATE/UPDATE/NOOP/BLOCKED status
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from app.domain.sku_engine import SkuEngine
 from app.domain.template_merge import TemplateMerge
 from app.models.schemas import (
@@ -100,12 +100,22 @@ class PlanBuilderNew:
                 required_skus.add(parent_sku)
                 logger.debug(f"Added parent printed SKU: {parent_sku}")
                 
-                # Add variation printed SKUs (e.g., CAMINFNOVOBR2)
+                # Add variation printed SKUs for SELECTED colors (plan items).
                 for color_code in request.colors:
                     for size in sizes:
                         variation_sku = self.sku_engine.variation_printed(model_code, request.print.code, color_code, size)
                         required_skus.add(variation_sku)
                         logger.debug(f"Added variation printed SKU: {variation_sku}")
+
+                # Also pre-check ALL available colors so we can detect existing
+                # variations in Bling that are NOT in the current selection
+                # (needed to compute planned_deletions without extra Bling calls).
+                for color_code in self.colors_data.keys():
+                    if color_code in request.colors:
+                        continue  # already added above
+                    for size in sizes:
+                        extra_sku = self.sku_engine.variation_printed(model_code, request.print.code, color_code, size)
+                        required_skus.add(extra_sku)
             
             # Add seed SKUs (base products without print - e.g., CAMINF, CAMINFBR2)
             for model_req in request.models:
@@ -179,6 +189,10 @@ class PlanBuilderNew:
         generated_items = await self._generate_items(request)
         items_to_create.extend(generated_items)
 
+        # Annotate parent UPDATE items with variation SKUs that are expected
+        # to be removed when syncing selected colors/sizes.
+        await self._annotate_planned_deletions(items_to_create)
+
         # Detect missing base seeds for seed_summary UI
         detected_missing_seeds = await self._detect_missing_base_seeds(request, items_to_create)
         
@@ -225,6 +239,86 @@ class PlanBuilderNew:
         )
 
         return plan
+
+    async def _annotate_planned_deletions(self, items: List[PlanItem]) -> None:
+        """Populate planned_deletions purely from the pre-loaded Bling cache.
+
+        Logic: the plan selects specific colors/sizes.  Any variation that
+        already EXISTS in Bling (detected by the bulk SKU check) but is NOT
+        included in the current selection will be removed when the parent is
+        sent to Bling.  We know this entirely from data already in
+        _bling_cache — no extra Bling API calls needed.
+        """
+        for parent_item in items:
+            if parent_item.entity != "PARENT_PRINTED":
+                continue
+            if parent_item.action not in {PlanItemActionEnum.UPDATE, PlanItemActionEnum.NOOP}:
+                continue
+            # Parent must exist in Bling for a deletion to be possible
+            parent_sku_upper = str(parent_item.sku or "").strip().upper()
+            if not parent_sku_upper:
+                continue
+
+            parent_exists = (
+                parent_item.existing_product is not None
+                or self._bling_cache.get(parent_sku_upper) is not None
+            )
+            if not parent_exists:
+                continue
+
+            # Derive model_code and print_code from the parent item
+            model_code = (parent_item.template.model if parent_item.template else None) or ""
+            if not model_code:
+                continue
+            # print_code is the suffix after model_code in the parent SKU
+            model_code_upper = model_code.strip().upper()
+            print_code = parent_sku_upper[len(model_code_upper):] if parent_sku_upper.startswith(model_code_upper) else ""
+            if not print_code:
+                continue
+
+            allowed_sizes: List[str] = self.models_data.get(model_code, {}).get("allowed_sizes", [])
+            if not allowed_sizes:
+                continue
+
+            # Build the full universe of possible variation SKUs for this parent
+            # (all colors × all allowed sizes) and check which ones exist in cache
+            selected_skus: Set[str] = set()
+            existing_in_bling: Set[str] = set()
+
+            for color_code, _ in self.colors_data.items():
+                for size in allowed_sizes:
+                    var_sku = self.sku_engine.variation_printed(
+                        model_code, print_code, color_code, size
+                    )
+                    var_sku_upper = var_sku.strip().upper()
+
+                    if self._bling_cache.get(var_sku_upper) is not None or self._bling_cache.get(var_sku) is not None:
+                        existing_in_bling.add(var_sku_upper)
+
+            # Selected = variation items in this plan that belong to this parent
+            for var_item in items:
+                if var_item.entity != "VARIATION_PRINTED":
+                    continue
+                if var_item.included is False:
+                    continue
+                var_sku_upper = str(var_item.sku or "").strip().upper()
+                # Belongs to this parent if dependency matches OR SKU starts with parent SKU
+                has_parent_dep = any(
+                    str(dep or "").strip().upper() == parent_sku_upper
+                    for dep in (var_item.hard_dependencies or [])
+                )
+                if has_parent_dep or var_sku_upper.startswith(parent_sku_upper):
+                    selected_skus.add(var_sku_upper)
+
+            to_delete = sorted(existing_in_bling - selected_skus)
+            logger.info(
+                f"planned_deletions for {parent_sku_upper}: "
+                f"existing_in_bling={sorted(existing_in_bling)}, "
+                f"selected={sorted(selected_skus)}, "
+                f"to_delete={to_delete}"
+            )
+            if to_delete:
+                parent_item.planned_deletions = to_delete
 
     async def _detect_missing_base_seeds(
         self, request: PlanNewRequest, items: List[PlanItem]

@@ -30,7 +30,7 @@ export function Layout({ children }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [produtosOpen, setProdutosOpen] = useState(
-    location.pathname.startsWith('/wizard')
+    location.pathname.startsWith('/wizard') || location.pathname.startsWith('/products')
   );
   const [configOpen, setConfigOpen] = useState(
     location.pathname.startsWith('/admin')
@@ -101,6 +101,13 @@ export function Layout({ children }) {
                   onClick={() => go('/wizard/new')}
                 >
                   <span className="nav-icon">🪄</span>
+                  <span className="nav-label">Novo Produto Estampado</span>
+                </button>
+                <button
+                  className={`nav-item nav-sub-item ${isActive('/wizard/plain') ? 'active' : ''}`}
+                  onClick={() => go('/wizard/plain')}
+                >
+                  <span className="nav-icon">🧩</span>
                   <span className="nav-label">Novo Produto</span>
                 </button>
               </div>

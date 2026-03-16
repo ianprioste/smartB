@@ -10,12 +10,31 @@ from app.infra.bling_client import BlingClient, BlingRefreshTokenExpiredError
 from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.color_repo import ColorRepository
 from app.infra.logging import get_logger
+from app.models.schemas import PlanPlainRequest, PlanResponse, ErrorResponse
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/plans", tags=["Plan Execution"])
 
 TENANT_ID = UUID("00000000-0000-0000-0000-000000000001")
 SIZE_CODES = ["XG", "GG", "G", "M", "P", "16", "14", "12", "10", "8", "6", "4", "2"]
+
+
+@router.post(
+    "/new-plain",
+    response_model=PlanResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+    },
+)
+async def create_new_plain_plan_fallback(
+    request: PlanPlainRequest,
+    db: Session = Depends(get_db),
+):
+    """Fallback proxy for plain plan generation using the plans API implementation."""
+    from app.api import plans as plans_api
+
+    return await plans_api.create_new_plain_plan(request, db)
 
 
 # ====================================

@@ -3,16 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { Layout } from '../../components/Layout';
 
 const API_BASE = 'http://localhost:8000';
-const PRODUCTS_CACHE_KEY = 'smartb_products_catalog_v1';
-const PRODUCTS_CACHE_SAVED_AT_KEY = 'smartb_products_catalog_saved_at_v1';
-
-function StatusBadge({ text }) {
-  const lower = (text || '').toLowerCase();
-  let cls = 'badge badge--gray';
-  if (lower.includes('ativo') || lower.includes('disponível')) cls = 'badge badge--green';
-  else if (lower.includes('inativo') || lower.includes('descontinuado')) cls = 'badge badge--red';
-  return <span className={cls}>{text || '—'}</span>;
-}
+const PRODUCTS_CACHE_KEY = 'smartb_products_catalog_v2';
+const PRODUCTS_CACHE_SAVED_AT_KEY = 'smartb_products_catalog_saved_at_v2';
 
 function groupProductsByParent(products) {
   if (!products || products.length === 0) return [];
@@ -404,11 +396,9 @@ export function ProductsListPage() {
                   <thead>
                     <tr>
                       <th style={{ width: '35%' }}>Nome do Produto</th>
-                      <th style={{ width: '20%' }}>SKU</th>
-                      <th style={{ width: '12%' }}>ID Bling</th>
-                      <th style={{ width: '15%' }}>Tipo</th>
-                      <th style={{ width: '10%' }}>Status</th>
-                      <th style={{ width: '8%' }}></th>
+                      <th style={{ width: '25%' }}>SKU</th>
+                      <th style={{ width: '25%' }}>Tipo</th>
+                      <th style={{ width: '12%' }}></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -444,30 +434,44 @@ export function ProductsListPage() {
                               {group.parent.codigo}
                             </code>
                           </td>
-                          <td style={{ fontSize: 13, color: '#64748b' }}>{group.parent.id}</td>
                           <td style={{ fontSize: 12 }}>
                             {getProductTypeLabel(group.parent, group.children.length)}
                           </td>
-                          <td>
-                            <StatusBadge text={group.parent.situacao} />
-                          </td>
                           <td onClick={(e) => e.stopPropagation()}>
-                            <button
-                              onClick={() => navigate('/wizard/new', { state: { editProduct: group.parent } })}
-                              style={{
-                                padding: '4px 10px',
-                                fontSize: 12,
-                                background: '#3b82f6',
-                                color: '#fff',
-                                border: 'none',
-                                borderRadius: 6,
-                                cursor: 'pointer',
-                                whiteSpace: 'nowrap',
-                              }}
-                              title="Atualizar produto no Wizard"
-                            >
-                              ✏️ Editar
-                            </button>
+                            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                              <button
+                                onClick={() => navigate('/wizard/new', { state: { editProduct: group.parent } })}
+                                style={{
+                                  padding: '4px 10px',
+                                  fontSize: 12,
+                                  background: '#3b82f6',
+                                  color: '#fff',
+                                  border: 'none',
+                                  borderRadius: 6,
+                                  cursor: 'pointer',
+                                  whiteSpace: 'nowrap',
+                                }}
+                                title="Abrir Wizard de estampados"
+                              >
+                                🪄 Wizard
+                              </button>
+                              <button
+                                onClick={() => navigate('/wizard/plain', { state: { editProduct: group.parent } })}
+                                style={{
+                                  padding: '4px 10px',
+                                  fontSize: 12,
+                                  background: '#0f766e',
+                                  color: '#fff',
+                                  border: 'none',
+                                  borderRadius: 6,
+                                  cursor: 'pointer',
+                                  whiteSpace: 'nowrap',
+                                }}
+                                title="Abrir Wizard de produto liso"
+                              >
+                                🧩 Wizard Liso
+                              </button>
+                            </div>
                           </td>
                         </tr>
 
@@ -489,11 +493,7 @@ export function ProductsListPage() {
                                   {child.codigo}
                                 </code>
                               </td>
-                              <td style={{ fontSize: 12, color: '#94a3b8' }}>{child.id}</td>
                               <td style={{ fontSize: 12 }}>{getSubproductTypeLabel(child)}</td>
-                              <td>
-                                <StatusBadge text={child.situacao} />
-                              </td>
                               <td />
                             </tr>
                           ))}
