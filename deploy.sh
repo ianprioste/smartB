@@ -1,42 +1,68 @@
-#!/bin/bash
-# Script de deploy para a VPS Locaweb
-# Uso: ./deploy.sh
-set -e
+#!/usr/bin/env bash
+# Script de deploy para executar direto na VPS
+# Uso: ./deploy.sh [branch]
+set -Eeuo pipefail
 
-echo "========================================="
-echo "  SmartB - Deploy de Produção"
-echo "========================================="
+BRANCH="${1:-main}"
+COMPOSE_FILE="docker-compose.prod.yml"
 
-# Verifica se .env existe
-if [ ! -f .env ]; then
-  echo "ERRO: arquivo .env não encontrado."
-  echo "Copie o .env.example e preencha os valores: cp .env.example .env"
+log() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+fail() {
+  log "ERRO: $*"
   exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || fail "Comando '$1' não encontrado"
+}
+
+log "========================================="
+log "SmartB - Deploy de Produção"
+log "Branch: ${BRANCH}"
+log "========================================="
+
+require_cmd git
+require_cmd docker
+
+if ! docker compose version >/dev/null 2>&1; then
+  fail "Docker Compose plugin não encontrado (comando 'docker compose')"
 fi
 
-echo ""
-echo "1. Atualizando código do repositório..."
-git pull origin main
+if [ ! -f "$COMPOSE_FILE" ]; then
+  fail "Arquivo '$COMPOSE_FILE' não encontrado"
+fi
 
-echo ""
-echo "2. Construindo imagens Docker..."
-docker compose -f docker-compose.prod.yml build --no-cache
+if [ ! -f .env ]; then
+  fail "Arquivo .env não encontrado. Crie com: cp .env.example .env"
+fi
 
-echo ""
-echo "3. Subindo os serviços..."
-docker compose -f docker-compose.prod.yml up -d
+log "1/7 - Buscando updates do repositório"
+git fetch --all --prune
 
-echo ""
-echo "4. Aguardando banco de dados ficar pronto..."
-sleep 5
+log "2/7 - Trocando para branch ${BRANCH}"
+git checkout "$BRANCH"
 
-echo ""
-echo "5. Aplicando migrações do banco de dados..."
-docker compose -f docker-compose.prod.yml exec backend alembic upgrade head
+log "3/7 - Atualizando código local"
+git pull origin "$BRANCH"
 
-echo ""
-echo "========================================="
-echo "  ✅ Deploy concluído!"
-IP=$(hostname -I | awk '{print $1}')
-echo "  App rodando em: http://$IP"
-echo "========================================="
+log "4/7 - Build das imagens"
+docker compose -f "$COMPOSE_FILE" build --pull
+
+log "5/7 - Subindo stack"
+docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
+
+log "6/7 - Aplicando migrações"
+docker compose -f "$COMPOSE_FILE" exec -T backend alembic upgrade head
+
+log "7/7 - Status dos serviços"
+docker compose -f "$COMPOSE_FILE" ps
+
+IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+if [ -n "${IP}" ]; then
+  log "Deploy concluído. App: http://${IP}"
+else
+  log "Deploy concluído."
+fi

@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     BLING_CLIENT_SECRET: str = os.getenv("BLING_CLIENT_SECRET", "")
     BLING_REDIRECT_URI: str = os.getenv(
         "BLING_REDIRECT_URI",
-        "http://localhost:8000/auth/bling/callback"
+        ""
     )
     BLING_AUTH_URL: str = "https://www.bling.com.br/Api/v3/oauth/authorize"
     BLING_TOKEN_URL: str = "https://www.bling.com.br/Api/v3/oauth/token"

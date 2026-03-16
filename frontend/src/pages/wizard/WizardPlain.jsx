@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { Layout } from '../../components/Layout';
 import '../../styles/wizard.css';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = '/api';
 
 export function WizardPlainPage() {
   const navigate = useNavigate();

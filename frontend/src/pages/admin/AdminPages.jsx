@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Layout } from '../../components/Layout';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = '/api';
 
 // ============ Models Page ============
 
@@ -783,7 +783,7 @@ export function TemplatesPage() {
               {!pendingRetryAfterReauth && (
                 <button 
                   onClick={() => {
-                    window.open('http://localhost:8000/auth/bling/connect', '_blank');
+                    window.open(`${API_BASE}/auth/bling/connect`, '_blank');
                     setPendingRetryAfterReauth(true);
                     setError('Autenticando no Bling...');
                   }}

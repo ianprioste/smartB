@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Layout } from '../../components/Layout';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = '/api';
 const PRODUCTS_CACHE_KEY = 'smartb_products_catalog_v2';
 const PRODUCTS_CACHE_SAVED_AT_KEY = 'smartb_products_catalog_saved_at_v2';
 

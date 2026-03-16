@@ -1,5 +1,5 @@
 """Authentication endpoints for Bling OAuth2."""
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
@@ -7,6 +7,7 @@ import httpx
 import uuid
 from urllib.parse import urlencode
 import base64
+from typing import Dict, Any
 
 from app.infra.db import get_db
 from app.infra.logging import get_logger
@@ -21,8 +22,24 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 _oauth_states = {}
 
 
+def _resolve_redirect_uri(request: Request) -> str:
+    """Resolve OAuth callback URL dynamically, unless explicitly configured."""
+    if settings.BLING_REDIRECT_URI:
+        return settings.BLING_REDIRECT_URI
+
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc))
+    prefix = request.headers.get("x-forwarded-prefix", "").strip()
+
+    if prefix and not prefix.startswith("/"):
+        prefix = f"/{prefix}"
+    prefix = prefix.rstrip("/")
+
+    return f"{scheme}://{host}{prefix}/auth/bling/callback"
+
+
 @router.get("/bling/connect")
-async def bling_connect_redirect():
+async def bling_connect_redirect(request: Request):
     """
     Redirect directly to Bling OAuth2 authorization page.
     
@@ -31,12 +48,16 @@ async def bling_connect_redirect():
     """
     
     state = str(uuid.uuid4())
-    _oauth_states[state] = datetime.utcnow() + timedelta(minutes=10)
+    redirect_uri = _resolve_redirect_uri(request)
+    _oauth_states[state] = {
+        "expires_at": datetime.utcnow() + timedelta(minutes=10),
+        "redirect_uri": redirect_uri,
+    }
     
     # Build auth URL with proper URL encoding
     auth_params = {
         "client_id": settings.BLING_CLIENT_ID,
-        "redirect_uri": settings.BLING_REDIRECT_URI,
+        "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": "read write",
         "state": state,
@@ -49,7 +70,7 @@ async def bling_connect_redirect():
 
 
 @router.post("/bling/connect", response_model=BlingAuthUrlResponse)
-async def get_bling_auth_url():
+async def get_bling_auth_url(request: Request):
     """
     Generate Bling OAuth2 authorization URL (JSON response).
     
@@ -61,12 +82,16 @@ async def get_bling_auth_url():
     """
     
     state = str(uuid.uuid4())
-    _oauth_states[state] = datetime.utcnow() + timedelta(minutes=10)
+    redirect_uri = _resolve_redirect_uri(request)
+    _oauth_states[state] = {
+        "expires_at": datetime.utcnow() + timedelta(minutes=10),
+        "redirect_uri": redirect_uri,
+    }
     
     # Build auth URL with proper URL encoding
     auth_params = {
         "client_id": settings.BLING_CLIENT_ID,
-        "redirect_uri": settings.BLING_REDIRECT_URI,
+        "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": "read write",
         "state": state,
@@ -81,6 +106,7 @@ async def get_bling_auth_url():
 
 @router.get("/bling/callback")
 async def bling_callback(
+    request: Request,
     code: str = Query(..., description="Authorization code from Bling"),
     state: str = Query(..., description="State parameter for CSRF protection"),
     db: Session = Depends(get_db),
@@ -103,12 +129,17 @@ async def bling_callback(
     request_id = str(uuid.uuid4())
     
     # Validate state
-    if state not in _oauth_states:
+    state_data: Dict[str, Any] | None = _oauth_states.pop(state, None)
+    if not state_data:
         logger.error("invalid_oauth_state state=%s", state)
         raise HTTPException(status_code=400, detail="Invalid state parameter")
-    
-    # Clean up old states
-    _oauth_states.pop(state, None)
+
+    expires_at = state_data.get("expires_at")
+    if expires_at and datetime.utcnow() > expires_at:
+        logger.error("expired_oauth_state state=%s", state)
+        raise HTTPException(status_code=400, detail="Expired state parameter")
+
+    redirect_uri = state_data.get("redirect_uri") or _resolve_redirect_uri(request)
     
     logger.info("oauth_callback_received code_length=%s", len(code) if code else 0)
     
@@ -126,7 +157,7 @@ async def bling_callback(
             data={
                 "grant_type": "authorization_code",
                 "code": code,
-                "redirect_uri": settings.BLING_REDIRECT_URI,
+                "redirect_uri": redirect_uri,
             },
             timeout=30.0,
         )

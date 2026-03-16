@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Layout } from '../../components/Layout';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = '/api';
 
 function formatBRL(value) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value ?? 0);

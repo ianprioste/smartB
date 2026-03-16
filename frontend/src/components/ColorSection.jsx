@@ -55,7 +55,7 @@ export function ColorsPage() {
   const [error, setError] = React.useState(null);
   const [confirmDelete, setConfirmDelete] = React.useState(null);
 
-  const API_BASE = 'http://localhost:8000';
+  const API_BASE = '/api';
 
   React.useEffect(() => {
     fetchColors();

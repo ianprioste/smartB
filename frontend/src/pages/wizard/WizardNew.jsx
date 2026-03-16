@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { Layout } from '../../components/Layout';
 import '../../styles/wizard.css';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = '/api';
 const PRODUCTS_CACHE_KEY = 'smartb_products_catalog_v1';
 const PRODUCTS_CACHE_SAVED_AT_KEY = 'smartb_products_catalog_saved_at_v1';
 
@@ -901,7 +901,7 @@ export function WizardNewPage() {
               {!pendingRetryAfterReauth && (
                 <button 
                   onClick={() => {
-                    window.open('http://localhost:8000/auth/bling/connect', '_blank');
+                    window.open(`${API_BASE}/auth/bling/connect`, '_blank');
                     setPendingRetryAfterReauth(true);
                     setError('Autenticando no Bling... Aguarde até completar a autenticação.');
                     
@@ -1421,7 +1421,7 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan, o
         <button 
           className="btn-secondary" 
           onClick={() => {
-            window.open('http://localhost:8000/auth/bling/connect', '_blank');
+            window.open(`${API_BASE}/auth/bling/connect`, '_blank');
             alert('🔄 Janela de autenticação aberta. Complete a autenticação e depois retorne.');
           }}
           style={{ background: '#f59e0b', color: 'white' }}

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = '/api';
 
 function useBlingStatus() {
   const [status, setStatus] = useState(null); // null = loading, true = valid, false = invalid

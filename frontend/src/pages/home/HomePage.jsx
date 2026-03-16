@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Layout } from '../../components/Layout';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = '/api';
 
 function StatCard({ icon, label, value, sub, accent }) {
   return (
