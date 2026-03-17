@@ -38,4 +38,8 @@ jobs:
               git stash push -u -m "auto-stash before deploy $(date '+%Y-%m-%d %H:%M:%S')"
             fi
 
+            git fetch origin main
+            git checkout main
+            git reset --hard origin/main
+
             bash deploy.sh main
