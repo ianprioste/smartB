@@ -55,7 +55,20 @@ log "5/7 - Subindo stack"
 docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
 
 log "6/7 - Aplicando migrações"
-docker compose -f "$COMPOSE_FILE" exec -T backend alembic upgrade head
+alembic_log_file="$(mktemp)"
+if ! docker compose -f "$COMPOSE_FILE" exec -T backend alembic upgrade head >"$alembic_log_file" 2>&1; then
+  cat "$alembic_log_file"
+  if grep -q "DuplicateTable" "$alembic_log_file"; then
+    log "Schema legado detectado (tabelas já existentes). Executando alembic stamp head..."
+    docker compose -f "$COMPOSE_FILE" exec -T backend alembic stamp head
+  else
+    rm -f "$alembic_log_file"
+    fail "Falha ao aplicar migrações"
+  fi
+else
+  cat "$alembic_log_file"
+fi
+rm -f "$alembic_log_file"
 
 log "7/7 - Status dos serviços"
 docker compose -f "$COMPOSE_FILE" ps
