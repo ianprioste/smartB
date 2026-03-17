@@ -38,5 +38,4 @@ jobs:
               git stash push -u -m "auto-stash before deploy $(date '+%Y-%m-%d %H:%M:%S')"
             fi
 
-            chmod +x deploy.sh
-            ./deploy.sh main
+            bash deploy.sh main
