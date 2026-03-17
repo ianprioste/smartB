@@ -989,42 +989,212 @@ p.loading {
   font-size: 14px;
 }
 
+/* ════════════════════════════════════════
+   Mobile Topbar & Hamburger Button
+   ════════════════════════════════════════ */
+
+/* Escondido no desktop */
+.mobile-topbar {
+  display: none;
+}
+
+/* Botão hamburger — escondido no desktop */
+.hamburger-btn {
+  display: none;
+  flex-direction: column;
+  justify-content: space-between;
+  width: 26px;
+  height: 18px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.hamburger-btn span {
+  display: block;
+  height: 2px;
+  width: 100%;
+  background: #f8fafc;
+  border-radius: 2px;
+  transition: transform 0.28s ease, opacity 0.28s ease;
+  transform-origin: center;
+}
+
+.hamburger-btn--open span:nth-child(1) {
+  transform: translateY(8px) rotate(45deg);
+}
+.hamburger-btn--open span:nth-child(2) {
+  opacity: 0;
+  transform: scaleX(0);
+}
+.hamburger-btn--open span:nth-child(3) {
+  transform: translateY(-8px) rotate(-45deg);
+}
+
+/* Overlay que fecha o menu ao clicar fora */
+.sidebar-overlay {
+  display: none;
+}
+
 /* ── Sidebar responsive ── */
 @media (max-width: 768px) {
+  /* Bloqueia scroll quando menu mobile está aberto */
+  body.menu-open {
+    overflow: hidden;
+  }
+
+  /* Mobile topbar visível */
+  .mobile-topbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 16px;
+    height: 56px;
+    min-height: 56px;
+    background: #0f172a;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    flex-shrink: 0;
+  }
+
+  .mobile-topbar .sidebar-logo {
+    font-size: 22px;
+  }
+
+  /* Hamburger visível no mobile */
+  .hamburger-btn {
+    display: flex;
+  }
+
+  /* Sidebar vira drawer lateral */
+  .sidebar-brand .hamburger-btn {
+    display: flex;
+    margin-left: auto;
+  }
+
+  .sidebar-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 199;
+    backdrop-filter: blur(1px);
+    -webkit-backdrop-filter: blur(1px);
+  }
+
   .app-shell {
-    flex-direction: column;
+    flex-direction: row;
   }
 
   .sidebar {
-    width: 100%;
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 280px;
+    height: 100vh;
+    height: 100dvh;
+    z-index: 200;
+    transform: translateX(-100%);
+    transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+    overflow-y: auto;
     min-height: unset;
-    height: auto;
-    position: static;
   }
 
-  .sidebar-nav {
-    flex-direction: row;
-    flex-wrap: wrap;
-    gap: 4px;
-    padding: 8px;
+  .sidebar--open {
+    transform: translateX(0);
   }
 
-  .nav-item {
-    padding: 8px 12px;
-    font-size: 13px;
-    width: auto;
+  /* Sidebar brand no mobile mostra o botão fechar */
+  .sidebar-brand {
+    justify-content: space-between;
   }
 
-  .nav-sub {
-    display: none;
+  .page-content {
+    width: 100%;
+    min-width: 0;
   }
 
   .page-inner {
-    padding: 20px;
+    padding: 16px;
   }
 
   .stats-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  /* Tabelas roláveis horizontalmente no mobile */
+  .table-wrapper {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+  }
+
+  .table {
+    min-width: 600px;
+    border: none;
+    border-radius: 0;
+  }
+
+  /* Modais full-width no mobile */
+  .modal {
+    margin: 16px;
+    max-width: calc(100vw - 32px);
+    width: 100%;
+  }
+
+  /* Page header empilha no mobile */
+  .page-header {
+    flex-direction: column;
+    gap: 12px;
+    align-items: flex-start;
+  }
+
+  .btn-refresh {
+    width: auto;
+  }
+
+  /* Não forçar botões 100% — só os de ação primária */
+  button {
+    width: auto;
+  }
+
+  .form button[type="submit"],
+  .search-box button,
+  .result-item button {
+    width: 100%;
+  }
+
+  .search-box {
+    flex-direction: column;
+  }
+
+  .result-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  h2 {
+    font-size: 22px;
+  }
+
+  .form,
+  .section {
+    padding: 16px;
+  }
+
+  .admin-main {
+    padding: 20px;
+  }
+
+  .admin-nav {
+    padding: 0 16px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
   }
 }
 

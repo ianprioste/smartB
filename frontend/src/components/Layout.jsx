@@ -3,6 +3,20 @@ import { useLocation, useNavigate } from 'react-router-dom';
 
 const API_BASE = '/api';
 
+function HamburgerBtn({ open, onClick }) {
+  return (
+    <button
+      className={`hamburger-btn${open ? ' hamburger-btn--open' : ''}`}
+      onClick={onClick}
+      aria-label={open ? 'Fechar menu' : 'Abrir menu'}
+    >
+      <span />
+      <span />
+      <span />
+    </button>
+  );
+}
+
 function useBlingStatus() {
   const [status, setStatus] = useState(null); // null = loading, true = valid, false = invalid
 
@@ -29,6 +43,7 @@ function useBlingStatus() {
 export function Layout({ children }) {
   const location = useLocation();
   const navigate = useNavigate();
+  const [menuOpen, setMenuOpen] = useState(false);
   const [produtosOpen, setProdutosOpen] = useState(
     location.pathname.startsWith('/wizard') || location.pathname.startsWith('/products')
   );
@@ -40,11 +55,23 @@ export function Layout({ children }) {
   );
   const { status: blingOk, refresh: recheckBling } = useBlingStatus();
 
+  // Fecha o menu ao navegar
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [location.pathname]);
+
+  // Bloqueia scroll do body quando o menu mobile está aberto
+  useEffect(() => {
+    document.body.classList.toggle('menu-open', menuOpen);
+    return () => document.body.classList.remove('menu-open');
+  }, [menuOpen]);
+
   const isActive = (path) => location.pathname === path;
   const isParentActive = (paths) => paths.some((p) => location.pathname.startsWith(p));
 
   function go(path) {
     navigate(path);
+    setMenuOpen(false);
   }
 
   function handleBlingAuth() {
@@ -59,11 +86,17 @@ export function Layout({ children }) {
 
   return (
     <div className="app-shell">
+      {/* ── Overlay mobile ── */}
+      {menuOpen && (
+        <div className="sidebar-overlay" onClick={() => setMenuOpen(false)} />
+      )}
+
       {/* ── Sidebar ── */}
-      <aside className="sidebar">
+      <aside className={`sidebar${menuOpen ? ' sidebar--open' : ''}`}>
         <div className="sidebar-brand">
           <span className="sidebar-logo">✨</span>
           <span className="sidebar-title">smartBling</span>
+          <HamburgerBtn open={menuOpen} onClick={() => setMenuOpen(false)} />
         </div>
 
         <nav className="sidebar-nav">
@@ -196,6 +229,12 @@ export function Layout({ children }) {
 
       {/* ── Main Content ── */}
       <div className="page-content">
+        {/* Topbar mobile com hamburger */}
+        <header className="mobile-topbar">
+          <span className="sidebar-logo">✨</span>
+          <span className="sidebar-title" style={{ flex: 1, color: '#f8fafc' }}>smartBling</span>
+          <HamburgerBtn open={menuOpen} onClick={() => setMenuOpen((v) => !v)} />
+        </header>
         {children}
       </div>
     </div>
