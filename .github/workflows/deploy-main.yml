@@ -32,5 +32,11 @@ jobs:
           script: |
             set -Eeuo pipefail
             cd "${{ env.VPS_APP_DIR }}"
+
+            # If server has local manual edits, stash them to allow clean pull/deploy.
+            if [ -n "$(git status --porcelain)" ]; then
+              git stash push -u -m "auto-stash before deploy $(date '+%Y-%m-%d %H:%M:%S')"
+            fi
+
             chmod +x deploy.sh
             ./deploy.sh main
