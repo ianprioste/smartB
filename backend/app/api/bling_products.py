@@ -40,6 +40,70 @@ def _extract_parent_id(product: dict[str, Any]) -> Optional[int]:
     )
 
 
+def _to_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_stock_quantity(product: dict[str, Any]) -> Optional[float]:
+    """Extract stock quantity from known Bling response shapes."""
+    estoque = product.get("estoque") if isinstance(product.get("estoque"), dict) else None
+    saldo_estoque = product.get("saldoEstoque") if isinstance(product.get("saldoEstoque"), dict) else None
+
+    candidates = [
+        product.get("quantidade"),
+        product.get("estoqueAtual"),
+        product.get("saldo"),
+        product.get("saldoVirtualTotal"),
+        product.get("saldoFisicoTotal"),
+        estoque.get("quantidade") if estoque else None,
+        estoque.get("saldoVirtualTotal") if estoque else None,
+        estoque.get("saldoFisicoTotal") if estoque else None,
+        saldo_estoque.get("saldoVirtualTotal") if saldo_estoque else None,
+        saldo_estoque.get("saldoFisicoTotal") if saldo_estoque else None,
+    ]
+
+    for candidate in candidates:
+        qty = _to_float(candidate)
+        if qty is not None:
+            return qty
+    return None
+
+
+async def _fill_missing_stock_quantities(
+    bling_client: BlingClient,
+    items: list[BlingProductSearchItem],
+) -> list[BlingProductSearchItem]:
+    """Fill stock quantity for paged items using detail endpoint when list payload is incomplete."""
+    missing = [item for item in items if item.quantidade_estoque is None]
+    if not missing:
+        return items
+
+    detail_tasks = [bling_client.get_product(item.id) for item in missing]
+    detail_results = await asyncio.gather(*detail_tasks, return_exceptions=True)
+
+    stock_by_id: dict[int, Optional[float]] = {}
+    for item, detail_result in zip(missing, detail_results):
+        if isinstance(detail_result, Exception):
+            logger.warning(
+                "bling_stock_detail_failed",
+                extra={"product_id": item.id, "error": str(detail_result)},
+            )
+            continue
+
+        detail_data = _unwrap_bling_product(detail_result)
+        stock_by_id[item.id] = _extract_stock_quantity(detail_data)
+
+    return [
+        item.model_copy(update={"quantidade_estoque": stock_by_id.get(item.id, item.quantidade_estoque)})
+        for item in items
+    ]
+
+
 def _build_search_item(product: dict[str, Any]) -> BlingProductSearchItem:
     """Build a search/list item from either list or detail payloads."""
     product_data = _unwrap_bling_product(product)
@@ -52,6 +116,7 @@ def _build_search_item(product: dict[str, Any]) -> BlingProductSearchItem:
         situacao=product_data.get("situacao"),
         tipo_estoque=(product_data.get("estrutura") or {}).get("tipoEstoque"),
         pai=_extract_parent_id(product_data),
+        quantidade_estoque=_extract_stock_quantity(product_data),
     )
 
 
@@ -607,6 +672,7 @@ async def list_all_products(
                 _catalog_cache.pop(_get_catalog_cache_key(q, include_hierarchy), None)
 
         paged_items, total_groups = _paginate_grouped_items(enriched_items, page, limit)
+        paged_items = await _fill_missing_stock_quantities(bling_client, paged_items)
         
         return BlingProductSearchResponse(
             total=total_groups,
