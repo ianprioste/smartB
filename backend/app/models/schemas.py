@@ -1,7 +1,7 @@
 """Pydantic schemas for API requests/responses."""
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Any, Dict, List
-from datetime import datetime
+from datetime import datetime, date
 from uuid import UUID
 
 
@@ -253,6 +253,32 @@ class BlingProductDetailResponse(BaseModel):
         from_attributes = True
 
 
+# ============ Orders Response Schemas ============
+
+class OrderItemResponse(BaseModel):
+    """Item/product in an order."""
+    sku: Optional[str] = None
+    product_name: str = "Produto"
+    quantity: float = 0.0
+    unit_price: float = 0.0
+    total: float = 0.0
+    paid_unit_price: float = 0.0
+    paid_total: float = 0.0
+
+
+class OrderDetailsResponse(BaseModel):
+    """Complete order with items."""
+    id: Optional[int]
+    numero: Optional[int]
+    numeroLoja: Optional[str]
+    data: Optional[str]
+    cliente: str
+    total: float
+    situacao: str
+    situacaoId: Optional[int]
+    itens: List[OrderItemResponse] = Field(default_factory=list)
+
+
 # Error Response
 class ErrorResponse(BaseModel):
     """Standard error response."""
@@ -412,5 +438,110 @@ class PlanSavedResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ============ Sales Events ============
+
+class SalesEventProductInput(BaseModel):
+    """Product selected for a sales event."""
+    bling_product_id: Optional[int] = None
+    sku: str = Field(min_length=1, max_length=255)
+    product_name: Optional[str] = Field(None, max_length=500)
+
+
+class SalesEventCreateRequest(BaseModel):
+    """Create a sales event."""
+    name: str = Field(min_length=1, max_length=255)
+    start_date: date
+    end_date: date
+    products: List[SalesEventProductInput] = Field(min_items=1)
+
+    @field_validator("end_date")
+    @classmethod
+    def validate_period(cls, v, info):
+        start = info.data.get("start_date")
+        if start and v < start:
+            raise ValueError("end_date must be greater than or equal to start_date")
+        return v
+
+
+class SalesEventUpdateRequest(BaseModel):
+    """Update a sales event."""
+    name: str = Field(min_length=1, max_length=255)
+    start_date: date
+    end_date: date
+    products: List[SalesEventProductInput] = Field(min_items=1)
+
+    @field_validator("end_date")
+    @classmethod
+    def validate_period(cls, v, info):
+        start = info.data.get("start_date")
+        if start and v < start:
+            raise ValueError("end_date must be greater than or equal to start_date")
+        return v
+
+
+class SalesEventProductResponse(BaseModel):
+    id: UUID
+    bling_product_id: Optional[int]
+    sku: str
+    product_name: Optional[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SalesEventResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    name: str
+    start_date: date
+    end_date: date
+    created_at: datetime
+    updated_at: datetime
+    products: List[SalesEventProductResponse] = Field(default_factory=list)
+
+
+class SalesEventListItemResponse(BaseModel):
+    id: UUID
+    name: str
+    start_date: date
+    end_date: date
+    products_count: int
+    created_at: datetime
+
+
+class EventMatchedItemResponse(BaseModel):
+    sku: str
+    product_name: str
+    quantity: float
+    unit_price: float
+    total: float
+    paid_unit_price: float  # Unit price after discount consideration
+    paid_total: float  # Total price after discount consideration
+
+
+class EventOrderResponse(BaseModel):
+    id: Optional[int] = None
+    numero: Optional[int] = None
+    data: Optional[str] = None
+    cliente: str = "—"
+    situacao: str = "—"
+    total_order: float = 0.0
+    total_matched: float = 0.0
+    matched_items: List[EventMatchedItemResponse] = Field(default_factory=list)
+
+
+class EventSalesSummaryResponse(BaseModel):
+    orders_count: int = 0
+    matched_items_count: int = 0
+    total_matched: float = 0.0
+
+
+class EventSalesResponse(BaseModel):
+    event: SalesEventResponse
+    summary: EventSalesSummaryResponse
+    orders: List[EventOrderResponse] = Field(default_factory=list)
 
 

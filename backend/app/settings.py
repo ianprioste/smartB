@@ -52,6 +52,8 @@ class Settings(BaseSettings):
         "CELERY_RESULT_BACKEND",
         "redis://localhost:6379/2"
     )
+    ORDERS_INCREMENTAL_SYNC_MINUTES: int = int(os.getenv("ORDERS_INCREMENTAL_SYNC_MINUTES", "15"))
+    MASTER_ADMIN_EMAIL: str = os.getenv("MASTER_ADMIN_EMAIL", "ian.prioste@useruach.com.br").strip().lower()
     
     # CORS
     CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:80")

@@ -1,7 +1,7 @@
 """Data models for SQLAlchemy ORM."""
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Integer, Text, ForeignKey, Enum, JSON, Boolean, UniqueConstraint, BigInteger
+from sqlalchemy import Column, String, DateTime, Date, Integer, Text, ForeignKey, Enum, JSON, Boolean, UniqueConstraint, BigInteger, Float
 from sqlalchemy.dialects.postgresql import UUID
 from app.infra.db import Base
 import enum
@@ -146,4 +146,132 @@ class PlanModel(Base):
     plan_payload = Column(JSON, nullable=False)  # Complete plan with all items
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     executed_at = Column(DateTime, nullable=True)  # When execution started
+
+
+class SalesEventModel(Base):
+    """Sales event definition (name, period, and tracked products)."""
+    __tablename__ = "sales_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    name = Column(String(255), nullable=False)
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SalesEventProductModel(Base):
+    """Products associated to a sales event."""
+    __tablename__ = "sales_event_products"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id = Column(UUID(as_uuid=True), ForeignKey("sales_events.id"), nullable=False)
+    bling_product_id = Column(BigInteger, nullable=True)
+    sku = Column(String(255), nullable=False)
+    product_name = Column(String(500), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("event_id", "sku", name="uq_sales_event_products_event_sku"),
+    )
+
+
+class BlingOrderSnapshotModel(Base):
+    """Persistent local snapshot of Bling orders and full details."""
+    __tablename__ = "bling_order_snapshots"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    bling_order_id = Column(BigInteger, nullable=False)
+
+    numero = Column(BigInteger, nullable=True)
+    numero_loja = Column(String(255), nullable=True)
+    order_date = Column(DateTime, nullable=True)
+    customer_name = Column(String(500), nullable=True)
+    status_id = Column(Integer, nullable=True)
+    status_name = Column(String(255), nullable=True)
+    total_value = Column(Float, nullable=True)
+
+    raw_order = Column(JSON, nullable=True)   # payload from /pedidos/vendas list
+    raw_detail = Column(JSON, nullable=True)  # payload from /pedidos/vendas/{id}
+
+    source_updated_at = Column(DateTime, nullable=True)
+    imported_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "bling_order_id", name="uq_bling_order_snapshot_tenant_order"),
+    )
+
+
+class BlingOrdersSyncStateModel(Base):
+    """Tracks last sync checkpoints for Bling orders import."""
+    __tablename__ = "bling_orders_sync_state"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    last_full_sync_at = Column(DateTime, nullable=True)
+    last_incremental_sync_at = Column(DateTime, nullable=True)
+    last_successful_sync_at = Column(DateTime, nullable=True)
+    last_sync_status = Column(String(50), nullable=True)
+    last_sync_message = Column(Text, nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", name="uq_bling_orders_sync_state_tenant"),
+    )
+
+
+class AccessProfileModel(Base):
+    """Access profile (role) used by allowed emails."""
+    __tablename__ = "access_profiles"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    name = Column(String(120), nullable=False)
+    description = Column(String(500), nullable=True)
+    permissions = Column(JSON, nullable=False, default=dict)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_access_profiles_tenant_name"),
+    )
+
+
+class AccessUserModel(Base):
+    """Allowed app user identified by e-mail."""
+    __tablename__ = "access_users"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    email = Column(String(320), nullable=False)
+    password_hash = Column(String(255), nullable=True)
+    profile_id = Column(UUID(as_uuid=True), ForeignKey("access_profiles.id"), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "email", name="uq_access_users_tenant_email"),
+    )
+
+
+class AccessSessionModel(Base):
+    """Authenticated app session stored server-side."""
+    __tablename__ = "access_sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("access_users.id"), nullable=False)
+    token = Column(String(128), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("token", name="uq_access_sessions_token"),
+    )
 

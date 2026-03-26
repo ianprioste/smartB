@@ -10,6 +10,10 @@ Integração SaaS com Bling ERP (API v3) com **Sprint 1 (Foundation) + Sprint 2 
 - **[INDEX.md](doc/INDEX.md)** - Hub da documentação
 - **[QUICKSTART.md](doc/QUICKSTART.md)** ⭐ - 5 minutos para rodar
 
+### 🎪 Sistema de Eventos de Vendas (Novo!)
+- **[SALES_EVENTS_README.md](SALES_EVENTS_README.md)** ✨ - Guia completo e tutoriais
+- **[doc/SALES_EVENTS_IMPLEMENTATION.md](doc/SALES_EVENTS_IMPLEMENTATION.md)** - Detalhes técnicos da implementação
+
 ### 📖 Guias Principais
 - **[ARCHITECTURE.md](doc/ARCHITECTURE.md)** - Visão completa e diagramas
 - **[API.md](doc/API.md)** - Endpoints, exemplos e erros

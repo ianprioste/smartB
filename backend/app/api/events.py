@@ -1,0 +1,822 @@
+"""Sales events API: create events and view sales filtered by event products."""
+from typing import Any, Dict, List
+from uuid import UUID
+import re
+from datetime import datetime, time
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app.infra.db import get_db
+from app.infra.bling_client import BlingClient, BlingAuthError, BlingAPIError
+from app.infra.logging import get_logger
+from app.domain.order_local_cache import get_cached_order_detail, warm_order_details
+from app.repositories.bling_token_repo import BlingTokenRepository
+from app.repositories.order_snapshot_repo import OrderSnapshotRepository
+from app.repositories.sales_event_repo import SalesEventRepository
+from app.models.schemas import (
+    SalesEventCreateRequest,
+    SalesEventUpdateRequest,
+    SalesEventResponse,
+    SalesEventListItemResponse,
+    SalesEventProductResponse,
+    EventMatchedItemResponse,
+    EventOrderResponse,
+    EventSalesSummaryResponse,
+    EventSalesResponse,
+)
+
+router = APIRouter(prefix="/events", tags=["events"])
+logger = get_logger(__name__)
+
+DEFAULT_TENANT_ID = UUID("00000000-0000-0000-0000-000000000001")
+
+# Unified sales-order status labels used across Orders and Event Sales pages.
+STATUS_ID_NAME_MAP = {
+    6: "Em aberto",
+    9: "Atendido",
+    12: "Atendido",
+    15: "Cancelado",
+}
+
+
+def _normalize_sku(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _canonical_sku(value: Any) -> str:
+    """Normalize SKU for resilient matching (ignore case and separators)."""
+    raw = str(value or "").strip().casefold()
+    return re.sub(r"[^a-z0-9]", "", raw)
+
+
+def _to_float(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except Exception:
+        return 0.0
+
+def _extract_total_with_discount(primary_payload: Dict[str, Any] | None, fallback_payload: Dict[str, Any] | None = None) -> float:
+    for payload in (primary_payload, fallback_payload):
+        if not isinstance(payload, dict):
+            continue
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        total_final = _to_float(data.get("total"))
+        if total_final > 0:
+            return total_final
+
+    for payload in (primary_payload, fallback_payload):
+        if not isinstance(payload, dict):
+            continue
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        total_products = _to_float(data.get("totalProdutos"))
+        if total_products > 0:
+            return total_products
+
+    return 0.0
+
+
+def _to_optional_int(value: Any) -> int | None:
+    """Best-effort integer conversion for inconsistent Bling payloads."""
+    if value is None or isinstance(value, bool):
+        return None
+
+    if isinstance(value, int):
+        return value
+
+    if isinstance(value, float):
+        return int(value)
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+        return int(text)
+
+    match = re.search(r"-?\d+", text)
+    if match:
+        try:
+            return int(match.group(0))
+        except Exception:
+            return None
+
+    return None
+
+
+def _normalize_status_label(text: Any) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return "—"
+
+    lower = raw.casefold()
+    if "conclu" in lower or "atendid" in lower or "andamento" in lower or "entreg" in lower:
+        return "Atendido"
+    if "cancel" in lower or "devolv" in lower:
+        return "Cancelado"
+    if "aberto" in lower or "pendente" in lower:
+        return "Em aberto"
+    return raw
+
+
+def _status_to_text(raw_status: Any, fallback_status_id: Any = None) -> str:
+    """Normalize Bling order status to a safe, always-string value.
+
+    Bling frequently returns only `id`/`valor` without `nome`.
+    """
+    if isinstance(raw_status, dict):
+        name = raw_status.get("nome")
+        if name is not None:
+            return _normalize_status_label(name)
+
+        status_id = _to_optional_int(raw_status.get("id"))
+        if status_id is not None:
+            return STATUS_ID_NAME_MAP.get(status_id, f"Status {status_id}")
+
+    status_id = _to_optional_int(fallback_status_id if fallback_status_id is not None else raw_status)
+    if status_id is not None:
+        return STATUS_ID_NAME_MAP.get(status_id, f"Status {status_id}")
+
+    return _normalize_status_label(raw_status)
+
+
+def _make_client(db: Session):
+    token_row = BlingTokenRepository.get_by_tenant(db, DEFAULT_TENANT_ID)
+    if not token_row:
+        return None
+
+    def _save(access_token, refresh_token, expires_at):
+        BlingTokenRepository.create_or_update(
+            db=db,
+            tenant_id=DEFAULT_TENANT_ID,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at,
+        )
+
+    return BlingClient(
+        access_token=token_row.access_token,
+        refresh_token=token_row.refresh_token,
+        token_expires_at=token_row.expires_at,
+        on_token_refresh=_save,
+    )
+
+
+def _map_event_response(db: Session, event) -> SalesEventResponse:
+    products = SalesEventRepository.list_products(db, event.id)
+    return SalesEventResponse(
+        id=event.id,
+        tenant_id=event.tenant_id,
+        name=event.name,
+        start_date=event.start_date,
+        end_date=event.end_date,
+        created_at=event.created_at,
+        updated_at=event.updated_at,
+        products=[
+            SalesEventProductResponse(
+                id=p.id,
+                bling_product_id=p.bling_product_id,
+                sku=p.sku,
+                product_name=p.product_name,
+                created_at=p.created_at,
+            )
+            for p in products
+        ],
+    )
+
+
+async def _expand_products_with_children(
+    db: Session,
+    products: List[dict],
+) -> List[dict]:
+    """If a selected product is a parent, include all children SKUs in the event."""
+    client = _make_client(db)
+    if not client:
+        return products
+
+    result: List[dict] = []
+    seen_skus: set[str] = set()
+
+    for product in products:
+        sku = _normalize_sku(product.get("sku"))
+        if sku and sku not in seen_skus:
+            result.append(
+                {
+                    "bling_product_id": product.get("bling_product_id"),
+                    "sku": sku,
+                    "product_name": product.get("product_name"),
+                }
+            )
+            seen_skus.add(sku)
+
+        product_id = product.get("bling_product_id")
+        if not product_id:
+            continue
+
+        try:
+            detail = await client.get(f"/produtos/{product_id}")
+            data = detail.get("data") if isinstance(detail, dict) else None
+            payload = data if isinstance(data, dict) else detail
+
+            variations = payload.get("variacoes", []) if isinstance(payload, dict) else []
+            if not isinstance(variations, list):
+                continue
+
+            for variation in variations:
+                child_sku = _normalize_sku(
+                    variation.get("codigo")
+                    or variation.get("item", {}).get("codigo")
+                )
+                if not child_sku or child_sku in seen_skus:
+                    continue
+
+                result.append(
+                    {
+                        "bling_product_id": variation.get("id"),
+                        "sku": child_sku,
+                        "product_name": variation.get("nome") or variation.get("item", {}).get("nome") or child_sku,
+                    }
+                )
+                seen_skus.add(child_sku)
+        except Exception:
+            # Keep original selection if expansion fails for one product.
+            continue
+
+    return result
+
+
+async def _expand_selected_products_for_sales(
+    db: Session,
+    products: List[SalesEventProductResponse],
+) -> tuple[set[str], set[int]]:
+    """Expand selected products at read time to include children of parent items."""
+    base_products = [
+        {
+            "bling_product_id": p.bling_product_id,
+            "sku": p.sku,
+            "product_name": p.product_name,
+        }
+        for p in products
+    ]
+    expanded = await _expand_products_with_children(db, base_products)
+    skus = {_normalize_sku(p.get("sku")) for p in expanded if _normalize_sku(p.get("sku"))}
+    ids = {
+        int(p.get("bling_product_id"))
+        for p in expanded
+        if p.get("bling_product_id") is not None
+    }
+    return skus, ids
+
+
+async def _fetch_orders_for_period(
+    client: BlingClient,
+    start_date: str,
+    end_date: str,
+    selected_product_ids: set[int] | None = None,
+) -> List[Dict[str, Any]]:
+    """Fetch all orders in date range, paginating through Bling results."""
+    async def _fetch_with_dates(
+        date_from: str,
+        date_to: str,
+        product_ids: set[int] | None,
+    ) -> List[Dict[str, Any]]:
+        page = 1
+        limit = 100
+        all_orders: List[Dict[str, Any]] = []
+        use_product_filter = bool(product_ids)
+
+        while True:
+            params: Dict[str, Any] = {
+                "dataInicial": date_from,
+                "dataFinal": date_to,
+                "pagina": page,
+                "limite": limit,
+            }
+            if use_product_filter and product_ids:
+                params["idsProdutos[]"] = sorted(product_ids)
+
+            resp = await client.get("/pedidos/vendas", params=params)
+            page_data = resp.get("data", []) if isinstance(resp, dict) else []
+            if not page_data:
+                break
+
+            all_orders.extend(page_data)
+
+            if len(page_data) < limit:
+                break
+
+            page += 1
+            if page > 50:
+                break
+
+        return all_orders
+
+    product_ids = {pid for pid in (selected_product_ids or set()) if pid is not None}
+
+    try:
+        orders = await _fetch_with_dates(start_date, end_date, product_ids)
+    except BlingAPIError as exc:
+        # Some Bling accounts may reject product filters on /pedidos/vendas.
+        if product_ids:
+            logger.warning(
+                "event_sales_orders_product_filter_unsupported fallback=true error=%s",
+                str(exc),
+            )
+            orders = await _fetch_with_dates(start_date, end_date, None)
+        else:
+            raise
+
+    if orders:
+        return orders
+
+    # Fallback for Bling accounts expecting DD/MM/YYYY params.
+    try:
+        y1, m1, d1 = start_date.split("-")
+        y2, m2, d2 = end_date.split("-")
+        start_br = f"{d1}/{m1}/{y1}"
+        end_br = f"{d2}/{m2}/{y2}"
+        try:
+            return await _fetch_with_dates(start_br, end_br, product_ids)
+        except BlingAPIError as exc:
+            if product_ids:
+                logger.warning(
+                    "event_sales_orders_product_filter_unsupported_br fallback=true error=%s",
+                    str(exc),
+                )
+                return await _fetch_with_dates(start_br, end_br, None)
+            raise
+    except Exception:
+        return []
+
+
+def _match_event_items(
+    order_items: List[Dict[str, Any]],
+    selected_skus_canonical: set[str],
+    selected_product_ids: set[int],
+) -> List[Dict[str, Any]]:
+    """Return only items that belong to the event (SKU or product id match)."""
+    matched: List[Dict[str, Any]] = []
+    for item in order_items:
+        product_id = item.get("product_id")
+        item_sku = item.get("sku")
+        sku_match = _canonical_sku(item_sku) in selected_skus_canonical if item_sku else False
+        id_match = product_id in selected_product_ids if product_id is not None else False
+        if sku_match or id_match:
+            matched.append(item)
+    return matched
+
+
+def _calculate_proportional_value(
+    total_items_matched: float,
+    total_order_items: float,
+    total_order_final: float,
+) -> float:
+    """Calculate the value really paid for matched items, considering discounts/surcharges.
+    
+    If order total_items = 1000, but total_final = 900 (10% discount),
+    and matched items = 600, then:
+    proportion = 600 / 1000 = 0.6
+    value_paid = 900 * 0.6 = 540
+    """
+    if total_order_items <= 0:
+        return total_items_matched
+    
+    # Avoid division by zero
+    proportion = min(1.0, max(0.0, total_items_matched / total_order_items))
+    return total_order_final * proportion
+
+
+def _extract_order_items(order_detail: Dict[str, Any]) -> List[Dict[str, Any]]:
+    data = order_detail.get("data") if isinstance(order_detail, dict) else None
+    payload = data if isinstance(data, dict) else order_detail
+
+    raw_items = payload.get("itens", []) if isinstance(payload, dict) else []
+    parsed_items: List[Dict[str, Any]] = []
+
+    for raw in raw_items:
+        try:
+            item = raw.get("item") if isinstance(raw, dict) and isinstance(raw.get("item"), dict) else raw
+            if not isinstance(item, dict):
+                continue
+
+            product = item.get("produto") if isinstance(item.get("produto"), dict) else {}
+            raw_product_id = (
+                product.get("id")
+                or item.get("idProduto")
+                or item.get("produtoId")
+                or item.get("idProdutoBling")
+            )
+            product_id = _to_optional_int(raw_product_id)
+
+            sku = _normalize_sku(
+                item.get("codigo")
+                or product.get("codigo")
+                or item.get("sku")
+                or item.get("codigoItem")
+            )
+            if not sku and product_id is None:
+                continue
+
+            quantity = _to_float(item.get("quantidade"))
+            unit_price = _to_float(item.get("valor") or item.get("valorUnitario") or item.get("preco"))
+            total = _to_float(item.get("valorTotal"))
+            if total <= 0:
+                total = quantity * unit_price
+
+            parsed_items.append(
+                {
+                    "sku": sku,
+                    "product_id": product_id,
+                    "product_name": str(
+                        item.get("descricao")
+                        or product.get("nome")
+                        or item.get("nome")
+                        or "Produto"
+                    ),
+                    "quantity": quantity,
+                    "unit_price": unit_price,
+                    "total": total,
+                    "valor_unitario_original": unit_price,
+                }
+            )
+        except Exception:
+            # Skip malformed item without breaking entire event sales response.
+            continue
+
+    return parsed_items
+
+
+@router.post("", response_model=SalesEventResponse)
+async def create_event(
+    request: SalesEventCreateRequest,
+    db: Session = Depends(get_db),
+):
+    normalized_products = []
+    seen_skus = set()
+
+    for product in request.products:
+        sku = _normalize_sku(product.sku)
+        if not sku or sku in seen_skus:
+            continue
+        seen_skus.add(sku)
+        normalized_products.append(
+            {
+                "bling_product_id": product.bling_product_id,
+                "sku": sku,
+                "product_name": product.product_name,
+            }
+        )
+
+    if not normalized_products:
+        raise HTTPException(status_code=400, detail="Selecione ao menos um produto válido para o evento")
+
+    normalized_products = await _expand_products_with_children(db, normalized_products)
+
+    event = SalesEventRepository.create(
+        db=db,
+        tenant_id=DEFAULT_TENANT_ID,
+        name=request.name.strip(),
+        start_date=request.start_date,
+        end_date=request.end_date,
+        products=normalized_products,
+    )
+
+    return _map_event_response(db, event)
+
+
+@router.put("/{event_id}", response_model=SalesEventResponse)
+async def update_event(
+    event_id: UUID,
+    request: SalesEventUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
+    if not event:
+        raise HTTPException(status_code=404, detail="Evento não encontrado")
+
+    normalized_products = []
+    seen_skus = set()
+
+    for product in request.products:
+        sku = _normalize_sku(product.sku)
+        if not sku or sku in seen_skus:
+            continue
+        seen_skus.add(sku)
+        normalized_products.append(
+            {
+                "bling_product_id": product.bling_product_id,
+                "sku": sku,
+                "product_name": product.product_name,
+            }
+        )
+
+    if not normalized_products:
+        raise HTTPException(status_code=400, detail="Selecione ao menos um produto válido para o evento")
+
+    normalized_products = await _expand_products_with_children(db, normalized_products)
+
+    updated = SalesEventRepository.update(
+        db=db,
+        event=event,
+        name=request.name.strip(),
+        start_date=request.start_date,
+        end_date=request.end_date,
+        products=normalized_products,
+    )
+
+    return _map_event_response(db, updated)
+
+
+@router.delete("/{event_id}", status_code=204)
+async def delete_event(event_id: UUID, db: Session = Depends(get_db)):
+    event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
+    if not event:
+        raise HTTPException(status_code=404, detail="Evento não encontrado")
+
+    SalesEventRepository.delete(db, event)
+    return None
+
+
+@router.get("", response_model=List[SalesEventListItemResponse])
+async def list_events(db: Session = Depends(get_db)):
+    events = SalesEventRepository.list_by_tenant(db, DEFAULT_TENANT_ID)
+    results: List[SalesEventListItemResponse] = []
+
+    for event in events:
+        products = SalesEventRepository.list_products(db, event.id)
+        results.append(
+            SalesEventListItemResponse(
+                id=event.id,
+                name=event.name,
+                start_date=event.start_date,
+                end_date=event.end_date,
+                products_count=len(products),
+                created_at=event.created_at,
+            )
+        )
+
+    return results
+
+
+@router.get("/{event_id}", response_model=SalesEventResponse)
+async def get_event(event_id: UUID, db: Session = Depends(get_db)):
+    event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
+    if not event:
+        raise HTTPException(status_code=404, detail="Evento não encontrado")
+
+    return _map_event_response(db, event)
+
+
+@router.get("/{event_id}/sales", response_model=EventSalesResponse)
+async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
+    event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
+    if not event:
+        raise HTTPException(status_code=404, detail="Evento não encontrado")
+
+    event_response = _map_event_response(db, event)
+    # Prefer persisted event products to avoid extra API calls on every read.
+    selected_skus = {
+        _normalize_sku(p.sku)
+        for p in event_response.products
+        if _normalize_sku(p.sku)
+    }
+    selected_skus_canonical = {_canonical_sku(sku) for sku in selected_skus if sku}
+    selected_product_ids = {
+        pid
+        for pid in (_to_optional_int(p.bling_product_id) for p in event_response.products)
+        if pid is not None
+    }
+
+    # Primary source: local persistent DB snapshots.
+    start_dt = datetime.combine(event.start_date, time.min)
+    end_dt = datetime.combine(event.end_date, time.max)
+    snapshot_rows = OrderSnapshotRepository.list_for_period(db, DEFAULT_TENANT_ID, start_dt, end_dt)
+
+    if snapshot_rows:
+        logger.info(
+            "event_sales_local_db_start event_id=%s orders_in_period=%s products=%s expanded_skus=%s expanded_ids=%s",
+            str(event_id),
+            len(snapshot_rows),
+            len(event_response.products),
+            len(selected_skus_canonical),
+            len(selected_product_ids),
+        )
+
+        filtered_order_map: dict[Any, EventOrderResponse] = {}
+        matched_items_count = 0
+        total_matched = 0.0
+
+        for row in snapshot_rows:
+            detail_payload = row.raw_detail if isinstance(row.raw_detail, dict) else {}
+            order_payload = row.raw_order if isinstance(row.raw_order, dict) else {}
+
+            order_items = _extract_order_items(detail_payload)
+            if not order_items:
+                order_items = _extract_order_items(order_payload)
+
+            matched = _match_event_items(order_items, selected_skus_canonical, selected_product_ids)
+            if not matched:
+                continue
+
+            # Calculate value with discount consideration
+            total_items_sum = sum(item.get("total", 0) for item in order_items)
+            total_matched_items_sum = sum(item.get("total", 0) for item in matched)
+            total_order_final = _extract_total_with_discount(detail_payload, order_payload) or _to_float(row.total_value)
+            
+            # Calculate the overall discount factor to apply to each matched item
+            discount_factor = (total_order_final / total_items_sum) if total_items_sum > 0 else 1.0
+            
+            # Create matched_items with paid values calculated
+            matched_items = []
+            for item in matched:
+                paid_total = _to_float(item.get("total", 0)) * discount_factor
+                paid_unit_price = _to_float(item.get("unit_price", 0)) * discount_factor
+                matched_items.append(EventMatchedItemResponse(
+                    sku=item.get("sku", ""),
+                    product_name=item.get("product_name", ""),
+                    quantity=_to_float(item.get("quantity", 0)),
+                    unit_price=_to_float(item.get("unit_price", 0)),
+                    total=_to_float(item.get("total", 0)),
+                    paid_unit_price=paid_unit_price,
+                    paid_total=paid_total,
+                ))
+            
+            order_total_matched = _calculate_proportional_value(
+                total_matched_items_sum,
+                total_items_sum,
+                total_order_final
+            )
+
+            matched_items_count += len(matched_items)
+            total_matched += order_total_matched
+
+            key = row.bling_order_id or row.numero
+            filtered_order_map[key] = EventOrderResponse(
+                id=int(row.bling_order_id) if row.bling_order_id is not None else None,
+                numero=row.numero,
+                data=row.order_date.isoformat() if row.order_date else None,
+                cliente=row.customer_name or "—",
+                situacao=_status_to_text(
+                    order_payload.get("situacao") if isinstance(order_payload, dict) else None,
+                    row.status_id,
+                ) if isinstance(order_payload, dict) else _status_to_text(row.status_name, row.status_id),
+                total_order=total_order_final,
+                total_matched=order_total_matched,
+                matched_items=matched_items,
+            )
+
+        filtered_orders = list(filtered_order_map.values())
+
+        logger.info(
+            "event_sales_local_db_done event_id=%s matched_orders=%s matched_items=%s total_matched=%.2f",
+            str(event_id),
+            len(filtered_orders),
+            matched_items_count,
+            total_matched,
+        )
+
+        return EventSalesResponse(
+            event=event_response,
+            summary=EventSalesSummaryResponse(
+                orders_count=len(filtered_orders),
+                matched_items_count=matched_items_count,
+                total_matched=total_matched,
+            ),
+            orders=filtered_orders,
+        )
+
+    client = _make_client(db)
+    if not client:
+        raise HTTPException(status_code=401, detail="Bling não autenticado")
+
+    try:
+        orders = await _fetch_orders_for_period(
+            client,
+            event.start_date.strftime("%Y-%m-%d"),
+            event.end_date.strftime("%Y-%m-%d"),
+            selected_product_ids,
+        )
+        logger.info(
+            "event_sales_filter_start event_id=%s orders_in_period=%s products=%s expanded_skus=%s expanded_ids=%s",
+            str(event_id),
+            len(orders),
+            len(event_response.products),
+            len(selected_skus_canonical),
+            len(selected_product_ids),
+        )
+
+        filtered_orders: List[EventOrderResponse] = []
+        matched_items_count = 0
+        total_matched = 0.0
+        local_fallback_used = 0
+
+        # Local-first strategy:
+        # 1) Warm missing details once.
+        # 2) Filter strictly from locally cached full order details.
+        filtered_order_map: dict[Any, EventOrderResponse] = {}
+        cache_hits, fetched, failed = await warm_order_details(client, orders, max_concurrency=3)
+        logger.info(
+            "event_sales_local_warm_done orders_in_period=%s cache_hits=%s fetched=%s failed=%s",
+            len(orders),
+            cache_hits,
+            fetched,
+            failed,
+        )
+
+        for order in orders:
+            order_id = order.get("id")
+            detail = get_cached_order_detail(order_id)
+            if detail is None:
+                logger.warning(
+                    "event_sales_cached_detail_missing event_id=%s order_id=%s",
+                    str(event_id),
+                    str(order_id),
+                )
+                order_items = _extract_order_items(order)
+                local_fallback_used += 1
+            else:
+                order_items = _extract_order_items(detail)
+                if not order_items:
+                    # Local cache may hold sparse data for some orders; fallback to list payload.
+                    order_items = _extract_order_items(order)
+                    local_fallback_used += 1
+
+            matched = _match_event_items(order_items, selected_skus_canonical, selected_product_ids)
+
+            if not matched:
+                continue
+
+            # Calculate value with discount consideration
+            total_items_sum = sum(item.get("total", 0) for item in order_items)
+            total_matched_items_sum = sum(item.get("total", 0) for item in matched)
+            total_order_final = _extract_total_with_discount(detail, order)
+            
+            # Calculate the overall discount factor to apply to each matched item
+            discount_factor = (total_order_final / total_items_sum) if total_items_sum > 0 else 1.0
+            
+            # Create matched_items with paid values calculated
+            matched_items = []
+            for item in matched:
+                paid_total = _to_float(item.get("total", 0)) * discount_factor
+                paid_unit_price = _to_float(item.get("unit_price", 0)) * discount_factor
+                matched_items.append(EventMatchedItemResponse(
+                    sku=item.get("sku", ""),
+                    product_name=item.get("product_name", ""),
+                    quantity=_to_float(item.get("quantity", 0)),
+                    unit_price=_to_float(item.get("unit_price", 0)),
+                    total=_to_float(item.get("total", 0)),
+                    paid_unit_price=paid_unit_price,
+                    paid_total=paid_total,
+                ))
+            
+            order_total_matched = _calculate_proportional_value(
+                total_matched_items_sum,
+                total_items_sum,
+                total_order_final
+            )
+
+            matched_items_count += len(matched_items)
+            total_matched += order_total_matched
+
+            situacao = order.get("situacao") if isinstance(order.get("situacao"), dict) else {}
+            key = order.get("id") or order.get("numero")
+            filtered_order_map[key] = EventOrderResponse(
+                id=order.get("id"),
+                numero=order.get("numero"),
+                data=order.get("data"),
+                cliente=(order.get("contato", {}) or {}).get("nome") or order.get("nomeCliente") or "—",
+                situacao=_status_to_text(situacao if isinstance(situacao, dict) else order.get("situacao")),
+                total_order=total_order_final,
+                total_matched=order_total_matched,
+                matched_items=matched_items,
+            )
+
+        filtered_orders = list(filtered_order_map.values())
+
+        logger.info(
+            "event_sales_filter_done event_id=%s matched_orders=%s matched_items=%s total_matched=%.2f list_api_calls=1 detail_cache_hits=%s detail_api_fetched=%s detail_api_failed=%s local_fallback_used=%s total_api_calls=%s",
+            str(event_id),
+            len(filtered_orders),
+            matched_items_count,
+            total_matched,
+            cache_hits,
+            fetched,
+            failed,
+            local_fallback_used,
+            1 + fetched,
+        )
+
+        return EventSalesResponse(
+            event=event_response,
+            summary=EventSalesSummaryResponse(
+                orders_count=len(filtered_orders),
+                matched_items_count=matched_items_count,
+                total_matched=total_matched,
+            ),
+            orders=filtered_orders,
+        )
+
+    except BlingAuthError:
+        raise HTTPException(status_code=401, detail="Sessão do Bling expirada. Reconecte sua conta.")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar vendas do evento: {exc}")

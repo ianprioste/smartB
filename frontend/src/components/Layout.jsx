@@ -51,7 +51,9 @@ export function Layout({ children }) {
     location.pathname.startsWith('/admin')
   );
   const [configProdutosOpen, setConfigProdutosOpen] = useState(
-    location.pathname.startsWith('/admin')
+    location.pathname.startsWith('/admin/models') ||
+    location.pathname.startsWith('/admin/colors') ||
+    location.pathname.startsWith('/admin/templates')
   );
   const { status: blingOk, refresh: recheckBling } = useBlingStatus();
 
@@ -82,6 +84,18 @@ export function Layout({ children }) {
       await recheckBling();
       if (attempts >= 20) clearInterval(poll);
     }, 3000);
+  }
+
+  async function handleLogout() {
+    try {
+      await fetch(`${API_BASE}/auth/access/logout`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+    } catch {
+      // Ignore network errors; redirect anyway.
+    }
+    window.location.href = '/login';
   }
 
   return (
@@ -156,6 +170,32 @@ export function Layout({ children }) {
             <span className="nav-label">Pedidos</span>
           </button>
 
+          <div className="nav-group">
+            <button
+              className={`nav-item nav-group-header ${isParentActive(['/events']) ? 'active-parent' : ''}`}
+              onClick={() => go('/events')}
+            >
+              <span className="nav-icon">🎪</span>
+              <span className="nav-label">Eventos de Vendas</span>
+            </button>
+            <div className="nav-sub">
+              <button
+                className={`nav-item nav-sub-item ${isActive('/events') ? 'active' : ''}`}
+                onClick={() => go('/events')}
+              >
+                <span className="nav-icon">📝</span>
+                <span className="nav-label">Cadastrar Evento</span>
+              </button>
+              <button
+                className={`nav-item nav-sub-item ${isActive('/events/sales') ? 'active' : ''}`}
+                onClick={() => go('/events/sales')}
+              >
+                <span className="nav-icon">💵</span>
+                <span className="nav-label">Vendas por Evento</span>
+              </button>
+            </div>
+          </div>
+
           {/* Configurações */}
           <div className="nav-group">
             <button
@@ -169,10 +209,18 @@ export function Layout({ children }) {
 
             {configOpen && (
               <div className="nav-sub">
+                <button
+                  className={`nav-item nav-sub-item ${isActive('/admin/access') ? 'active' : ''}`}
+                  onClick={() => go('/admin/access')}
+                >
+                  <span className="nav-icon">🔐</span>
+                  <span className="nav-label">Perfis de Acesso</span>
+                </button>
+
                 {/* Configurações > Produtos (sub-grupo) */}
                 <div className="nav-group">
                   <button
-                    className={`nav-item nav-sub-item nav-group-header ${isParentActive(['/admin']) ? 'active-parent' : ''}`}
+                    className={`nav-item nav-sub-item nav-group-header ${isParentActive(['/admin/models', '/admin/colors', '/admin/templates']) ? 'active-parent' : ''}`}
                     onClick={() => setConfigProdutosOpen((v) => !v)}
                   >
                     <span className="nav-icon">📦</span>
@@ -213,6 +261,14 @@ export function Layout({ children }) {
 
         {/* ── Bling Auth button ── */}
         <div className="sidebar-footer">
+          <button
+            className="btn-secondary"
+            onClick={handleLogout}
+            style={{ width: '100%', marginBottom: 8 }}
+            title="Sair da sessão"
+          >
+            Sair
+          </button>
           <button
             className={`bling-auth-btn ${blingOk === true ? 'bling-auth-btn--ok' : blingOk === false ? 'bling-auth-btn--err' : 'bling-auth-btn--loading'}`}
             onClick={handleBlingAuth}

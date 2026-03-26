@@ -91,6 +91,7 @@ body {
   max-width: 1400px;
   margin: 0 auto;
   width: 100%;
+  box-sizing: border-box;
 }
 
 /* Headings */
@@ -611,7 +612,7 @@ p.loading {
   }
 
   .admin-main {
-    padding: 20px;
+    padding: 20px 16px;
   }
 
   h2 {
@@ -832,6 +833,7 @@ p.loading {
   padding: 32px 40px;
   max-width: 1400px;
   width: 100%;
+  box-sizing: border-box;
 }
 
 /* ── Page header row ── */
@@ -874,7 +876,7 @@ p.loading {
 /* ── Dashboard stat cards ── */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 16px;
 }
 
@@ -909,9 +911,7 @@ p.loading {
   font-weight: 700;
   color: #0f172a;
   line-height: 1.2;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  word-break: break-word;
 }
 
 .stat-label {
@@ -1118,11 +1118,16 @@ p.loading {
   }
 
   .page-inner {
-    padding: 16px;
+    padding: 20px 16px;
   }
 
   .stats-grid {
     grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+
+  .stat-value {
+    font-size: 18px;
   }
 
   /* Tabelas roláveis horizontalmente no mobile */
@@ -1188,7 +1193,7 @@ p.loading {
   }
 
   .admin-main {
-    padding: 20px;
+    padding: 20px 16px;
   }
 
   .admin-nav {

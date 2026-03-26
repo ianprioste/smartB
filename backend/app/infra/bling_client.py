@@ -1,8 +1,12 @@
 """Bling API client with OAuth2 and retry logic."""
-import httpx
 import asyncio
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Optional, Dict, Any
-from datetime import datetime, timedelta
+
+import httpx
+
+from app.constants import Limits
 from app.settings import settings
 from app.infra.logging import get_logger
 import uuid
@@ -20,19 +24,32 @@ class RateLimiter:
     def __init__(self, requests_per_second: float = 3.0):
         self.min_interval = 1.0 / requests_per_second  # 0.333 seconds between requests
         self.last_request_time = 0.0
+        self.cooldown_until = 0.0
         self._lock = asyncio.Lock()
     
     async def acquire(self):
         """Wait if necessary to respect rate limit."""
         async with self._lock:
-            now = time.time()
+            now = time.monotonic()
             time_since_last = now - self.last_request_time
+            wait_time = max(0.0, self.cooldown_until - now)
             
             if time_since_last < self.min_interval:
-                wait_time = self.min_interval - time_since_last
+                wait_time = max(wait_time, self.min_interval - time_since_last)
+            
+            if wait_time > 0:
                 await asyncio.sleep(wait_time)
             
-            self.last_request_time = time.time()
+            self.last_request_time = time.monotonic()
+
+    async def backoff(self, delay_seconds: float):
+        """Apply a shared cooldown window after upstream rate limiting."""
+        delay_seconds = max(0.0, delay_seconds)
+        if delay_seconds == 0:
+            return
+
+        async with self._lock:
+            self.cooldown_until = max(self.cooldown_until, time.monotonic() + delay_seconds)
 
 
 class BlingAuthError(Exception):
@@ -188,16 +205,39 @@ class BlingClient:
             )
             raise BlingAuthError(f"Token refresh failed: {e}")
 
+    def _get_retry_delay_seconds(self, response: httpx.Response, attempt: int, base_delay: int) -> float:
+        """Resolve rate-limit delay from response headers or fallback backoff."""
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            retry_after = retry_after.strip()
+            try:
+                delay_seconds = float(retry_after)
+                if delay_seconds > 0:
+                    return delay_seconds
+            except ValueError:
+                try:
+                    retry_at = parsedate_to_datetime(retry_after)
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=timezone.utc)
+                    delay_seconds = (retry_at - datetime.now(timezone.utc)).total_seconds()
+                    if delay_seconds > 0:
+                        return delay_seconds
+                except (TypeError, ValueError, OverflowError):
+                    pass
+
+        # Fallback exponential backoff capped to avoid excessive waits.
+        return min(float(base_delay * (2 ** attempt)), 60.0)
+
     async def _retry_with_backoff(
         self,
         method: str,
         path: str,
-        max_retries: int = 3,
+        max_retries: int = Limits.BLING_RETRY_MAX_ATTEMPTS,
         **kwargs
     ) -> httpx.Response:
         """Execute request with exponential backoff retry."""
         
-        base_delay = 1
+        base_delay = Limits.BLING_RETRY_INITIAL_DELAY_SECS
         last_exception = None
 
         for attempt in range(max_retries):
@@ -235,7 +275,22 @@ class BlingClient:
 
                 # Handle rate limit and server errors
                 if response.status_code == 429:
-                    raise Exception("Rate limited (429)")
+                    delay = self._get_retry_delay_seconds(response, attempt, base_delay)
+                    last_exception = BlingAPIError(
+                        f"Rate limited (429), retry_after={delay:.1f}s"
+                    )
+                    logger.warning(
+                        "api_request_rate_limited - request_id=%s, method=%s, path=%s, attempt=%s, retry_after_seconds=%.1f",
+                        self.request_id,
+                        method,
+                        path,
+                        attempt + 1,
+                        delay,
+                    )
+                    await self._rate_limiter.backoff(delay)
+                    if attempt < max_retries - 1:
+                        continue
+                    raise last_exception
                 elif response.status_code >= 500:
                     raise Exception(f"Server error ({response.status_code})")
                 elif response.status_code == 404:
@@ -317,7 +372,7 @@ class BlingClient:
         await self._retry_with_backoff("DELETE", path)
 
     async def search_products(self, query: str, page: int = 1, limit: int = 10) -> Dict[str, Any]:
-        """Search for products in Bling by name or SKU.
+        """Search for products in Bling by name.
         
         Args:
             query: Product name or SKU to search
@@ -335,13 +390,8 @@ class BlingClient:
             # P = Produto com estoque | V = Produto variação
         }
         
-        # Try to determine if query is SKU (short, uppercase, no spaces) or name
-        if len(query) <= 20 and query.isupper() and ' ' not in query:
-            # Likely a SKU/codigo
-            params["codigos[]"] = [query]
-        else:
-            # Likely a product name
-            params["nome"] = query
+        # Use name query in Bling; SKU partial matching is handled at API layer.
+        params["nome"] = query
             
         return await self.get("/produtos", params=params)
 

@@ -52,13 +52,14 @@ export function HomePage() {
 
   return (
     <Layout>
+      <div className="page-inner">
       <div className="page-header">
         <div>
           <h2>Página Inicial</h2>
           <p className="page-subtitle">Visão geral do negócio</p>
         </div>
-        <button className="btn-refresh" onClick={fetchSummary} disabled={loading}>
-          {loading ? '⟳ Atualizando…' : '⟳ Atualizar'}
+        <button className="btn-secondary" onClick={fetchSummary} disabled={loading}>
+          {loading ? 'Atualizando...' : 'Atualizar'}
         </button>
       </div>
 
@@ -151,6 +152,7 @@ export function HomePage() {
             </tbody>
           </table>
         )}
+      </div>
       </div>
     </Layout>
   );

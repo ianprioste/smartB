@@ -313,6 +313,36 @@ def _paginate_grouped_items(
     return paged_items, total_groups
 
 
+def _filter_items_by_partial_query(items: list[BlingProductSearchItem], query: str) -> list[BlingProductSearchItem]:
+    """Filter products by partial match on SKU or product name."""
+    q = (query or "").strip().casefold()
+    if not q:
+        return items
+
+    scored: list[tuple[int, BlingProductSearchItem]] = []
+    for item in items:
+        sku = (item.codigo or "").casefold()
+        name = (item.nome or "").casefold()
+
+        if q not in sku and q not in name:
+            continue
+
+        # Basic ranking: SKU startswith > SKU contains > NAME startswith > NAME contains
+        if sku.startswith(q):
+            score = 0
+        elif q in sku:
+            score = 1
+        elif name.startswith(q):
+            score = 2
+        else:
+            score = 3
+
+        scored.append((score, item))
+
+    scored.sort(key=lambda tup: (tup[0], (tup[1].codigo or "").lower(), (tup[1].nome or "").lower()))
+    return [item for _, item in scored]
+
+
 async def _enrich_products_with_hierarchy(
     bling_client: BlingClient,
     products: list[dict[str, Any]],
@@ -427,34 +457,25 @@ async def search_products(
     )
     
     try:
-        # Search in Bling (returns paginated results)
-        results = await bling_client.search_products(q, page=page, limit=limit)
-        
-        # Extract items
-        items = []
-        total = 0
-        if isinstance(results, dict):
-            data = results.get("data", [])
-            total = results.get("total", len(data)) if isinstance(results, dict) else len(data)
-            
-            # First enrich with hierarchy to get parent info
-            items = await _enrich_products_with_hierarchy(bling_client, data)
-            
-            # If search found only a few items and one is a parent or child,
-            # fetch all variations for that parent/child
-            if items:
-                first_item = items[0]
-                # If it's a parent product or a child of some parent, 
-                # fetch the complete parent with all variations
-                if first_item.formato == "V" or first_item.pai:
-                    complete_items = await _fetch_parent_with_all_variations(bling_client, first_item)
-                    items = complete_items
-        
+        # Partial search (SKU/name) is done over cached full catalog for predictable behavior.
+        all_items = _read_cached_catalog(None, False)
+        if all_items is None:
+            raw_products = await _fetch_all_products(bling_client, None)
+            all_items = _sort_catalog_items([_build_search_item(product) for product in raw_products])
+            _write_cached_catalog(None, False, all_items)
+
+        matched = _filter_items_by_partial_query(all_items, q)
+
+        # Paginate flat list for search endpoint
+        start = (page - 1) * limit
+        end = start + limit
+        paged_items = matched[start:end]
+
         return BlingProductSearchResponse(
-            total=len(items),
+            total=len(matched),
             page=page,
             limit=limit,
-            items=items,
+            items=paged_items,
         )
     
     except Exception as e:

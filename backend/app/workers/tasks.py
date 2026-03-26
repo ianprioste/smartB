@@ -10,14 +10,41 @@ from sqlalchemy.orm import sessionmaker
 from app.workers.celery_app import celery_app
 from app.settings import settings
 from app.infra.logging import get_logger
+from app.infra.bling_client import BlingClient
 from app.models.database import JobStatusEnum, JobItemStatusEnum
 from app.repositories.job_repo import JobRepository, JobItemRepository
+from app.repositories.bling_token_repo import BlingTokenRepository
+from app.repositories.order_snapshot_repo import OrderSnapshotRepository
+from app.domain.order_sync import sync_orders
 
 logger = get_logger(__name__)
+DEFAULT_TENANT_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 # Create a separate engine for Celery worker
 engine = create_engine(settings.DATABASE_URL, echo=settings.DEBUG)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def _make_bling_client(db: Session):
+    token_row = BlingTokenRepository.get_by_tenant(db, DEFAULT_TENANT_ID)
+    if not token_row:
+        return None
+
+    def _save(access_token, refresh_token, expires_at):
+        BlingTokenRepository.create_or_update(
+            db=db,
+            tenant_id=DEFAULT_TENANT_ID,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at,
+        )
+
+    return BlingClient(
+        access_token=token_row.access_token,
+        refresh_token=token_row.refresh_token,
+        token_expires_at=token_row.expires_at,
+        on_token_refresh=_save,
+    )
 
 
 @celery_app.task(bind=True, name="process_job")
@@ -147,4 +174,90 @@ def process_job_task(self, job_id: str):
         raise
     
     finally:
+        db.close()
+
+
+@celery_app.task(bind=True, name="sync_orders_full_task")
+def sync_orders_full_task(self):
+    """On-demand task: full sync from Bling to local order snapshot DB."""
+    db = SessionLocal()
+    client = None
+    try:
+        client = _make_bling_client(db)
+        if not client:
+            logger.warning("orders_full_sync_skipped reason=no_bling_token")
+            OrderSnapshotRepository.mark_sync_failure(
+                db,
+                DEFAULT_TENANT_ID,
+                "sync full: Bling não autenticado",
+            )
+            db.commit()
+            return {"ok": False, "reason": "no_bling_token"}
+
+        result = asyncio.run(sync_orders(db, DEFAULT_TENANT_ID, client, mode="full"))
+        logger.info(
+            "orders_full_sync_done listed=%s upserted=%s failed=%s",
+            result.get("total_listed"),
+            result.get("upserted"),
+            result.get("failed"),
+        )
+        return {"ok": True, **result}
+    except Exception as exc:
+        logger.error("orders_full_sync_failed error=%s", str(exc), exc_info=True)
+        OrderSnapshotRepository.mark_sync_failure(
+            db,
+            DEFAULT_TENANT_ID,
+            f"sync full failed: {exc}",
+        )
+        db.commit()
+        return {"ok": False, "error": str(exc)}
+    finally:
+        if client is not None:
+            try:
+                asyncio.run(client.client.aclose())
+            except Exception:
+                pass
+        db.close()
+
+
+@celery_app.task(bind=True, name="sync_orders_incremental_task")
+def sync_orders_incremental_task(self):
+    """Periodic task: incremental sync from Bling to local order snapshot DB."""
+    db = SessionLocal()
+    client = None
+    try:
+        client = _make_bling_client(db)
+        if not client:
+            logger.warning("orders_incremental_sync_skipped reason=no_bling_token")
+            OrderSnapshotRepository.mark_sync_failure(
+                db,
+                DEFAULT_TENANT_ID,
+                "sync incremental: Bling não autenticado",
+            )
+            db.commit()
+            return {"ok": False, "reason": "no_bling_token"}
+
+        result = asyncio.run(sync_orders(db, DEFAULT_TENANT_ID, client, mode="incremental"))
+        logger.info(
+            "orders_incremental_sync_done listed=%s upserted=%s failed=%s",
+            result.get("total_listed"),
+            result.get("upserted"),
+            result.get("failed"),
+        )
+        return {"ok": True, **result}
+    except Exception as exc:
+        logger.error("orders_incremental_sync_failed error=%s", str(exc), exc_info=True)
+        OrderSnapshotRepository.mark_sync_failure(
+            db,
+            DEFAULT_TENANT_ID,
+            f"sync incremental failed: {exc}",
+        )
+        db.commit()
+        return {"ok": False, "error": str(exc)}
+    finally:
+        if client is not None:
+            try:
+                asyncio.run(client.client.aclose())
+            except Exception:
+                pass
         db.close()
