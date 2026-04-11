@@ -1,13 +1,13 @@
-name: Deploy Production (main)
+name: Deploy Production (production)
 
 on:
   push:
     branches:
-      - main
+      - production
   workflow_dispatch:
 
 concurrency:
-  group: deploy-main
+  group: deploy-production
   cancel-in-progress: true
 
 jobs:
@@ -15,31 +15,51 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
-    env:
-      VPS_HOST: 191.252.204.67
-      VPS_USER: root
-      VPS_APP_DIR: /opt/smartB
-
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ env.VPS_HOST }}
-          username: ${{ env.VPS_USER }}
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          port: 22
+          port: ${{ secrets.VPS_PORT || '22' }}
           script_stop: true
           script: |
             set -Eeuo pipefail
-            cd "${{ env.VPS_APP_DIR }}"
+            APP_DIR="${{ secrets.VPS_APP_DIR }}"
+            BACKEND_SERVICE="${{ secrets.VPS_BACKEND_SERVICE || 'smartbling-backend' }}"
+            DEPLOY_BRANCH="production"
+
+            if [ -z "$APP_DIR" ]; then
+              echo "VPS_APP_DIR nao configurado"
+              exit 1
+            fi
+
+            cd "$APP_DIR"
 
             # If server has local manual edits, stash them to allow clean pull/deploy.
             if [ -n "$(git status --porcelain)" ]; then
               git stash push -u -m "auto-stash before deploy $(date '+%Y-%m-%d %H:%M:%S')"
             fi
 
-            git fetch origin main
-            git checkout main
-            git reset --hard origin/main
+            git fetch origin "$DEPLOY_BRANCH"
+            git checkout "$DEPLOY_BRANCH"
+            git reset --hard "origin/$DEPLOY_BRANCH"
 
-            bash deploy.sh main
+            if [ ! -d .venv ]; then
+              python3 -m venv .venv
+            fi
+
+            ./.venv/bin/pip install -r backend/requirements.txt
+
+            cd frontend
+            npm ci
+            npm run build
+            cd ..
+
+            if command -v systemctl >/dev/null 2>&1; then
+              systemctl restart "$BACKEND_SERVICE" || true
+              systemctl reload nginx || true
+            fi
+
+            curl --fail --retry 5 --retry-delay 3 http://127.0.0.1:8000/health

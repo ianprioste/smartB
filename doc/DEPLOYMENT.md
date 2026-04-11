@@ -69,3 +69,36 @@ cd ..
 - Porta ocupada: finalize processo e reinicie o servico
 - Modulo nao encontrado: confirme venv ativa e dependencias instaladas
 - Redis indisponivel: backend pode subir sem Redis em desenvolvimento local
+
+## Deploy Automatico via Branch production
+
+Quando houver push na branch `production`, o GitHub Actions executa deploy automatico na VPS.
+
+Workflow:
+
+- Arquivo: `.github/workflows/deploy-main.yml`
+- Trigger: push em `production`
+- Acao: SSH na VPS, atualiza codigo, instala dependencias, builda frontend e reinicia servicos
+
+### Secrets necessarios no GitHub
+
+Configure em Settings > Secrets and variables > Actions:
+
+- `VPS_HOST` (IP ou dominio da VPS)
+- `VPS_USER` (usuario SSH)
+- `VPS_SSH_KEY` (chave privada)
+- `VPS_PORT` (opcional, default 22)
+- `VPS_APP_DIR` (caminho do projeto na VPS, exemplo `/opt/smartB`)
+- `VPS_BACKEND_SERVICE` (opcional, default `smartbling-backend`)
+
+### Fluxo recomendado
+
+1. Trabalhar em `dev`.
+2. Promover para producao com:
+
+```powershell
+./publish.ps1
+```
+
+3. O script faz merge `dev -> production` e push.
+4. O GitHub Actions inicia deploy automaticamente.

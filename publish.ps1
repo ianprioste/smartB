@@ -1,20 +1,20 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    One-command deploy: merge dev -> main and push to trigger automated deployment
+    One-command deploy: merge dev -> production and push to trigger automated deployment
 .DESCRIPTION
     This script:
     1. Stashes any uncommitted changes in current branch
-    2. Checks out main
-    3. Merges dev into main
-    4. Pushes to origin/main (triggers GitHub Actions auto-deploy)
+    2. Checks out production
+    3. Merges dev into production
+    4. Pushes to origin/production (triggers GitHub Actions auto-deploy)
     5. Returns to dev branch
 .EXAMPLE
     .\publish.ps1
 #>
 
 param(
-    [switch]$NoReturn = $false  # If set, stays on main branch instead of returning to dev
+    [switch]$NoReturn = $false  # If set, stays on production branch instead of returning to original
 )
 
 $ErrorActionPreference = "Stop"
@@ -49,35 +49,35 @@ try {
         $hasStash = $true
     }
 
-    # Checkout main
-    Write-Status "Switching to main branch..." "Info"
-    git checkout main
+    # Checkout production
+    Write-Status "Switching to production branch..." "Info"
+    git checkout production
     
-    # Pull latest main
+    # Pull latest production
     Write-Status "Pulling latest changes..." "Info"
-    git pull origin main
+    git pull origin production
     
     # Merge dev
-    Write-Status "Merging dev into main..." "Info"
+    Write-Status "Merging dev into production..." "Info"
     git merge dev --no-edit
     
-    # Push to origin/main (triggers GitHub Actions)
-    Write-Status "Pushing to origin/main (deploying to production)..." "Info"
-    git push origin main
+    # Push to origin/production (triggers GitHub Actions)
+    Write-Status "Pushing to origin/production (deploying to production)..." "Info"
+    git push origin production
     
     Write-Status "✓ Deploy pushed successfully!" "Success"
     Write-Host ""
     Write-Host "GitHub Actions will now automatically:" -ForegroundColor Cyan
     Write-Host "  1. Run production pipeline"
-    Write-Host "  2. SSH into VPS (191.252.204.67)"
+    Write-Host "  2. SSH into VPS"
     Write-Host "  3. Update backend/frontend services"
     Write-Host "  4. Verify health checks"
     Write-Host ""
-    Write-Status "Monitor progress: gh run list --workflow 'Deploy Production (main)' --limit 5" "Info"
+    Write-Status "Monitor progress: gh run list --workflow 'Deploy Production (production)' --limit 5" "Info"
     Write-Host ""
     
     # Return to original branch if requested
-    if (-not $NoReturn -and $currentBranch -ne "main") {
+    if (-not $NoReturn -and $currentBranch -ne "production") {
         Write-Status "Returning to $currentBranch branch..." "Info"
         git checkout $currentBranch
         
@@ -92,7 +92,7 @@ try {
 catch {
     Write-Status "Error: $_" "Error"
     # Try to restore original state
-    if ($currentBranch -ne "main") {
+    if ($currentBranch -ne "production") {
         Write-Status "Attempting to restore original branch..." "Warning"
         git checkout $currentBranch -ErrorAction SilentlyContinue
         if ($hasStash) {
