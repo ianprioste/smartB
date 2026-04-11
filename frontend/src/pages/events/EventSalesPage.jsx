@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { Layout } from '../../components/Layout';
 import { ProductionStatusBadge, ProductionNotesInput } from '../../components/ProductionControls';
+import useIsMobile from '../../hooks/useIsMobile';
 
 const API_BASE = '/api';
 
@@ -49,7 +50,7 @@ function normalizeStatusLabel(value) {
 }
 
 export function EventSalesPage() {
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
+  const isMobile = useIsMobile(768);
   const [events, setEvents] = useState([]);
   const [selectedEventId, setSelectedEventId] = useState('');
   const [salesData, setSalesData] = useState(null);
@@ -174,12 +175,6 @@ export function EventSalesPage() {
       loadSales(selectedEventId);
     }
   }, [selectedEventId]);
-
-  useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth <= 768);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
 
   const availableStatuses = useMemo(() => {
     const allOrders = Array.isArray(salesData?.orders) ? salesData.orders : [];

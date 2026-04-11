@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Layout } from '../../components/Layout';
+import useIsMobile from '../../hooks/useIsMobile';
 
 const API_BASE = '/api';
 const PRODUCTS_CACHE_KEY = 'smartb_products_catalog_v3';
@@ -126,7 +127,7 @@ function getGroupStockQuantity(group) {
 }
 
 export function ProductsListPage() {
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
+  const isMobile = useIsMobile(768);
   const [allProducts, setAllProducts] = useState([]);
   const [products, setProducts] = useState([]);
   const [groupedProducts, setGroupedProducts] = useState([]);
@@ -306,12 +307,6 @@ export function ProductsListPage() {
     setExpandedGroups(new Set());
     applyLocalFilterAndPagination();
   }, [applyLocalFilterAndPagination]);
-
-  useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth <= 768);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
 
   const totalPages = Math.ceil(totalGroups / limit);
   let tabBaseGroups = filterGroupedProducts(groupProductsByParent(allProducts), activeQuery);

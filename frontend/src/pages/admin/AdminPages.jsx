@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { Layout } from '../../components/Layout';
+import useIsMobile from '../../hooks/useIsMobile';
 
 const API_BASE = '/api';
 
 // ============ Models Page ============
 
 export function ModelsPage() {
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
+  const isMobile = useIsMobile(768);
   const [models, setModels] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
@@ -26,12 +27,6 @@ export function ModelsPage() {
 
   useEffect(() => {
     fetchModels();
-  }, []);
-
-  useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth <= 768);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
   }, []);
 
   async function fetchModels() {
@@ -258,7 +253,7 @@ export function ModelsPage() {
 // ============ Colors Page ============
 
 export function ColorsPage() {
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
+  const isMobile = useIsMobile(768);
   const [colors, setColors] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
@@ -275,12 +270,6 @@ export function ColorsPage() {
 
   useEffect(() => {
     fetchColors();
-  }, []);
-
-  useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth <= 768);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
   }, []);
 
   async function fetchColors() {
@@ -437,7 +426,7 @@ export function ColorsPage() {
 // ============ Templates Page ============
 
 export function TemplatesPage() {
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
+  const isMobile = useIsMobile(768);
   const [templates, setTemplates] = useState([]);
   const [models, setModels] = useState([]);
   const [searchResults, setSearchResults] = useState([]);
@@ -457,12 +446,6 @@ export function TemplatesPage() {
   useEffect(() => {
     fetchModels();
     fetchTemplates();
-  }, []);
-
-  useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth <= 768);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
   }, []);
 
   async function fetchModels() {

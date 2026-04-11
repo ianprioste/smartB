@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Layout } from '../../components/Layout';
 import { ProductionStatusBadge, ProductionNotesInput } from '../../components/ProductionControls';
+import useIsMobile from '../../hooks/useIsMobile';
 
 const API_BASE = '/api';
 
@@ -162,7 +163,7 @@ function TimelineItem({ label, value }) {
 /* ── Main Page ──────────────────────────────────────────────── */
 export function OrdersPage() {
   const [orders, setOrders] = useState([]);
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
+  const isMobile = useIsMobile(768);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [hasBling, setHasBling] = useState(false);
@@ -310,12 +311,6 @@ export function OrdersPage() {
   }, [stopPolling, fetchOrders, selectedStatuses]);
 
   useEffect(() => () => stopPolling(), [stopPolling]);
-
-  useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth <= 768);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
 
   const triggerSync = useCallback(async (mode) => {
     try {

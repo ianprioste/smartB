@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Layout } from '../../components/Layout';
+import useIsMobile from '../../hooks/useIsMobile';
 
 const API_BASE = '/api';
 
 export function AccessControlPage() {
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
+  const isMobile = useIsMobile(768);
   const [profiles, setProfiles] = useState([]);
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -47,12 +48,6 @@ export function AccessControlPage() {
 
   useEffect(() => {
     loadAll();
-  }, []);
-
-  useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth <= 768);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
   }, []);
 
   async function createProfile(e) {
