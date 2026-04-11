@@ -20,6 +20,7 @@ SESSION_COOKIE = "smartb_session"
 class LoginRequest(BaseModel):
     email: str
     password: str
+    remember_me: bool = False
 
     @field_validator("email")
     @classmethod
@@ -149,7 +150,9 @@ async def login(payload: LoginRequest, response: Response, db: Session = Depends
     if not profile or not profile.is_active:
         raise HTTPException(status_code=403, detail="Perfil de acesso inativo")
 
-    session = AccessRepository.create_session(db, user)
+    # TTL: 30 days if remember_me, 12 hours otherwise
+    ttl_hours = 30 * 24 if payload.remember_me else 12
+    session = AccessRepository.create_session(db, user, ttl_hours=ttl_hours)
     db.commit()
 
     response.set_cookie(
@@ -158,7 +161,7 @@ async def login(payload: LoginRequest, response: Response, db: Session = Depends
         httponly=True,
         samesite="lax",
         secure=False,
-        max_age=60 * 60 * 12,
+        max_age=60 * 60 * ttl_hours,
     )
 
     return {

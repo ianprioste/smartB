@@ -7,6 +7,7 @@ export function LoginPage({ onLoginSuccess }) {
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(false);
   const [loading, setLoading] = useState(false);
   const [checkingBootstrap, setCheckingBootstrap] = useState(true);
   const [bootstrapHint, setBootstrapHint] = useState('');
@@ -44,7 +45,7 @@ export function LoginPage({ onLoginSuccess }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, remember_me: rememberMe }),
       });
 
       const data = await resp.json().catch(() => ({}));
@@ -92,6 +93,22 @@ export function LoginPage({ onLoginSuccess }) {
               placeholder="Digite sua senha"
               onChange={(e) => setPassword(e.target.value)}
             />
+          </div>
+
+          <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input
+              id="rememberMe"
+              type="checkbox"
+              checked={rememberMe}
+              onChange={(e) => setRememberMe(e.target.checked)}
+              style={{ width: 18, height: 18, cursor: 'pointer' }}
+            />
+            <label 
+              htmlFor="rememberMe" 
+              style={{ cursor: 'pointer', userSelect: 'none', fontSize: 14, color: '#475569', margin: 0 }}
+            >
+              Manter-me conectado neste dispositivo
+            </label>
           </div>
 
           {checkingBootstrap ? (
