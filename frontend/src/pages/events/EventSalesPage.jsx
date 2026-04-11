@@ -49,6 +49,7 @@ function normalizeStatusLabel(value) {
 }
 
 export function EventSalesPage() {
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 900);
   const [events, setEvents] = useState([]);
   const [selectedEventId, setSelectedEventId] = useState('');
   const [salesData, setSalesData] = useState(null);
@@ -173,6 +174,12 @@ export function EventSalesPage() {
       loadSales(selectedEventId);
     }
   }, [selectedEventId]);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth <= 900);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   const availableStatuses = useMemo(() => {
     const allOrders = Array.isArray(salesData?.orders) ? salesData.orders : [];
@@ -437,6 +444,62 @@ export function EventSalesPage() {
                       <span className="empty-state-icon">📭</span>
                       <p>Nenhum item encontrado.</p>
                     </div>
+                  ) : isMobile ? (
+                    <div style={{ display: 'grid', gap: 10, padding: 12 }}>
+                      {groupedByItem.map((group) => {
+                        const gKey = group.sku || group.product_name;
+                        const isExpanded = expandedOrderId === gKey;
+                        return (
+                          <div key={gKey} style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
+                            <button
+                              onClick={() => toggleOrder(gKey)}
+                              style={{ width: '100%', border: 'none', textAlign: 'left', background: isExpanded ? '#f0f9ff' : '#fff', padding: 12, cursor: 'pointer' }}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                                <div style={{ fontWeight: 700, color: '#1e293b' }}>{group.sku || '—'}</div>
+                                <ChevronIcon isExpanded={isExpanded} />
+                              </div>
+                              <div style={{ fontSize: 13, fontWeight: 600, color: '#334155', marginBottom: 8 }}>{group.product_name}</div>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, fontSize: 12, color: '#64748b' }}>
+                                <span><strong>Qtd:</strong> {group.total_qty}</span>
+                                <span><strong>Total:</strong> {formatBRL(group.total_paid)}</span>
+                                <span><strong>Pedidos:</strong> {group.orders.length}</span>
+                              </div>
+                            </button>
+
+                            {isExpanded && (
+                              <div style={{ borderTop: '1px solid #e2e8f0', background: '#f8fafc', padding: 12, display: 'grid', gap: 10 }}>
+                                {group.orders.map((o, idx) => (
+                                  <div key={`${gKey}-${o.numero}-${idx}`} style={{ border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff', padding: 10 }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+                                      <div style={{ fontWeight: 700, color: '#1e293b' }}>Pedido {o.numero}</div>
+                                      <div style={{ fontWeight: 700, color: '#1e293b' }}>{formatBRL(o.paid_total)}</div>
+                                    </div>
+                                    <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}><strong>Cliente:</strong> {o.cliente || '—'}</div>
+                                    <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}><strong>Nuvemshop:</strong> {o.numero_loja || '—'}</div>
+                                    <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}><strong>Data:</strong> {formatDate(o.data)}</div>
+                                    <div style={{ marginBottom: 8 }}><StatusBadge text={o.situacao} /></div>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, color: '#64748b', marginBottom: 8 }}>
+                                      <span><strong>Qtd:</strong> {o.quantity}</span>
+                                    </div>
+                                    <div style={{ marginBottom: 8 }}>
+                                      <ProductionStatusBadge
+                                        status={o.production_status}
+                                        onChangeStatus={(nextStatus) => handleProductionStatusChange(group.sku, o.order_id, o.production_status, nextStatus)}
+                                      />
+                                    </div>
+                                    <ProductionNotesInput
+                                      initialValue={o.notes}
+                                      onChangeNotes={(notes) => handleProductionNotesChange(group.sku, o.order_id, o.production_status, notes)}
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   ) : (
                     <table className="table">
                       <thead>
@@ -525,6 +588,77 @@ export function EventSalesPage() {
                 <div className="empty-state">
                   <span className="empty-state-icon">📭</span>
                   <p>Nenhuma venda encontrada para os produtos deste evento no período selecionado.</p>
+                </div>
+              ) : isMobile ? (
+                <div style={{ display: 'grid', gap: 10, padding: 12 }}>
+                  {visibleOrders.map((order) => {
+                    const orderKey = order.id || order.numero;
+                    const isExpanded = expandedOrderId === orderKey;
+                    const matchedItems = Array.isArray(order.matched_items) ? order.matched_items : [];
+                    const allEmbalado = matchedItems.length > 0 && matchedItems.every((i) => i.production_status === 'Embalado');
+
+                    return (
+                      <div key={orderKey} style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
+                        <button
+                          onClick={() => toggleOrder(orderKey)}
+                          style={{ width: '100%', border: 'none', textAlign: 'left', background: isExpanded ? '#f0f9ff' : '#fff', padding: 12, cursor: 'pointer' }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                            <div style={{ fontWeight: 700, color: '#1e293b' }}>Pedido {order.numero || order.id}</div>
+                            <div style={{ fontWeight: 700, color: '#1e293b' }}>{formatBRL(order.total_matched)}</div>
+                          </div>
+                          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}><strong>Cliente:</strong> {order.cliente || '—'}</div>
+                          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}><strong>Nuvemshop:</strong> {order.numero_loja || '—'}</div>
+                          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}><strong>Data:</strong> {formatDate(order.data)}</div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <StatusBadge text={order.situacao} />
+                            <span style={{ fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</span>
+                            <span title={order.has_frete ? 'Envio' : 'Retirada'}>{order.has_frete ? '🚚' : '🏪'}</span>
+                            {matchedItems.length > 0 && <ChevronIcon isExpanded={isExpanded} />}
+                          </div>
+                        </button>
+
+                        {isExpanded && matchedItems.length > 0 && (
+                          <div style={{ borderTop: '1px solid #e2e8f0', background: '#f8fafc', padding: 12 }}>
+                            {allEmbalado && order.situacao !== 'Atendido' && (
+                              <div style={{ marginBottom: 12 }}>
+                                <button
+                                  className="btn-secondary"
+                                  style={{ fontSize: 12, padding: '4px 12px' }}
+                                  onClick={(e) => { e.stopPropagation(); handleOrderStatusChange(order.id, 'Atendido'); }}
+                                >
+                                  ✅ Marcar como Atendido
+                                </button>
+                              </div>
+                            )}
+
+                            <div style={{ display: 'grid', gap: 10 }}>
+                              {matchedItems.map((item) => (
+                                <div key={`${orderKey}-${item.sku}`} style={{ border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff', padding: 10 }}>
+                                  <div style={{ fontSize: 12, color: '#64748b', fontFamily: 'monospace', marginBottom: 4 }}>{item.sku || '—'}</div>
+                                  <div style={{ fontSize: 13, fontWeight: 600, color: '#334155', marginBottom: 8 }}>{item.product_name}</div>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, color: '#64748b', marginBottom: 8 }}>
+                                    <span><strong>Qtd:</strong> {item.quantity}</span>
+                                    <span><strong>Total:</strong> {formatBRL(item.paid_total)}</span>
+                                  </div>
+                                  <div style={{ marginBottom: 8 }}>
+                                    <ProductionStatusBadge
+                                      status={item.production_status}
+                                      onChangeStatus={(nextStatus) => handleProductionStatusChange(item.sku, order.id, item.production_status, nextStatus)}
+                                    />
+                                  </div>
+                                  <ProductionNotesInput
+                                    initialValue={item.notes}
+                                    onChangeNotes={(notes) => handleProductionNotesChange(item.sku, order.id, item.production_status, notes)}
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               ) : (
                 <table className="table">

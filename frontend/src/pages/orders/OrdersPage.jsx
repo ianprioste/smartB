@@ -162,6 +162,7 @@ function TimelineItem({ label, value }) {
 /* ── Main Page ──────────────────────────────────────────────── */
 export function OrdersPage() {
   const [orders, setOrders] = useState([]);
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 900);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [hasBling, setHasBling] = useState(false);
@@ -310,6 +311,12 @@ export function OrdersPage() {
 
   useEffect(() => () => stopPolling(), [stopPolling]);
 
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth <= 900);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   const triggerSync = useCallback(async (mode) => {
     try {
       setSyncRunning(true);
@@ -431,100 +438,174 @@ export function OrdersPage() {
 
           {!loading && orders.length > 0 && (
             <>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
-                <thead>
-                  <tr style={{ borderBottom: '2px solid #f1f5f9' }}>
-                    <th style={{ width: 36, padding: '12px 8px' }}></th>
-                    <th style={{ textAlign: 'left', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Nº Pedido</th>
-                    <th style={{ textAlign: 'left', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Nuvemshop</th>
-                    <th style={{ textAlign: 'left', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Data</th>
-                    <th style={{ textAlign: 'left', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Cliente</th>
-                    <th style={{ textAlign: 'center', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Status</th>
-                    <th style={{ textAlign: 'center', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Produção</th>
-                    <th style={{ width: 36, padding: '12px 4px' }}></th>
-                    <th style={{ textAlign: 'right', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {orders.map(order => {
+              {isMobile ? (
+                <div style={{ padding: 10, display: 'grid', gap: 10 }}>
+                  {orders.map((order) => {
                     const itens = order.itens || [];
+                    const expanded = expandedOrderId === order.id;
                     const allEmbalado = itens.length > 0 && itens.every((i) => i.production_status === 'Embalado');
+
                     return (
-                    <React.Fragment key={order.id}>
-                      <tr onClick={() => setExpandedOrderId(expandedOrderId === order.id ? null : order.id)}
-                        style={{ cursor: 'pointer', borderBottom: '1px solid #f1f5f9', transition: 'background .1s',
-                          background: expandedOrderId === order.id ? '#f8fafc' : '#fff' }}
-                        onMouseEnter={e => { if (expandedOrderId !== order.id) e.currentTarget.style.background = '#fafafa'; }}
-                        onMouseLeave={e => { if (expandedOrderId !== order.id) e.currentTarget.style.background = '#fff'; }}>
-                        <td style={{ textAlign: 'center', padding: '10px 8px', color: '#cbd5e1' }}>
-                          {itens.length > 0 && <ChevronIcon isExpanded={expandedOrderId === order.id} />}
-                        </td>
-                        <td style={{ padding: '10px 12px', fontWeight: 700, color: '#0f172a' }}>{order.numero ?? order.id}</td>
-                        <td style={{ padding: '10px 12px', color: '#64748b' }}>{order.numeroLoja || '—'}</td>
-                        <td style={{ padding: '10px 12px', color: '#475569' }}>{order.data ? new Date(order.data).toLocaleDateString('pt-BR') : '—'}</td>
-                        <td style={{ padding: '10px 12px', color: '#334155', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{order.cliente}</td>
-                        <td style={{ padding: '10px 12px', textAlign: 'center' }}><StatusBadge text={order.situacao} /></td>
-                        <td style={{ padding: '10px 12px', textAlign: 'center', fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</td>
-                        <td style={{ padding: '10px 4px', fontSize: 14, textAlign: 'center' }} title={order.has_frete ? 'Envio' : 'Retirada'}>{order.has_frete ? '🚚' : '🏪'}</td>
-                        <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 700, color: '#0f172a' }}>{formatBRL(order.total)}</td>
-                      </tr>
-                      {expandedOrderId === order.id && itens.length > 0 && (
-                        <tr>
-                          <td colSpan="9" style={{ padding: 0 }}>
-                            <div style={{ margin: '0 16px 12px', padding: 16, background: '#f8fafc', borderRadius: 8, border: '1px solid #e2e8f0' }}>
-                              {allEmbalado && order.situacao !== 'Atendido' && (
-                                <div style={{ marginBottom: 12, display: 'flex', gap: 8 }}>
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); handleOrderStatusChange(order.id, 'Atendido'); }}
-                                    style={{ fontSize: 12, padding: '4px 12px', borderRadius: 8, border: '1px solid #16a34a', background: '#f0fdf4', color: '#15803d', fontWeight: 600, cursor: 'pointer' }}>
-                                    ✅ Marcar como Atendido
-                                  </button>
-                                </div>
-                              )}
-                              <div style={{ fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '.3px' }}>Itens do pedido</div>
-                              <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
-                                <thead>
-                                  <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
-                                    <th style={{ textAlign: 'left', padding: '6px 8px', fontWeight: 600, color: '#94a3b8', fontSize: 11, textTransform: 'uppercase' }}>SKU</th>
-                                    <th style={{ textAlign: 'left', padding: '6px 8px', fontWeight: 600, color: '#94a3b8', fontSize: 11, textTransform: 'uppercase' }}>Produto</th>
-                                    <th style={{ textAlign: 'left', padding: '6px 8px', fontWeight: 600, color: '#94a3b8', fontSize: 11, textTransform: 'uppercase' }}>Produção</th>
-                                    <th style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 600, color: '#94a3b8', fontSize: 11, textTransform: 'uppercase', width: 60 }}>Qtd</th>
-                                    <th style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 600, color: '#94a3b8', fontSize: 11, textTransform: 'uppercase', width: 90 }}>Total</th>
-                                    <th style={{ textAlign: 'left', padding: '6px 8px', fontWeight: 600, color: '#94a3b8', fontSize: 11, textTransform: 'uppercase' }}>Notas</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {itens.map((item, idx) => (
-                                    <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                                      <td style={{ padding: '7px 8px', color: '#64748b', fontFamily: 'monospace', fontSize: 12 }}>{item.sku || '—'}</td>
-                                      <td style={{ padding: '7px 8px', color: '#334155' }}>{item.product_name}</td>
-                                      <td style={{ padding: '7px 8px' }}>
-                                        <ProductionStatusBadge
-                                          status={item.production_status}
-                                          onChangeStatus={(nextStatus) => handleProductionStatusChange(item.sku, item.production_status, nextStatus)}
-                                        />
-                                      </td>
-                                      <td style={{ textAlign: 'right', padding: '7px 8px', color: '#64748b' }}>{item.quantity}</td>
-                                      <td style={{ textAlign: 'right', padding: '7px 8px', fontWeight: 600, color: '#0f172a' }}>{formatBRL(item.paid_total ?? item.total)}</td>
-                                      <td style={{ padding: '7px 8px', minWidth: 150 }}>
-                                        <ProductionNotesInput
-                                          initialValue={item.notes}
-                                          onChangeNotes={(notes) => handleProductionNotesChange(item.sku, item.production_status, notes)}
-                                        />
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
+                      <div key={order.id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
+                        <button
+                          onClick={() => setExpandedOrderId(expanded ? null : order.id)}
+                          style={{ width: '100%', textAlign: 'left', border: 'none', background: expanded ? '#f8fafc' : '#fff', padding: 12, cursor: 'pointer' }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                            <div style={{ fontWeight: 700, color: '#0f172a' }}>Pedido {order.numero ?? order.id}</div>
+                            <div style={{ fontWeight: 700, color: '#0f172a' }}>{formatBRL(order.total)}</div>
+                          </div>
+
+                          <div style={{ display: 'grid', gap: 6 }}>
+                            <div style={{ fontSize: 13, color: '#334155' }}><strong>Cliente:</strong> {order.cliente || '—'}</div>
+                            <div style={{ fontSize: 13, color: '#475569' }}><strong>Nuvemshop:</strong> {order.numeroLoja || '—'}</div>
+                            <div style={{ fontSize: 13, color: '#475569' }}><strong>Data:</strong> {order.data ? new Date(order.data).toLocaleDateString('pt-BR') : '—'}</div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                              <StatusBadge text={order.situacao} />
+                              <span style={{ fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</span>
+                              <span title={order.has_frete ? 'Envio' : 'Retirada'}>{order.has_frete ? '🚚' : '🏪'}</span>
+                              {itens.length > 0 && <ChevronIcon isExpanded={expanded} />}
                             </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
+                          </div>
+                        </button>
+
+                        {expanded && itens.length > 0 && (
+                          <div style={{ padding: 12, borderTop: '1px solid #e2e8f0', background: '#f8fafc' }}>
+                            {allEmbalado && order.situacao !== 'Atendido' && (
+                              <div style={{ marginBottom: 12 }}>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); handleOrderStatusChange(order.id, 'Atendido'); }}
+                                  style={{ fontSize: 12, padding: '6px 12px', borderRadius: 8, border: '1px solid #16a34a', background: '#f0fdf4', color: '#15803d', fontWeight: 600, cursor: 'pointer' }}
+                                >
+                                  ✅ Marcar como Atendido
+                                </button>
+                              </div>
+                            )}
+
+                            <div style={{ display: 'grid', gap: 10 }}>
+                              {itens.map((item, idx) => (
+                                <div key={idx} style={{ border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff', padding: 10 }}>
+                                  <div style={{ fontSize: 12, color: '#64748b', fontFamily: 'monospace', marginBottom: 4 }}>{item.sku || '—'}</div>
+                                  <div style={{ fontSize: 13, fontWeight: 600, color: '#334155', marginBottom: 8 }}>{item.product_name}</div>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, color: '#64748b', marginBottom: 8 }}>
+                                    <span><strong>Qtd:</strong> {item.quantity}</span>
+                                    <span><strong>Total:</strong> {formatBRL(item.paid_total ?? item.total)}</span>
+                                  </div>
+                                  <div style={{ marginBottom: 8 }}>
+                                    <ProductionStatusBadge
+                                      status={item.production_status}
+                                      onChangeStatus={(nextStatus) => handleProductionStatusChange(item.sku, item.production_status, nextStatus)}
+                                    />
+                                  </div>
+                                  <ProductionNotesInput
+                                    initialValue={item.notes}
+                                    onChangeNotes={(notes) => handleProductionNotesChange(item.sku, item.production_status, notes)}
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     );
                   })}
-                </tbody>
-              </table>
+                </div>
+              ) : (
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+                  <thead>
+                    <tr style={{ borderBottom: '2px solid #f1f5f9' }}>
+                      <th style={{ width: 36, padding: '12px 8px' }}></th>
+                      <th style={{ textAlign: 'left', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Nº Pedido</th>
+                      <th style={{ textAlign: 'left', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Nuvemshop</th>
+                      <th style={{ textAlign: 'left', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Data</th>
+                      <th style={{ textAlign: 'left', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Cliente</th>
+                      <th style={{ textAlign: 'center', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Status</th>
+                      <th style={{ textAlign: 'center', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Produção</th>
+                      <th style={{ width: 36, padding: '12px 4px' }}></th>
+                      <th style={{ textAlign: 'right', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orders.map(order => {
+                      const itens = order.itens || [];
+                      const allEmbalado = itens.length > 0 && itens.every((i) => i.production_status === 'Embalado');
+                      return (
+                      <React.Fragment key={order.id}>
+                        <tr onClick={() => setExpandedOrderId(expandedOrderId === order.id ? null : order.id)}
+                          style={{ cursor: 'pointer', borderBottom: '1px solid #f1f5f9', transition: 'background .1s',
+                            background: expandedOrderId === order.id ? '#f8fafc' : '#fff' }}
+                          onMouseEnter={e => { if (expandedOrderId !== order.id) e.currentTarget.style.background = '#fafafa'; }}
+                          onMouseLeave={e => { if (expandedOrderId !== order.id) e.currentTarget.style.background = '#fff'; }}>
+                          <td style={{ textAlign: 'center', padding: '10px 8px', color: '#cbd5e1' }}>
+                            {itens.length > 0 && <ChevronIcon isExpanded={expandedOrderId === order.id} />}
+                          </td>
+                          <td style={{ padding: '10px 12px', fontWeight: 700, color: '#0f172a' }}>{order.numero ?? order.id}</td>
+                          <td style={{ padding: '10px 12px', color: '#64748b' }}>{order.numeroLoja || '—'}</td>
+                          <td style={{ padding: '10px 12px', color: '#475569' }}>{order.data ? new Date(order.data).toLocaleDateString('pt-BR') : '—'}</td>
+                          <td style={{ padding: '10px 12px', color: '#334155', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{order.cliente}</td>
+                          <td style={{ padding: '10px 12px', textAlign: 'center' }}><StatusBadge text={order.situacao} /></td>
+                          <td style={{ padding: '10px 12px', textAlign: 'center', fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</td>
+                          <td style={{ padding: '10px 4px', fontSize: 14, textAlign: 'center' }} title={order.has_frete ? 'Envio' : 'Retirada'}>{order.has_frete ? '🚚' : '🏪'}</td>
+                          <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 700, color: '#0f172a' }}>{formatBRL(order.total)}</td>
+                        </tr>
+                        {expandedOrderId === order.id && itens.length > 0 && (
+                          <tr>
+                            <td colSpan="9" style={{ padding: 0 }}>
+                              <div style={{ margin: '0 16px 12px', padding: 16, background: '#f8fafc', borderRadius: 8, border: '1px solid #e2e8f0' }}>
+                                {allEmbalado && order.situacao !== 'Atendido' && (
+                                  <div style={{ marginBottom: 12, display: 'flex', gap: 8 }}>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); handleOrderStatusChange(order.id, 'Atendido'); }}
+                                      style={{ fontSize: 12, padding: '4px 12px', borderRadius: 8, border: '1px solid #16a34a', background: '#f0fdf4', color: '#15803d', fontWeight: 600, cursor: 'pointer' }}>
+                                      ✅ Marcar como Atendido
+                                    </button>
+                                  </div>
+                                )}
+                                <div style={{ fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '.3px' }}>Itens do pedido</div>
+                                <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+                                  <thead>
+                                    <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
+                                      <th style={{ textAlign: 'left', padding: '6px 8px', fontWeight: 600, color: '#94a3b8', fontSize: 11, textTransform: 'uppercase' }}>SKU</th>
+                                      <th style={{ textAlign: 'left', padding: '6px 8px', fontWeight: 600, color: '#94a3b8', fontSize: 11, textTransform: 'uppercase' }}>Produto</th>
+                                      <th style={{ textAlign: 'left', padding: '6px 8px', fontWeight: 600, color: '#94a3b8', fontSize: 11, textTransform: 'uppercase' }}>Produção</th>
+                                      <th style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 600, color: '#94a3b8', fontSize: 11, textTransform: 'uppercase', width: 60 }}>Qtd</th>
+                                      <th style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 600, color: '#94a3b8', fontSize: 11, textTransform: 'uppercase', width: 90 }}>Total</th>
+                                      <th style={{ textAlign: 'left', padding: '6px 8px', fontWeight: 600, color: '#94a3b8', fontSize: 11, textTransform: 'uppercase' }}>Notas</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {itens.map((item, idx) => (
+                                      <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                                        <td style={{ padding: '7px 8px', color: '#64748b', fontFamily: 'monospace', fontSize: 12 }}>{item.sku || '—'}</td>
+                                        <td style={{ padding: '7px 8px', color: '#334155' }}>{item.product_name}</td>
+                                        <td style={{ padding: '7px 8px' }}>
+                                          <ProductionStatusBadge
+                                            status={item.production_status}
+                                            onChangeStatus={(nextStatus) => handleProductionStatusChange(item.sku, item.production_status, nextStatus)}
+                                          />
+                                        </td>
+                                        <td style={{ textAlign: 'right', padding: '7px 8px', color: '#64748b' }}>{item.quantity}</td>
+                                        <td style={{ textAlign: 'right', padding: '7px 8px', fontWeight: 600, color: '#0f172a' }}>{formatBRL(item.paid_total ?? item.total)}</td>
+                                        <td style={{ padding: '7px 8px', minWidth: 150 }}>
+                                          <ProductionNotesInput
+                                            initialValue={item.notes}
+                                            onChangeNotes={(notes) => handleProductionNotesChange(item.sku, item.production_status, notes)}
+                                          />
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
 
               {totalPages > 1 && (
                 <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12, padding: '14px 0', borderTop: '1px solid #f1f5f9' }}>
