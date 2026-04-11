@@ -126,6 +126,7 @@ function getGroupStockQuantity(group) {
 }
 
 export function ProductsListPage() {
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
   const [allProducts, setAllProducts] = useState([]);
   const [products, setProducts] = useState([]);
   const [groupedProducts, setGroupedProducts] = useState([]);
@@ -306,6 +307,12 @@ export function ProductsListPage() {
     applyLocalFilterAndPagination();
   }, [applyLocalFilterAndPagination]);
 
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth <= 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   const totalPages = Math.ceil(totalGroups / limit);
   let tabBaseGroups = filterGroupedProducts(groupProductsByParent(allProducts), activeQuery);
   const fisicoCount = tabBaseGroups.filter((group) => groupHasPhysicalStock(group)).length;
@@ -426,122 +433,179 @@ export function ProductsListPage() {
 
           {!loading && products.length > 0 && (
             <>
-              <div style={{ overflowX: 'auto' }}>
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th style={{ width: '31%' }}>Nome do Produto</th>
-                      <th style={{ width: '22%' }}>SKU</th>
-                      <th style={{ width: '18%' }}>Tipo</th>
-                      <th style={{ width: '13%' }}>Estoque</th>
-                      <th style={{ width: '16%' }}></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {groupedProducts.map((group) => (
-                      <React.Fragment key={group.parent.id}>
-                        <tr
-                          style={{
-                            background: group.children.length > 0 ? '#f8fafc' : 'transparent',
-                            cursor: group.children.length > 0 ? 'pointer' : 'default',
-                          }}
-                          onClick={() => group.children.length > 0 && toggleGroup(group.parent.id)}
+              {isMobile ? (
+                <div style={{ padding: '12px 16px 0', display: 'grid', gap: 12 }}>
+                  {groupedProducts.map((group) => {
+                    const expanded = expandedGroups.has(group.parent.id);
+                    const hasChildren = group.children.length > 0;
+                    return (
+                      <div key={group.parent.id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
+                        <button
+                          onClick={() => hasChildren && toggleGroup(group.parent.id)}
+                          style={{ width: '100%', border: 'none', textAlign: 'left', background: expanded ? '#f8fafc' : '#fff', padding: 14, cursor: hasChildren ? 'pointer' : 'default' }}
                         >
-                          <td style={{ fontWeight: 500 }}>
-                            {group.children.length > 0 && (
-                              <span
-                                style={{
-                                  display: 'inline-block',
-                                  marginRight: 8,
-                                  fontSize: 12,
-                                  transform: expandedGroups.has(group.parent.id)
-                                    ? 'rotate(90deg)'
-                                    : 'rotate(0)',
-                                  transition: 'transform 0.2s',
-                                }}
-                              >
-                                ›
-                              </span>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                            <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a' }}>{group.parent.nome}</div>
+                            {hasChildren && (
+                              <span style={{ fontSize: 14, color: '#64748b', transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}>›</span>
                             )}
-                            {group.parent.nome}
-                          </td>
-                          <td>
-                            <code style={{ background: '#f1f5f9', padding: '3px 8px', borderRadius: 4, fontSize: 12 }}>
-                              {group.parent.codigo}
-                            </code>
-                          </td>
-                          <td style={{ fontSize: 12 }}>
-                            {getProductTypeLabel(group.parent, group.children.length)}
-                          </td>
-                          <td style={{ fontSize: 12, fontWeight: 600 }}>
-                            {formatStock(getGroupStockQuantity(group))}
-                          </td>
-                          <td onClick={(e) => e.stopPropagation()}>
-                            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                              <button
-                                onClick={() => navigate('/wizard/new', { state: { editProduct: group.parent } })}
-                                style={{
-                                  padding: '4px 10px',
-                                  fontSize: 12,
-                                  background: '#3b82f6',
-                                  color: '#fff',
-                                  border: 'none',
-                                  borderRadius: 6,
-                                  cursor: 'pointer',
-                                  whiteSpace: 'nowrap',
-                                }}
-                                title="Abrir Wizard de estampados"
-                              >
-                                🪄 Wizard
-                              </button>
-                              <button
-                                onClick={() => navigate('/wizard/plain', { state: { editProduct: group.parent } })}
-                                style={{
-                                  padding: '4px 10px',
-                                  fontSize: 12,
-                                  background: '#0f766e',
-                                  color: '#fff',
-                                  border: 'none',
-                                  borderRadius: 6,
-                                  cursor: 'pointer',
-                                  whiteSpace: 'nowrap',
-                                }}
-                                title="Abrir Wizard de produto liso"
-                              >
-                                🧩 Wizard Liso
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
+                          </div>
+                          <div style={{ fontSize: 12, color: '#475569', marginBottom: 6 }}><strong>SKU:</strong> {group.parent.codigo || '—'}</div>
+                          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}><strong>Tipo:</strong> {getProductTypeLabel(group.parent, group.children.length)}</div>
+                          <div style={{ fontSize: 12, color: '#64748b' }}><strong>Estoque:</strong> {formatStock(getGroupStockQuantity(group))}</div>
+                        </button>
 
-                        {expandedGroups.has(group.parent.id) &&
-                          group.children.length > 0 &&
-                          group.children.map((child) => (
-                            <tr
-                              key={child.id}
-                              style={{
-                                background: '#fafbfc',
-                                borderLeft: '3px solid #3b82f6',
-                              }}
-                            >
-                              <td style={{ paddingLeft: '40px', fontWeight: 400, color: '#334155', fontSize: 13 }}>
-                                └ {child.nome}
-                              </td>
-                              <td>
-                                <code style={{ background: '#e0f2fe', padding: '3px 8px', borderRadius: 4, fontSize: 11 }}>
-                                  {child.codigo}
-                                </code>
-                              </td>
-                              <td style={{ fontSize: 12 }}>{getSubproductTypeLabel(child)}</td>
-                              <td style={{ fontSize: 12, fontWeight: 600 }}>{formatStock(child.quantidade_estoque)}</td>
-                              <td />
-                            </tr>
-                          ))}
-                      </React.Fragment>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                        <div style={{ borderTop: '1px solid #e2e8f0', padding: 12, display: 'flex', gap: 8, flexWrap: 'wrap', background: '#f8fafc' }}>
+                          <button
+                            onClick={() => navigate('/wizard/new', { state: { editProduct: group.parent } })}
+                            style={{ padding: '6px 12px', fontSize: 12, background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                            title="Abrir Wizard de estampados"
+                          >
+                            🪄 Wizard
+                          </button>
+                          <button
+                            onClick={() => navigate('/wizard/plain', { state: { editProduct: group.parent } })}
+                            style={{ padding: '6px 12px', fontSize: 12, background: '#0f766e', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                            title="Abrir Wizard de produto liso"
+                          >
+                            🧩 Wizard Liso
+                          </button>
+                        </div>
+
+                        {expanded && hasChildren && (
+                          <div style={{ borderTop: '1px solid #e2e8f0', background: '#f8fafc', padding: 12, display: 'grid', gap: 8 }}>
+                            {group.children.map((child) => (
+                              <div key={child.id} style={{ border: '1px solid #dbeafe', borderRadius: 8, background: '#fff', padding: 12 }}>
+                                <div style={{ fontSize: 13, fontWeight: 600, color: '#334155', marginBottom: 6 }}>{child.nome}</div>
+                                <div style={{ fontSize: 12, color: '#475569', marginBottom: 4 }}><strong>SKU:</strong> {child.codigo || '—'}</div>
+                                <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}><strong>Tipo:</strong> {getSubproductTypeLabel(child)}</div>
+                                <div style={{ fontSize: 12, color: '#64748b' }}><strong>Estoque:</strong> {formatStock(child.quantidade_estoque)}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th style={{ width: '31%' }}>Nome do Produto</th>
+                        <th style={{ width: '22%' }}>SKU</th>
+                        <th style={{ width: '18%' }}>Tipo</th>
+                        <th style={{ width: '13%' }}>Estoque</th>
+                        <th style={{ width: '16%' }}></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {groupedProducts.map((group) => (
+                        <React.Fragment key={group.parent.id}>
+                          <tr
+                            style={{
+                              background: group.children.length > 0 ? '#f8fafc' : 'transparent',
+                              cursor: group.children.length > 0 ? 'pointer' : 'default',
+                            }}
+                            onClick={() => group.children.length > 0 && toggleGroup(group.parent.id)}
+                          >
+                            <td style={{ fontWeight: 500 }}>
+                              {group.children.length > 0 && (
+                                <span
+                                  style={{
+                                    display: 'inline-block',
+                                    marginRight: 8,
+                                    fontSize: 12,
+                                    transform: expandedGroups.has(group.parent.id)
+                                      ? 'rotate(90deg)'
+                                      : 'rotate(0)',
+                                    transition: 'transform 0.2s',
+                                  }}
+                                >
+                                  ›
+                                </span>
+                              )}
+                              {group.parent.nome}
+                            </td>
+                            <td>
+                              <code style={{ background: '#f1f5f9', padding: '3px 8px', borderRadius: 4, fontSize: 12 }}>
+                                {group.parent.codigo}
+                              </code>
+                            </td>
+                            <td style={{ fontSize: 12 }}>
+                              {getProductTypeLabel(group.parent, group.children.length)}
+                            </td>
+                            <td style={{ fontSize: 12, fontWeight: 600 }}>
+                              {formatStock(getGroupStockQuantity(group))}
+                            </td>
+                            <td onClick={(e) => e.stopPropagation()}>
+                              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                                <button
+                                  onClick={() => navigate('/wizard/new', { state: { editProduct: group.parent } })}
+                                  style={{
+                                    padding: '4px 10px',
+                                    fontSize: 12,
+                                    background: '#3b82f6',
+                                    color: '#fff',
+                                    border: 'none',
+                                    borderRadius: 6,
+                                    cursor: 'pointer',
+                                    whiteSpace: 'nowrap',
+                                  }}
+                                  title="Abrir Wizard de estampados"
+                                >
+                                  🪄 Wizard
+                                </button>
+                                <button
+                                  onClick={() => navigate('/wizard/plain', { state: { editProduct: group.parent } })}
+                                  style={{
+                                    padding: '4px 10px',
+                                    fontSize: 12,
+                                    background: '#0f766e',
+                                    color: '#fff',
+                                    border: 'none',
+                                    borderRadius: 6,
+                                    cursor: 'pointer',
+                                    whiteSpace: 'nowrap',
+                                  }}
+                                  title="Abrir Wizard de produto liso"
+                                >
+                                  🧩 Wizard Liso
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+
+                          {expandedGroups.has(group.parent.id) &&
+                            group.children.length > 0 &&
+                            group.children.map((child) => (
+                              <tr
+                                key={child.id}
+                                style={{
+                                  background: '#fafbfc',
+                                  borderLeft: '3px solid #3b82f6',
+                                }}
+                              >
+                                <td style={{ paddingLeft: '40px', fontWeight: 400, color: '#334155', fontSize: 13 }}>
+                                  └ {child.nome}
+                                </td>
+                                <td>
+                                  <code style={{ background: '#e0f2fe', padding: '3px 8px', borderRadius: 4, fontSize: 11 }}>
+                                    {child.codigo}
+                                  </code>
+                                </td>
+                                <td style={{ fontSize: 12 }}>{getSubproductTypeLabel(child)}</td>
+                                <td style={{ fontSize: 12, fontWeight: 600 }}>{formatStock(child.quantidade_estoque)}</td>
+                                <td />
+                              </tr>
+                            ))}
+                        </React.Fragment>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
 
               {/* Pagination */}
               {totalPages > 1 && (

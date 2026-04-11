@@ -49,7 +49,7 @@ function normalizeStatusLabel(value) {
 }
 
 export function EventSalesPage() {
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 900);
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
   const [events, setEvents] = useState([]);
   const [selectedEventId, setSelectedEventId] = useState('');
   const [salesData, setSalesData] = useState(null);
@@ -176,7 +176,7 @@ export function EventSalesPage() {
   }, [selectedEventId]);
 
   useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth <= 900);
+    const handleResize = () => setIsMobile(window.innerWidth <= 768);
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
@@ -445,7 +445,7 @@ export function EventSalesPage() {
                       <p>Nenhum item encontrado.</p>
                     </div>
                   ) : isMobile ? (
-                    <div style={{ display: 'grid', gap: 10, padding: 12 }}>
+                    <div style={{ display: 'grid', gap: 12, padding: 12 }}>
                       {groupedByItem.map((group) => {
                         const gKey = group.sku || group.product_name;
                         const isExpanded = expandedOrderId === gKey;
@@ -453,7 +453,7 @@ export function EventSalesPage() {
                           <div key={gKey} style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
                             <button
                               onClick={() => toggleOrder(gKey)}
-                              style={{ width: '100%', border: 'none', textAlign: 'left', background: isExpanded ? '#f0f9ff' : '#fff', padding: 12, cursor: 'pointer' }}
+                              style={{ width: '100%', border: 'none', textAlign: 'left', background: isExpanded ? '#f0f9ff' : '#fff', padding: 14, cursor: 'pointer' }}
                             >
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                                 <div style={{ fontWeight: 700, color: '#1e293b' }}>{group.sku || '—'}</div>
@@ -590,7 +590,7 @@ export function EventSalesPage() {
                   <p>Nenhuma venda encontrada para os produtos deste evento no período selecionado.</p>
                 </div>
               ) : isMobile ? (
-                <div style={{ display: 'grid', gap: 10, padding: 12 }}>
+                <div style={{ display: 'grid', gap: 12, padding: 12 }}>
                   {visibleOrders.map((order) => {
                     const orderKey = order.id || order.numero;
                     const isExpanded = expandedOrderId === orderKey;
@@ -601,15 +601,14 @@ export function EventSalesPage() {
                       <div key={orderKey} style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
                         <button
                           onClick={() => toggleOrder(orderKey)}
-                          style={{ width: '100%', border: 'none', textAlign: 'left', background: isExpanded ? '#f0f9ff' : '#fff', padding: 12, cursor: 'pointer' }}
+                          style={{ width: '100%', border: 'none', textAlign: 'left', background: isExpanded ? '#f0f9ff' : '#fff', padding: 14, cursor: 'pointer' }}
                         >
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                            <div style={{ fontWeight: 700, color: '#1e293b' }}>Pedido {order.numero || order.id}</div>
+                            <div style={{ fontWeight: 700, color: '#1e293b' }}>Pedido {order.numero || order.id} • {order.cliente || '—'}</div>
                             <div style={{ fontWeight: 700, color: '#1e293b' }}>{formatBRL(order.total_matched)}</div>
                           </div>
-                          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}><strong>Cliente:</strong> {order.cliente || '—'}</div>
-                          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}><strong>Nuvemshop:</strong> {order.numero_loja || '—'}</div>
-                          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}><strong>Data:</strong> {formatDate(order.data)}</div>
+                          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}><strong>Data:</strong> {formatDate(order.data)}</div>
+                          <div style={{ fontSize: 12, color: '#475569', marginBottom: 8 }}><strong>Código:</strong> {order.numero_loja || '—'}</div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                             <StatusBadge text={order.situacao} />
                             <span style={{ fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</span>

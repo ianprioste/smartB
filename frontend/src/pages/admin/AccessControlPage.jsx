@@ -4,6 +4,7 @@ import { Layout } from '../../components/Layout';
 const API_BASE = '/api';
 
 export function AccessControlPage() {
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
   const [profiles, setProfiles] = useState([]);
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -46,6 +47,12 @@ export function AccessControlPage() {
 
   useEffect(() => {
     loadAll();
+  }, []);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth <= 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
   }, []);
 
   async function createProfile(e) {
@@ -204,24 +211,36 @@ export function AccessControlPage() {
               <button className="btn-primary" type="submit">Adicionar Perfil</button>
             </form>
 
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Perfil</th>
-                  <th>Descrição</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
+            {isMobile ? (
+              <div style={{ display: 'grid', gap: 12 }}>
                 {profiles.map((p) => (
-                  <tr key={p.id}>
-                    <td style={{ fontWeight: 600 }}>{p.name}</td>
-                    <td>{p.description || '—'}</td>
-                    <td>{p.is_active ? 'Ativo' : 'Inativo'}</td>
-                  </tr>
+                  <div key={p.id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, background: '#fff', padding: 14 }}>
+                    <div style={{ fontWeight: 700, color: '#0f172a', marginBottom: 6 }}>{p.name}</div>
+                    <div style={{ fontSize: 13, color: '#64748b', marginBottom: 6 }}><strong>Descrição:</strong> {p.description || '—'}</div>
+                    <div style={{ fontSize: 12, color: '#475569' }}><strong>Status:</strong> {p.is_active ? 'Ativo' : 'Inativo'}</div>
+                  </div>
                 ))}
-              </tbody>
-            </table>
+              </div>
+            ) : (
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Perfil</th>
+                    <th>Descrição</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {profiles.map((p) => (
+                    <tr key={p.id}>
+                      <td style={{ fontWeight: 600 }}>{p.name}</td>
+                      <td>{p.description || '—'}</td>
+                      <td>{p.is_active ? 'Ativo' : 'Inativo'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
 
@@ -252,22 +271,14 @@ export function AccessControlPage() {
               <button className="btn-primary" type="submit">Adicionar</button>
             </form>
 
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>E-mail</th>
-                  <th>Perfil</th>
-                  <th>Status</th>
-                  <th>Ações</th>
-                </tr>
-              </thead>
-              <tbody>
+            {isMobile ? (
+              <div style={{ display: 'grid', gap: 12 }}>
                 {users.map((u) => (
-                  <tr key={u.id}>
-                    <td>{u.email}</td>
-                    <td>{u.profile?.name || '—'}</td>
-                    <td>{u.is_active ? 'Ativo' : 'Inativo'}</td>
-                    <td style={{ display: 'flex', gap: 8 }}>
+                  <div key={u.id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, background: '#fff', padding: 14 }}>
+                    <div style={{ fontWeight: 700, color: '#0f172a', marginBottom: 6 }}>{u.email}</div>
+                    <div style={{ fontSize: 13, color: '#64748b', marginBottom: 6 }}><strong>Perfil:</strong> {u.profile?.name || '—'}</div>
+                    <div style={{ fontSize: 12, color: '#475569', marginBottom: 10 }}><strong>Status:</strong> {u.is_active ? 'Ativo' : 'Inativo'}</div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                       <button className="btn-secondary" onClick={() => toggleUserStatus(u)}>
                         {u.is_active ? 'Desativar' : 'Ativar'}
                       </button>
@@ -275,11 +286,40 @@ export function AccessControlPage() {
                         Alterar senha
                       </button>
                       <button className="btn-secondary" onClick={() => removeUser(u.id)}>Remover</button>
-                    </td>
-                  </tr>
+                    </div>
+                  </div>
                 ))}
-              </tbody>
-            </table>
+              </div>
+            ) : (
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>E-mail</th>
+                    <th>Perfil</th>
+                    <th>Status</th>
+                    <th>Ações</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {users.map((u) => (
+                    <tr key={u.id}>
+                      <td>{u.email}</td>
+                      <td>{u.profile?.name || '—'}</td>
+                      <td>{u.is_active ? 'Ativo' : 'Inativo'}</td>
+                      <td style={{ display: 'flex', gap: 8 }}>
+                        <button className="btn-secondary" onClick={() => toggleUserStatus(u)}>
+                          {u.is_active ? 'Desativar' : 'Ativar'}
+                        </button>
+                        <button className="btn-secondary" onClick={() => changeUserPassword(u)}>
+                          Alterar senha
+                        </button>
+                        <button className="btn-secondary" onClick={() => removeUser(u.id)}>Remover</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
       </div>

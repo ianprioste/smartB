@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 # Importar configurações e rotas
 from app.core.config import settings
-from app.routes import produtos, csv, config
+from app.routes import config
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -82,8 +82,6 @@ app.add_middleware(
 
 # Incluir rotas
 app.include_router(config.router)
-app.include_router(produtos.router)
-app.include_router(csv.router)
 
 # Criar diretórios necessários
 Path(settings.UPLOAD_FOLDER).mkdir(exist_ok=True)
@@ -372,6 +370,14 @@ def configurar():
         print("\n✗ Falha ao conectar com Bling. Verifique a chave de API.")
     print("\n=== Configuração concluída ===\n")
 
+# Compatibility bridge: if this module is used as ASGI target (e.g. backend.main:app),
+# expose the modern application that contains access/auth and all current routers.
+try:
+    from app.main import app as modern_app
+    app = modern_app
+except Exception as exc:
+    logger.warning("Não foi possível carregar app.main: %s", exc)
+
 # --- CLI (mantido simples, sem ngrok automático) ---
 if __name__ == "__main__":
     import uvicorn
@@ -389,7 +395,7 @@ if __name__ == "__main__":
     elif args.comando == "run":
         logger.info(f"Iniciando servidor em {args.host}:{args.port}")
         uvicorn.run(
-            "main:app",
+            "app.main:app",
             host=args.host,
             port=args.port,
             reload=args.reload or settings.DEBUG,

@@ -162,7 +162,7 @@ function TimelineItem({ label, value }) {
 /* ── Main Page ──────────────────────────────────────────────── */
 export function OrdersPage() {
   const [orders, setOrders] = useState([]);
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 900);
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [hasBling, setHasBling] = useState(false);
@@ -312,7 +312,7 @@ export function OrdersPage() {
   useEffect(() => () => stopPolling(), [stopPolling]);
 
   useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth <= 900);
+    const handleResize = () => setIsMobile(window.innerWidth <= 768);
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
@@ -439,7 +439,7 @@ export function OrdersPage() {
           {!loading && orders.length > 0 && (
             <>
               {isMobile ? (
-                <div style={{ padding: 10, display: 'grid', gap: 10 }}>
+                <div style={{ padding: 12, display: 'grid', gap: 12 }}>
                   {orders.map((order) => {
                     const itens = order.itens || [];
                     const expanded = expandedOrderId === order.id;
@@ -449,17 +449,16 @@ export function OrdersPage() {
                       <div key={order.id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
                         <button
                           onClick={() => setExpandedOrderId(expanded ? null : order.id)}
-                          style={{ width: '100%', textAlign: 'left', border: 'none', background: expanded ? '#f8fafc' : '#fff', padding: 12, cursor: 'pointer' }}
+                          style={{ width: '100%', textAlign: 'left', border: 'none', background: expanded ? '#f8fafc' : '#fff', padding: 14, cursor: 'pointer' }}
                         >
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                            <div style={{ fontWeight: 700, color: '#0f172a' }}>Pedido {order.numero ?? order.id}</div>
+                            <div style={{ fontWeight: 700, color: '#0f172a' }}>Pedido {order.numero ?? order.id} • {order.cliente || '—'}</div>
                             <div style={{ fontWeight: 700, color: '#0f172a' }}>{formatBRL(order.total)}</div>
                           </div>
 
                           <div style={{ display: 'grid', gap: 6 }}>
-                            <div style={{ fontSize: 13, color: '#334155' }}><strong>Cliente:</strong> {order.cliente || '—'}</div>
-                            <div style={{ fontSize: 13, color: '#475569' }}><strong>Nuvemshop:</strong> {order.numeroLoja || '—'}</div>
-                            <div style={{ fontSize: 13, color: '#475569' }}><strong>Data:</strong> {order.data ? new Date(order.data).toLocaleDateString('pt-BR') : '—'}</div>
+                            <div style={{ fontSize: 12, color: '#64748b' }}><strong>Data:</strong> {order.data ? new Date(order.data).toLocaleDateString('pt-BR') : '—'}</div>
+                            <div style={{ fontSize: 12, color: '#475569' }}><strong>Código:</strong> {order.numeroLoja || '—'}</div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                               <StatusBadge text={order.situacao} />
                               <span style={{ fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</span>

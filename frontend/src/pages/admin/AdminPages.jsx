@@ -6,6 +6,7 @@ const API_BASE = '/api';
 // ============ Models Page ============
 
 export function ModelsPage() {
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
   const [models, setModels] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
@@ -25,6 +26,12 @@ export function ModelsPage() {
 
   useEffect(() => {
     fetchModels();
+  }, []);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth <= 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
   }, []);
 
   async function fetchModels() {
@@ -188,31 +195,46 @@ export function ModelsPage() {
       )}
 
       {loading ? <p>Carregando...</p> : (
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Código</th>
-              <th>Nome</th>
-              <th>Tamanhos</th>
-              <th>Ações</th>
-            </tr>
-          </thead>
-          <tbody>
-            {models.map(model => (
-              <tr key={model.id}>
-                <td>{model.code}</td>
-                <td>{model.name}</td>
-                <td>{model.allowed_sizes.join(', ')}</td>
-                <td>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button onClick={() => handleEdit(model)}>Editar</button>
-                    <button style={{ background: '#dc2626' }} onClick={() => setConfirmDeleteModel({ code: model.code, name: model.name })}>Excluir</button>
-                  </div>
-                </td>
-              </tr>
+        isMobile ? (
+          <div style={{ display: 'grid', gap: 12 }}>
+            {models.map((model) => (
+              <div key={model.id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, background: '#fff', padding: 14 }}>
+                <div style={{ fontWeight: 700, color: '#0f172a', marginBottom: 6 }}>{model.code} • {model.name}</div>
+                <div style={{ fontSize: 13, color: '#64748b', marginBottom: 10 }}><strong>Tamanhos:</strong> {model.allowed_sizes.join(', ')}</div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button onClick={() => handleEdit(model)}>Editar</button>
+                  <button style={{ background: '#dc2626' }} onClick={() => setConfirmDeleteModel({ code: model.code, name: model.name })}>Excluir</button>
+                </div>
+              </div>
             ))}
-          </tbody>
-        </table>
+          </div>
+        ) : (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Código</th>
+                <th>Nome</th>
+                <th>Tamanhos</th>
+                <th>Ações</th>
+              </tr>
+            </thead>
+            <tbody>
+              {models.map(model => (
+                <tr key={model.id}>
+                  <td>{model.code}</td>
+                  <td>{model.name}</td>
+                  <td>{model.allowed_sizes.join(', ')}</td>
+                  <td>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button onClick={() => handleEdit(model)}>Editar</button>
+                      <button style={{ background: '#dc2626' }} onClick={() => setConfirmDeleteModel({ code: model.code, name: model.name })}>Excluir</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )
       )}
 
       {confirmDeleteModel && (
@@ -236,6 +258,7 @@ export function ModelsPage() {
 // ============ Colors Page ============
 
 export function ColorsPage() {
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
   const [colors, setColors] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
@@ -252,6 +275,12 @@ export function ColorsPage() {
 
   useEffect(() => {
     fetchColors();
+  }, []);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth <= 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
   }, []);
 
   async function fetchColors() {
@@ -348,29 +377,43 @@ export function ColorsPage() {
       )}
 
       {loading ? <p>Carregando...</p> : (
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Código</th>
-              <th>Nome</th>
-              <th>Ações</th>
-            </tr>
-          </thead>
-          <tbody>
-            {colors.map(color => (
-              <tr key={color.id}>
-                <td>{color.code}</td>
-                <td>{color.name}</td>
-                <td>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button onClick={() => handleEdit(color)}>Editar</button>
-                    <button style={{ background: '#dc2626' }} onClick={() => setConfirmDeleteColor({ code: color.code, name: color.name })}>Excluir</button>
-                  </div>
-                </td>
-              </tr>
+        isMobile ? (
+          <div style={{ display: 'grid', gap: 12 }}>
+            {colors.map((color) => (
+              <div key={color.id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, background: '#fff', padding: 14 }}>
+                <div style={{ fontWeight: 700, color: '#0f172a', marginBottom: 6 }}>{color.code} • {color.name}</div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button onClick={() => handleEdit(color)}>Editar</button>
+                  <button style={{ background: '#dc2626' }} onClick={() => setConfirmDeleteColor({ code: color.code, name: color.name })}>Excluir</button>
+                </div>
+              </div>
             ))}
-          </tbody>
-        </table>
+          </div>
+        ) : (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Código</th>
+                <th>Nome</th>
+                <th>Ações</th>
+              </tr>
+            </thead>
+            <tbody>
+              {colors.map(color => (
+                <tr key={color.id}>
+                  <td>{color.code}</td>
+                  <td>{color.name}</td>
+                  <td>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button onClick={() => handleEdit(color)}>Editar</button>
+                      <button style={{ background: '#dc2626' }} onClick={() => setConfirmDeleteColor({ code: color.code, name: color.name })}>Excluir</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )
       )}
 
       {confirmDeleteColor && (
@@ -394,6 +437,7 @@ export function ColorsPage() {
 // ============ Templates Page ============
 
 export function TemplatesPage() {
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
   const [templates, setTemplates] = useState([]);
   const [models, setModels] = useState([]);
   const [searchResults, setSearchResults] = useState([]);
@@ -413,6 +457,12 @@ export function TemplatesPage() {
   useEffect(() => {
     fetchModels();
     fetchTemplates();
+  }, []);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth <= 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
   }, []);
 
   async function fetchModels() {
@@ -697,44 +747,71 @@ export function TemplatesPage() {
           templates.length === 0 ? (
             <p>Nenhum template configurado.</p>
           ) : (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Modelo</th>
-                  <th>Tipo</th>
-                  <th>SKU Bling</th>
-                  <th>Nome Bling</th>
-                  <th>Ações</th>
-                </tr>
-              </thead>
-              <tbody>
-                {templates.map(t => (
-                  <tr key={t.id}>
-                    <td>{t.model_code}</td>
-                    <td>{
+            isMobile ? (
+              <div style={{ display: 'grid', gap: 12 }}>
+                {templates.map((t) => (
+                  <div key={t.id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, background: '#fff', padding: 14 }}>
+                    <div style={{ fontWeight: 700, color: '#0f172a', marginBottom: 6 }}>{t.model_code} • {t.bling_product_name}</div>
+                    <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}><strong>Tipo:</strong> {
                       t.template_kind === 'BASE_PLAIN' ? 'Base Lisa' :
                       t.template_kind === 'PARENT_PRINTED' ? 'Principal Estampado' :
                       t.template_kind === 'VARIATION_PRINTED' ? 'Variação Estampada' :
                       t.template_kind
-                    }</td>
-                    <td>{t.bling_product_sku}</td>
-                    <td>{t.bling_product_name}</td>
-                    <td>
-                      <div style={{ display: 'flex', gap: '8px' }}>
-                        <button type="button" onClick={() => handleEditTemplate(t)}>Editar</button>
-                        <button
-                          type="button"
-                          style={{ background: '#dc2626' }}
-                          onClick={() => setConfirmDeleteTemplate(t)}
-                        >
-                          Excluir
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
+                    }</div>
+                    <div style={{ fontSize: 12, color: '#475569', marginBottom: 10 }}><strong>SKU:</strong> {t.bling_product_sku}</div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <button type="button" onClick={() => handleEditTemplate(t)}>Editar</button>
+                      <button
+                        type="button"
+                        style={{ background: '#dc2626' }}
+                        onClick={() => setConfirmDeleteTemplate(t)}
+                      >
+                        Excluir
+                      </button>
+                    </div>
+                  </div>
                 ))}
-              </tbody>
-            </table>
+              </div>
+            ) : (
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Modelo</th>
+                    <th>Tipo</th>
+                    <th>SKU Bling</th>
+                    <th>Nome Bling</th>
+                    <th>Ações</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {templates.map(t => (
+                    <tr key={t.id}>
+                      <td>{t.model_code}</td>
+                      <td>{
+                        t.template_kind === 'BASE_PLAIN' ? 'Base Lisa' :
+                        t.template_kind === 'PARENT_PRINTED' ? 'Principal Estampado' :
+                        t.template_kind === 'VARIATION_PRINTED' ? 'Variação Estampada' :
+                        t.template_kind
+                      }</td>
+                      <td>{t.bling_product_sku}</td>
+                      <td>{t.bling_product_name}</td>
+                      <td>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                          <button type="button" onClick={() => handleEditTemplate(t)}>Editar</button>
+                          <button
+                            type="button"
+                            style={{ background: '#dc2626' }}
+                            onClick={() => setConfirmDeleteTemplate(t)}
+                          >
+                            Excluir
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
           )
         )}
       </div>
