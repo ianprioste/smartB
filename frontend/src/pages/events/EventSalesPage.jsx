@@ -1,8 +1,14 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { Layout } from '../../components/Layout';
 
 const API_BASE = '/api';
-const EVENT_STATUS_FILTERS = ['Em aberto', 'Atendido', 'Cancelado'];
+const PRODUCTION_STATUSES = ['Pendente', 'Em produção', 'Produzido', 'Embalado'];
+const PROD_COLORS = {
+  Pendente: { bg: '#f1f5f9', color: '#475569', border: '#cbd5e1' },
+  'Em produção': { bg: '#dbeafe', color: '#1e40af', border: '#93c5fd' },
+  Produzido: { bg: '#dcfce7', color: '#166534', border: '#86efac' },
+  Embalado: { bg: '#f3e8ff', color: '#6b21a8', border: '#c4b5fd' },
+};
 
 function formatBRL(value) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value ?? 0);
@@ -15,11 +21,114 @@ function formatDate(value) {
 
 function StatusBadge({ text }) {
   const lower = (text || '').toLowerCase();
-  let cls = 'badge badge--gray';
-  if (lower.includes('atendido') || lower.includes('conclu') || lower.includes('entregue')) cls = 'badge badge--green';
-  else if (lower.includes('pendente') || lower.includes('aberto') || lower.includes('andamento')) cls = 'badge badge--yellow';
-  else if (lower.includes('cancel') || lower.includes('devolvido')) cls = 'badge badge--red';
+  const cls = lower.includes('atendido') ? 'badge badge--green' : 'badge badge--yellow';
   return <span className={cls}>{text || '—'}</span>;
+}
+
+function ProductionBadge({ status, sku, eventId, orderId, onSaved }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const colors = PROD_COLORS[status] || PROD_COLORS.Pendente;
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const handleSelect = async (newStatus) => {
+    setOpen(false);
+    if (newStatus === status) return;
+    try {
+      await fetch(`${API_BASE}/events/${eventId}/items/${encodeURIComponent(sku)}/production`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ production_status: newStatus, bling_order_id: orderId || null }),
+      });
+      if (onSaved) onSaved(sku, newStatus, undefined, orderId);
+    } catch (err) { console.error('Failed to save production status', err); }
+  };
+
+  return (
+    <span ref={ref} style={{ position: 'relative', display: 'inline-block' }}>
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
+        style={{
+          cursor: 'pointer', border: `1.5px solid ${colors.border}`, padding: '3px 10px',
+          borderRadius: 12, fontSize: 12, fontWeight: 600, background: colors.bg, color: colors.color,
+          transition: 'all 0.15s ease', lineHeight: '18px',
+        }}
+      >
+        {status || 'Pendente'}
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, marginTop: 4, background: '#fff',
+          border: '1px solid #e2e8f0', borderRadius: 8, boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+          zIndex: 50, minWidth: 140, overflow: 'hidden',
+        }}>
+          {PRODUCTION_STATUSES.map((s) => {
+            const sc = PROD_COLORS[s];
+            return (
+              <div
+                key={s}
+                onClick={(e) => { e.stopPropagation(); handleSelect(s); }}
+                style={{
+                  padding: '8px 14px', cursor: 'pointer', fontSize: 13,
+                  background: s === status ? sc.bg : '#fff', color: sc.color, fontWeight: s === status ? 600 : 400,
+                  borderLeft: `3px solid ${s === status ? sc.border : 'transparent'}`,
+                  transition: 'background 0.1s',
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = sc.bg}
+                onMouseLeave={(e) => e.currentTarget.style.background = s === status ? sc.bg : '#fff'}
+              >
+                {s}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </span>
+  );
+}
+
+function NotesInput({ sku, eventId, orderId, initialValue, productionStatus, onSaved }) {
+  const [value, setValue] = useState(initialValue || '');
+  const timerRef = useRef(null);
+
+  useEffect(() => { setValue(initialValue || ''); }, [initialValue]);
+
+  const save = useCallback((text) => {
+    fetch(`${API_BASE}/events/${eventId}/items/${encodeURIComponent(sku)}/production`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ production_status: productionStatus || 'Pendente', notes: text, bling_order_id: orderId || null }),
+    }).catch(() => {});
+    if (onSaved) onSaved(sku, undefined, text, orderId);
+  }, [eventId, sku, productionStatus, orderId, onSaved]);
+
+  const handleChange = (e) => {
+    const text = e.target.value;
+    setValue(text);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => save(text), 800);
+  };
+
+  return (
+    <textarea
+      value={value}
+      onChange={handleChange}
+      onClick={(e) => e.stopPropagation()}
+      placeholder="Notas..."
+      rows={1}
+      style={{
+        width: '100%', fontSize: 12, padding: '4px 8px', border: '1px solid #e2e8f0',
+        borderRadius: 6, resize: 'vertical', fontFamily: 'inherit', color: '#334155',
+        background: '#f8fafc', minHeight: 28, lineHeight: '18px',
+      }}
+    />
+  );
 }
 
 function ChevronIcon({ isExpanded }) {
@@ -45,11 +154,10 @@ function ChevronIcon({ isExpanded }) {
 }
 
 function normalizeStatusLabel(value) {
-  const lower = (value || '').toString().toLowerCase();
-  if (lower.includes('cancel')) return 'Cancelado';
-  if (lower.includes('conclu') || lower.includes('atendid') || lower.includes('entreg') || lower.includes('andamento')) return 'Atendido';
-  if (lower.includes('aberto') || lower.includes('pendente')) return 'Em aberto';
-  return 'Outros';
+  const lower = (value || '').toString().trim().toLowerCase();
+  if (lower.includes('cancel') || lower.includes('devolv')) return 'Cancelado';
+  if (lower.includes('atendido') || lower.includes('conclu') || lower.includes('entreg')) return 'Atendido';
+  return 'Em aberto';
 }
 
 export function EventSalesPage() {
@@ -60,14 +168,54 @@ export function EventSalesPage() {
   const [loadingSales, setLoadingSales] = useState(false);
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedStatuses, setSelectedStatuses] = useState(() => new Set(EVENT_STATUS_FILTERS));
+  const [selectedStatuses, setSelectedStatuses] = useState(null);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
+  const [groupBy, setGroupBy] = useState('pedido');
+
+  const handleProductionSaved = useCallback((sku, newStatus, newNotes, orderId) => {
+    setSalesData((prev) => {
+      if (!prev) return prev;
+      const orders = prev.orders.map((order) => {
+        // When orderId is provided, only update the matching order's item
+        if (orderId && order.id !== orderId) return order;
+        const items = order.matched_items.map((item) => {
+          if ((item.sku || '').toUpperCase() !== (sku || '').toUpperCase()) return item;
+          return {
+            ...item,
+            ...(newStatus !== undefined ? { production_status: newStatus } : {}),
+            ...(newNotes !== undefined ? { notes: newNotes } : {}),
+          };
+        });
+        const embalado = items.filter((i) => i.production_status === 'Embalado').length;
+        return { ...order, matched_items: items, production_summary: `${embalado}/${items.length} Embalado` };
+      });
+      return { ...prev, orders };
+    });
+  }, []);
+
+  const handleOrderStatusChange = useCallback(async (orderId, newStatus) => {
+    try {
+      const resp = await fetch(`${API_BASE}/events/${selectedEventId}/orders/${orderId}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ situacao: newStatus }),
+      });
+      if (!resp.ok) throw new Error('Falha ao atualizar status');
+      setSalesData((prev) => {
+        if (!prev) return prev;
+        const orders = prev.orders.map((o) => o.id === orderId ? { ...o, situacao: newStatus } : o);
+        return { ...prev, orders };
+      });
+    } catch (err) {
+      alert(`Erro: ${err.message}`);
+    }
+  }, [selectedEventId]);
 
   async function loadEvents() {
     try {
       setLoadingEvents(true);
       const resp = await fetch(`${API_BASE}/events`);
-      if (!resp.ok) throw new Error('Falha ao carregar eventos');
+      if (!resp.ok) throw new Error('Falha ao carregar campanhas');
       const data = await resp.json();
       const list = Array.isArray(data) ? data : [];
       setEvents(list);
@@ -93,7 +241,7 @@ export function EventSalesPage() {
       const resp = await fetch(`${API_BASE}/events/${eventId}/sales`);
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
-        throw new Error(errData.detail || 'Falha ao carregar vendas do evento');
+        throw new Error(errData.detail || 'Falha ao carregar vendas da campanha');
       }
       setSalesData(await resp.json());
     } catch (err) {
@@ -110,17 +258,35 @@ export function EventSalesPage() {
 
   useEffect(() => {
     if (selectedEventId) {
+      setSelectedStatuses(null);
       loadSales(selectedEventId);
     }
   }, [selectedEventId]);
 
+  const availableStatuses = useMemo(() => {
+    const allOrders = Array.isArray(salesData?.orders) ? salesData.orders : [];
+    const statusSet = new Set();
+    allOrders.forEach((order) => statusSet.add(normalizeStatusLabel(order.situacao)));
+    return [...statusSet].sort();
+  }, [salesData]);
+
+  useEffect(() => {
+    if (availableStatuses.length > 0) {
+      setSelectedStatuses((prev) => {
+        if (prev === null) return new Set(availableStatuses);
+        return prev;
+      });
+    }
+  }, [availableStatuses]);
+
   const visibleOrders = useMemo(() => {
     const allOrders = Array.isArray(salesData?.orders) ? salesData.orders : [];
     const term = (searchTerm || '').trim().toLowerCase();
+    const activeStatuses = selectedStatuses || new Set();
 
     return allOrders.filter((order) => {
       const statusLabel = normalizeStatusLabel(order.situacao);
-      const statusOk = selectedStatuses.has(statusLabel);
+      const statusOk = activeStatuses.has(statusLabel);
       if (!statusOk) return false;
 
       if (!term) return true;
@@ -154,13 +320,84 @@ export function EventSalesPage() {
     setExpandedOrderId((prev) => (prev === orderId ? null : orderId));
   };
 
+  const groupedByItem = useMemo(() => {
+    if (groupBy !== 'item') return [];
+
+    const SIZE_ORDER = ['PP', 'P', 'M', 'G', 'GG', 'XG', 'EXG', 'XXL', '6', '8', '10', '12', '14', '16'];
+
+    function extractModelAndSize(sku, productName) {
+      const raw = (sku || '').toUpperCase();
+      // Try hyphenated SKU: last segment is size (e.g. BL-DTQD-BR-GG)
+      const hyphenParts = raw.split('-');
+      if (hyphenParts.length >= 2) {
+        const lastPart = hyphenParts[hyphenParts.length - 1];
+        if (SIZE_ORDER.includes(lastPart)) {
+          return { model: hyphenParts.slice(0, -1).join('-'), size: lastPart };
+        }
+      }
+      // Try compact SKU: ends with size token (e.g. BLDTQDBRGG)
+      for (let i = SIZE_ORDER.length - 1; i >= 0; i--) {
+        if (raw.endsWith(SIZE_ORDER[i]) && raw.length > SIZE_ORDER[i].length) {
+          return { model: raw.slice(0, -SIZE_ORDER[i].length), size: SIZE_ORDER[i] };
+        }
+      }
+      // Try product_name: size often in parentheses
+      const nameMatch = (productName || '').match(/\b(PP|EXG|XXL|XG|GG|G|M|P)\b/i);
+      if (nameMatch) {
+        const size = nameMatch[1].toUpperCase();
+        return { model: (productName || '').replace(/\s*\(.*$/, '').trim(), size };
+      }
+      return { model: raw || (productName || '').trim(), size: '' };
+    }
+
+    const itemMap = {};
+    visibleOrders.forEach((order) => {
+      const items = Array.isArray(order.matched_items) ? order.matched_items : [];
+      items.forEach((item) => {
+        const key = item.sku || item.product_name;
+        if (!itemMap[key]) {
+          const { model, size } = extractModelAndSize(item.sku, item.product_name);
+          itemMap[key] = {
+            sku: item.sku, product_name: item.product_name, total_qty: 0, total_paid: 0, orders: [],
+            _model: model, _size: size,
+            production_status: item.production_status || 'Pendente',
+            notes: item.notes || '',
+          };
+        }
+        itemMap[key].total_qty += (item.quantity || 0);
+        itemMap[key].total_paid += (item.paid_total || 0);
+        itemMap[key].orders.push({
+          order_id: order.id,
+          numero: order.numero || order.id,
+          numero_loja: order.numero_loja,
+          data: order.data,
+          cliente: order.cliente,
+          situacao: order.situacao,
+          quantity: item.quantity,
+          paid_unit_price: item.paid_unit_price,
+          paid_total: item.paid_total,
+          production_status: item.production_status || 'Pendente',
+          notes: item.notes || '',
+        });
+      });
+    });
+
+    return Object.values(itemMap).sort((a, b) => {
+      if (a._model < b._model) return -1;
+      if (a._model > b._model) return 1;
+      const ai = SIZE_ORDER.indexOf(a._size);
+      const bi = SIZE_ORDER.indexOf(b._size);
+      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+    });
+  }, [visibleOrders, groupBy]);
+
   return (
     <Layout>
       <div className="page-inner">
         <div className="page-header">
           <div>
-            <h2>Vendas por Evento</h2>
-            <p className="page-subtitle">Pedidos de venda filtrados pelos produtos selecionados no evento</p>
+            <h2>Vendas por Campanha</h2>
+            <p className="page-subtitle">Pedidos de venda filtrados pelos produtos selecionados na campanha</p>
           </div>
           <button className="btn-secondary" disabled={!selectedEventId || loadingSales} onClick={() => loadSales(selectedEventId)}>
             {loadingSales ? 'Atualizando...' : 'Atualizar'}
@@ -171,16 +408,16 @@ export function EventSalesPage() {
 
         <div className="card" style={{ marginBottom: 16 }}>
           <div className="card-header">
-            <h3>📌 Seleção de Evento</h3>
+            <h3>📌 Seleção de Campanha</h3>
           </div>
           <div style={{ padding: 20 }}>
             {loadingEvents ? (
-              <p className="loading">Carregando eventos...</p>
+              <p className="loading">Carregando campanhas...</p>
             ) : (
               <div className="form-group" style={{ marginBottom: 0 }}>
-                <label>Evento</label>
+                <label>Campanha</label>
                 <select value={selectedEventId} onChange={(e) => setSelectedEventId(e.target.value)}>
-                  <option value="">Selecione um evento</option>
+                  <option value="">Selecione uma campanha</option>
                   {events.map((event) => (
                     <option value={event.id} key={event.id}>
                       {event.name} ({formatDate(event.start_date)} - {formatDate(event.end_date)})
@@ -206,25 +443,28 @@ export function EventSalesPage() {
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                   <span style={{ fontSize: 13, color: '#64748b', marginRight: 4 }}>Status:</span>
-                  {EVENT_STATUS_FILTERS.map((statusLabel) => (
-                    <button
-                      key={statusLabel}
-                      onClick={() => toggleStatus(statusLabel)}
-                      style={{
-                        cursor: 'pointer',
-                        border: selectedStatuses.has(statusLabel) ? '2px solid #3b82f6' : '2px solid transparent',
-                        padding: '5px 12px',
-                        borderRadius: 16,
-                        fontSize: 13,
-                        fontWeight: selectedStatuses.has(statusLabel) ? 600 : 400,
-                        background: selectedStatuses.has(statusLabel) ? '#dbeafe' : '#f1f5f9',
-                        color: selectedStatuses.has(statusLabel) ? '#1d4ed8' : '#475569',
-                        transition: 'all 0.15s ease',
-                      }}
-                    >
-                      {statusLabel}
-                    </button>
-                  ))}
+                  {availableStatuses.map((statusLabel) => {
+                    const active = selectedStatuses?.has(statusLabel);
+                    return (
+                      <button
+                        key={statusLabel}
+                        onClick={() => toggleStatus(statusLabel)}
+                        style={{
+                          cursor: 'pointer',
+                          border: active ? '2px solid #3b82f6' : '2px solid transparent',
+                          padding: '5px 12px',
+                          borderRadius: 16,
+                          fontSize: 13,
+                          fontWeight: active ? 600 : 400,
+                          background: active ? '#dbeafe' : '#f1f5f9',
+                          color: active ? '#1d4ed8' : '#475569',
+                          transition: 'all 0.15s ease',
+                        }}
+                      >
+                        {statusLabel}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -251,13 +491,120 @@ export function EventSalesPage() {
             </div>
 
             <div className="card">
-              <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                 <h3>📋 Pedidos Filtrados</h3>
-                {!loadingSales && <span style={{ fontSize: 13, color: '#94a3b8' }}>{filteredSummary.orders_count} pedido(s)</span>}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 12, color: '#94a3b8' }}>Agrupar:</span>
+                  {[{ key: 'pedido', label: 'Por Pedido' }, { key: 'item', label: 'Por Item' }].map((opt) => (
+                    <button
+                      key={opt.key}
+                      onClick={() => { setGroupBy(opt.key); setExpandedOrderId(null); }}
+                      style={{
+                        cursor: 'pointer',
+                        border: groupBy === opt.key ? '2px solid #3b82f6' : '2px solid transparent',
+                        padding: '4px 12px',
+                        borderRadius: 16,
+                        fontSize: 12,
+                        fontWeight: groupBy === opt.key ? 600 : 400,
+                        background: groupBy === opt.key ? '#dbeafe' : '#f1f5f9',
+                        color: groupBy === opt.key ? '#1d4ed8' : '#475569',
+                        transition: 'all 0.15s ease',
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                  {!loadingSales && <span style={{ fontSize: 13, color: '#94a3b8' }}>{filteredSummary.orders_count} pedido(s)</span>}
+                </div>
               </div>
               {loadingSales ? (
                 <p className="loading">Carregando vendas...</p>
-              ) : visibleOrders.length === 0 ? (
+              ) : (
+                groupBy === 'item' ? (
+                  groupedByItem.length === 0 ? (
+                    <div className="empty-state">
+                      <span className="empty-state-icon">📭</span>
+                      <p>Nenhum item encontrado.</p>
+                    </div>
+                  ) : (
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th style={{ width: 40 }}></th>
+                          <th>SKU</th>
+                          <th>Produto</th>
+                          <th style={{ textAlign: 'right' }}>Qtd Total</th>
+                          <th style={{ textAlign: 'right' }}>Total Pago</th>
+                          <th style={{ textAlign: 'right' }}>Pedidos</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {groupedByItem.map((group) => {
+                          const gKey = group.sku || group.product_name;
+                          const isExpanded = expandedOrderId === gKey;
+                          return (
+                            <React.Fragment key={gKey}>
+                              <tr
+                                style={{ cursor: 'pointer', background: isExpanded ? '#f0f9ff' : undefined }}
+                                onClick={() => toggleOrder(gKey)}
+                              >
+                                <td style={{ textAlign: 'center', color: '#64748b', paddingTop: 12, paddingBottom: 12 }}>
+                                  <ChevronIcon isExpanded={isExpanded} />
+                                </td>
+                                <td style={{ fontFamily: 'monospace', color: '#64748b' }}>{group.sku || '—'}</td>
+                                <td style={{ fontWeight: 600 }}>{group.product_name}</td>
+                                <td style={{ textAlign: 'right', fontWeight: 600 }}>{group.total_qty}</td>
+                                <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatBRL(group.total_paid)}</td>
+                                <td style={{ textAlign: 'right', color: '#64748b' }}>{group.orders.length}</td>
+                              </tr>
+                              {isExpanded && (
+                                <tr style={{ background: '#f8fafc', borderTop: '2px solid #e2e8f0' }}>
+                                  <td colSpan="6" style={{ padding: '16px 20px' }}>
+                                    <h4 style={{ margin: '0 0 12px 0', color: '#1e293b', fontSize: 14 }}>📦 Pedidos com este item</h4>
+                                    <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+                                      <thead>
+                                        <tr style={{ borderBottom: '1px solid #cbd5e1' }}>
+                                          <th style={{ textAlign: 'left', padding: '8px', fontWeight: 600, color: '#475569' }}>Pedido</th>
+                                          <th style={{ textAlign: 'left', padding: '8px', fontWeight: 600, color: '#475569' }}>Nuvemshop</th>
+                                          <th style={{ textAlign: 'left', padding: '8px', fontWeight: 600, color: '#475569' }}>Data</th>
+                                          <th style={{ textAlign: 'left', padding: '8px', fontWeight: 600, color: '#475569' }}>Cliente</th>
+                                          <th style={{ textAlign: 'left', padding: '8px', fontWeight: 600, color: '#475569' }}>Situação</th>
+                                          <th style={{ textAlign: 'left', padding: '8px', fontWeight: 600, color: '#475569' }}>Produção</th>
+                                          <th style={{ textAlign: 'right', padding: '8px', fontWeight: 600, color: '#475569', width: 80 }}>Qtd</th>
+                                          <th style={{ textAlign: 'right', padding: '8px', fontWeight: 600, color: '#475569', width: 100 }}>Total Pago</th>
+                                          <th style={{ textAlign: 'left', padding: '8px', fontWeight: 600, color: '#475569' }}>Notas</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {group.orders.map((o, idx) => (
+                                          <tr key={`${gKey}-${o.numero}-${idx}`} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                                            <td style={{ padding: '8px', fontWeight: 600 }}>{o.numero}</td>
+                                            <td style={{ padding: '8px', color: '#64748b' }}>{o.numero_loja || '—'}</td>
+                                            <td style={{ padding: '8px', color: '#64748b' }}>{formatDate(o.data)}</td>
+                                            <td style={{ padding: '8px', color: '#334155' }}>{o.cliente || '—'}</td>
+                                            <td style={{ padding: '8px' }}><StatusBadge text={o.situacao} /></td>
+                                            <td style={{ padding: '8px' }}>
+                                              <ProductionBadge status={o.production_status} sku={group.sku} eventId={selectedEventId} orderId={o.order_id} onSaved={handleProductionSaved} />
+                                            </td>
+                                            <td style={{ textAlign: 'right', padding: '8px', color: '#64748b' }}>{o.quantity}</td>
+                                            <td style={{ textAlign: 'right', padding: '8px', fontWeight: 600, color: '#1e293b' }}>{formatBRL(o.paid_total)}</td>
+                                            <td style={{ padding: '8px', minWidth: 150 }}>
+                                              <NotesInput sku={group.sku} eventId={selectedEventId} orderId={o.order_id} initialValue={o.notes} productionStatus={o.production_status} onSaved={handleProductionSaved} />
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                              </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )
+                ) : visibleOrders.length === 0 ? (
                 <div className="empty-state">
                   <span className="empty-state-icon">📭</span>
                   <p>Nenhuma venda encontrada para os produtos deste evento no período selecionado.</p>
@@ -268,10 +615,12 @@ export function EventSalesPage() {
                     <tr>
                       <th style={{ width: 40 }}></th>
                       <th>Pedido</th>
+                      <th>Nuvemshop</th>
                       <th>Data</th>
                       <th>Cliente</th>
                       <th>Situação</th>
-                      <th>Itens do Evento</th>
+                      <th>Produção</th>
+                      <th></th>
                       <th>Total Itens Evento</th>
                     </tr>
                   </thead>
@@ -280,6 +629,7 @@ export function EventSalesPage() {
                       const orderKey = order.id || order.numero;
                       const isExpanded = expandedOrderId === orderKey;
                       const matchedItems = Array.isArray(order.matched_items) ? order.matched_items : [];
+                      const allEmbalado = matchedItems.length > 0 && matchedItems.every((i) => i.production_status === 'Embalado');
 
                       return (
                         <React.Fragment key={orderKey}>
@@ -291,16 +641,29 @@ export function EventSalesPage() {
                               {matchedItems.length > 0 && <ChevronIcon isExpanded={isExpanded} />}
                             </td>
                             <td style={{ fontWeight: 600 }}>{order.numero || order.id}</td>
+                            <td style={{ color: '#64748b' }}>{order.numero_loja || '—'}</td>
                             <td>{formatDate(order.data)}</td>
                             <td>{order.cliente || '—'}</td>
                             <td><StatusBadge text={order.situacao} /></td>
-                            <td>{matchedItems.length}</td>
+                            <td style={{ fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</td>
+                            <td style={{ fontSize: 14 }} title={order.has_frete ? 'Envio' : 'Retirada'}>{order.has_frete ? '🚚' : '🏪'}</td>
                             <td style={{ fontWeight: 600 }}>{formatBRL(order.total_matched)}</td>
                           </tr>
 
                           {isExpanded && matchedItems.length > 0 && (
                             <tr style={{ background: '#f8fafc', borderTop: '2px solid #e2e8f0' }}>
-                              <td colSpan="7" style={{ padding: '16px 20px' }}>
+                              <td colSpan="9" style={{ padding: '16px 20px' }}>
+                                {allEmbalado && order.situacao !== 'Atendido' && (
+                                  <div style={{ marginBottom: 12, display: 'flex', gap: 8 }}>
+                                    <button
+                                      className="btn-secondary"
+                                      style={{ fontSize: 12, padding: '4px 12px' }}
+                                      onClick={(e) => { e.stopPropagation(); handleOrderStatusChange(order.id, 'Atendido'); }}
+                                    >
+                                      ✅ Marcar como Atendido
+                                    </button>
+                                  </div>
+                                )}
                                 <div style={{ marginBottom: 12 }}>
                                   <h4 style={{ margin: '0 0 12px 0', color: '#1e293b', fontSize: 14 }}>📦 Itens do Evento no Pedido</h4>
                                   <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
@@ -308,9 +671,10 @@ export function EventSalesPage() {
                                       <tr style={{ borderBottom: '1px solid #cbd5e1' }}>
                                         <th style={{ textAlign: 'left', padding: '8px', fontWeight: 600, color: '#475569' }}>SKU</th>
                                         <th style={{ textAlign: 'left', padding: '8px', fontWeight: 600, color: '#475569' }}>Produto</th>
+                                        <th style={{ textAlign: 'left', padding: '8px', fontWeight: 600, color: '#475569' }}>Produção</th>
                                         <th style={{ textAlign: 'right', padding: '8px', fontWeight: 600, color: '#475569', width: 80 }}>Qtd</th>
-                                        <th style={{ textAlign: 'right', padding: '8px', fontWeight: 600, color: '#475569', width: 100 }}>Unit. Pago</th>
                                         <th style={{ textAlign: 'right', padding: '8px', fontWeight: 600, color: '#475569', width: 100 }}>Total Pago</th>
+                                        <th style={{ textAlign: 'left', padding: '8px', fontWeight: 600, color: '#475569' }}>Notas</th>
                                       </tr>
                                     </thead>
                                     <tbody>
@@ -318,9 +682,14 @@ export function EventSalesPage() {
                                         <tr key={`${orderKey}-${item.sku}`} style={{ borderBottom: '1px solid #f1f5f9' }}>
                                           <td style={{ padding: '8px', color: '#64748b', fontFamily: 'monospace' }}>{item.sku || '—'}</td>
                                           <td style={{ padding: '8px', color: '#334155' }}>{item.product_name}</td>
+                                          <td style={{ padding: '8px' }}>
+                                            <ProductionBadge status={item.production_status} sku={item.sku} eventId={selectedEventId} orderId={order.id} onSaved={handleProductionSaved} />
+                                          </td>
                                           <td style={{ textAlign: 'right', padding: '8px', color: '#64748b' }}>{item.quantity}</td>
-                                          <td style={{ textAlign: 'right', padding: '8px', color: '#64748b' }}>{formatBRL(item.paid_unit_price)}</td>
                                           <td style={{ textAlign: 'right', padding: '8px', fontWeight: 600, color: '#1e293b' }}>{formatBRL(item.paid_total)}</td>
+                                          <td style={{ padding: '8px', minWidth: 150 }}>
+                                            <NotesInput sku={item.sku} eventId={selectedEventId} orderId={order.id} initialValue={item.notes} productionStatus={item.production_status} onSaved={handleProductionSaved} />
+                                          </td>
                                         </tr>
                                       ))}
                                     </tbody>
@@ -334,6 +703,7 @@ export function EventSalesPage() {
                     })}
                   </tbody>
                 </table>
+              )
               )}
             </div>
           </>

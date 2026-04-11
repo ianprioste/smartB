@@ -9,12 +9,15 @@ from typing import Any, Dict, List
 from uuid import UUID
 
 from app.infra.db import get_db, SessionLocal
-from app.infra.bling_client import BlingClient, BlingAuthError
+from app.infra.bling_client import BlingClient, BlingAuthError, BlingAPIError
 from app.infra.logging import get_logger
 from app.domain.order_sync import sync_orders
+from app.domain.bling_situacoes import get_bling_status_ids
 from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.order_snapshot_repo import OrderSnapshotRepository, parse_progress_from_sync_message
+from app.repositories.item_production_note_repo import ItemProductionNoteRepository
 from app.models.database import BlingOrderSnapshotModel
+from app.models.schemas import ItemProductionNoteUpdateRequest, ItemProductionNoteResponse, OrderStatusUpdateRequest
 from app.utils.datetime_utils import now_local
 
 logger = get_logger(__name__)
@@ -28,20 +31,28 @@ KNOWN_STATUSES = [
     {"id": 15, "nome": "Cancelado"},
 ]
 
+# Bling situacao.valor categories: 0=Em aberto, 1=Atendido, 2=Cancelado.
+_VALOR_LABEL = {0: "Em aberto", 1: "Atendido", 2: "Cancelado"}
+
 STATUS_NAME_MAP = {
     6: "Em aberto",
     9: "Atendido",
-    12: "Atendido",  # merge Concluido into Atendido
+    12: "Cancelado",
     15: "Cancelado",
 }
+VALID_STATUS_NAMES = {"Em aberto", "Atendido", "Cancelado"}
 
 
 def _normalize_status_name(name: str | None) -> str | None:
     if not name:
         return name
     lower = name.strip().lower()
-    if "conclu" in lower or "atendid" in lower or "entreg" in lower:
+    if "atendid" in lower or "entreg" in lower:
         return "Atendido"
+    if "cancel" in lower or "conclu" in lower or "devolv" in lower:
+        return "Cancelado"
+    if "pendente" in lower:
+        return "Em aberto"
     return name
 
 
@@ -102,8 +113,8 @@ def _make_client(db: Session):
     )
 
 
-async def _fetch_all_orders(client: BlingClient, status_ids: List[int]) -> List[Dict[str, Any]]:
-    """Fetch all orders from Bling for given status IDs, paginating automatically."""
+async def _fetch_all_orders(client: BlingClient, status_ids: List[int] | None = None) -> List[Dict[str, Any]]:
+    """Fetch all orders from Bling, optionally filtering by status IDs."""
     page = 1
     limit = 100
     all_orders: List[Dict[str, Any]] = []
@@ -113,7 +124,7 @@ async def _fetch_all_orders(client: BlingClient, status_ids: List[int]) -> List[
             ("pagina", page),
             ("limite", limit),
         ]
-        for sid in status_ids:
+        for sid in (status_ids or []):
             params.append(("idsSituacoes[]", sid))
 
         resp = await client.get("/pedidos/vendas", params=params)
@@ -143,6 +154,15 @@ def _to_float(value: Any) -> float:
         return float(value or 0)
     except Exception:
         return 0.0
+
+
+def _requested_status_labels(status_ids: List[int]) -> set[str]:
+    labels = set()
+    for sid in status_ids:
+        label = STATUS_NAME_MAP.get(sid)
+        if label in VALID_STATUS_NAMES:
+            labels.add(label)
+    return labels
 
 
 def _filter_orders(orders: List[Dict], search: str) -> List[Dict]:
@@ -253,20 +273,42 @@ def _extract_order_items(order_detail: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _resolve_status_name(raw_status: Any, fallback_status_id: Any = None, persisted_status_name: str | None = None) -> str:
-    """Resolve a displayable order status without overriding trusted persisted names."""
-    if persisted_status_name:
-        return _normalize_status_name(persisted_status_name) or persisted_status_name
+    """Resolve a displayable order status.
 
-    status_id = fallback_status_id
+    Prefers the `valor` category (0=Em aberto, 1=Atendido, 2=Cancelado)
+    which is semantically reliable even when `nome` is absent.
+    """
     if isinstance(raw_status, dict):
-        status_id = raw_status.get("id") or status_id
+        # Prefer valor (category) — always semantically correct.
+        valor = raw_status.get("valor")
+        if valor is not None:
+            try:
+                label = _VALOR_LABEL.get(int(valor))
+                if label:
+                    return label
+            except (TypeError, ValueError):
+                pass
+
         status_name = raw_status.get("nome")
         if status_name:
-            return status_name
+            return _normalize_status_name(status_name) or status_name
 
-    if status_id is not None:
+        status_id = raw_status.get("id") or fallback_status_id
+        if status_id is not None:
+            try:
+                return STATUS_NAME_MAP.get(int(status_id), f"Status {status_id}")
+            except (TypeError, ValueError):
+                pass
+        return "—"
+
+    if persisted_status_name:
+        normalized = _normalize_status_name(persisted_status_name) or persisted_status_name
+        if normalized in VALID_STATUS_NAMES:
+            return normalized
+
+    if fallback_status_id is not None:
         try:
-            return STATUS_NAME_MAP.get(int(status_id), f"Status {status_id}")
+            return STATUS_NAME_MAP.get(int(fallback_status_id), f"Status {fallback_status_id}")
         except (TypeError, ValueError):
             pass
 
@@ -309,6 +351,49 @@ def _format_order(o: Dict) -> Dict:
     }
 
 
+def _has_frete(detail_payload: Dict[str, Any] | None, order_payload: Dict[str, Any] | None = None) -> bool:
+    """Return True if the order has shipping cost (frete)."""
+    for payload in (detail_payload, order_payload):
+        if not isinstance(payload, dict):
+            continue
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        if not isinstance(data, dict):
+            continue
+        transporte = data.get("transporte", {})
+        if isinstance(transporte, dict):
+            frete = _to_float(transporte.get("frete", 0))
+            if frete > 0:
+                return True
+        taxas = data.get("taxas", {})
+        if isinstance(taxas, dict):
+            custo_frete = _to_float(taxas.get("custoFrete", 0))
+            if custo_frete > 0:
+                return True
+    return False
+
+
+def _inject_production_data_orders(db: Session, orders: List[Dict[str, Any]]) -> None:
+    """Inject production_status, notes, production_summary into order items (global scope)."""
+    note_map = ItemProductionNoteRepository.get_latest_by_sku(db, DEFAULT_TENANT_ID)
+    for order in orders:
+        embalado = 0
+        items = order.get("itens") or []
+        for item in items:
+            sku_key = (item.get("sku") or "").strip().upper()
+            note = note_map.get(sku_key)
+            if note:
+                item["production_status"] = note.production_status
+                item["notes"] = note.notes
+                item["event_id"] = str(note.event_id)
+            else:
+                item["production_status"] = "Pendente"
+                item["notes"] = None
+                item["event_id"] = None
+            if item["production_status"] == "Embalado":
+                embalado += 1
+        order["production_summary"] = f"{embalado}/{len(items)} Embalado" if items else None
+
+
 def _format_snapshot_order(row) -> Dict[str, Any]:
     raw_detail = row.raw_detail if isinstance(row.raw_detail, dict) else {}
     raw_order = row.raw_order if isinstance(row.raw_order, dict) else {}
@@ -327,6 +412,7 @@ def _format_snapshot_order(row) -> Dict[str, Any]:
         "total": total_final,
         "situacao": status_name or "—",
         "situacaoId": row.status_id,
+        "has_frete": _has_frete(raw_detail, raw_order),
         "itens": itens,
     }
 
@@ -369,9 +455,10 @@ async def list_orders(
     if not status_ids:
         status_ids = [6, 9, 15]
 
-    # Merge: filtering Atendido (9) also includes Concluido (12)
-    if 9 in status_ids and 12 not in status_ids:
+    # Merge: filtering Cancelado also includes status 12
+    if 15 in status_ids and 12 not in status_ids:
         status_ids.append(12)
+    requested_labels = _requested_status_labels(status_ids)
 
     # Fallback mode when snapshot tables are not available.
     if not snapshot_repo_available:
@@ -386,7 +473,7 @@ async def list_orders(
                 "source": "bling-direct-fallback",
             }
         try:
-            all_orders = await _fetch_all_orders(client, status_ids)
+            all_orders = await _fetch_all_orders(client)
         except BlingAuthError:
             return {
                 "has_bling_auth": False,
@@ -400,6 +487,8 @@ async def list_orders(
 
         filtered = _filter_orders(all_orders, search)
         formatted = [_format_order(o) for o in filtered]
+        if requested_labels:
+            formatted = [o for o in formatted if (o.get("situacao") or "") in requested_labels]
         formatted.sort(key=lambda x: x.get("data") or "", reverse=True)
 
         total = len(formatted)
@@ -431,8 +520,10 @@ async def list_orders(
             "needs_sync": True,
         }
 
-    rows = OrderSnapshotRepository.list_for_orders_page(db, DEFAULT_TENANT_ID, status_ids, search)
+    rows = OrderSnapshotRepository.list_for_orders_page(db, DEFAULT_TENANT_ID, [], search)
     formatted = [_format_snapshot_order(row) for row in rows]
+    if requested_labels:
+        formatted = [o for o in formatted if (o.get("situacao") or "") in requested_labels]
 
     # Sort by date descending
     formatted.sort(key=lambda x: x.get("data") or "", reverse=True)
@@ -443,6 +534,8 @@ async def list_orders(
     start = (page - 1) * limit
     end = start + limit
     page_data = formatted[start:end]
+
+    _inject_production_data_orders(db, page_data)
 
     return {
         "has_bling_auth": client is not None,
@@ -562,7 +655,12 @@ async def sync_orders_status(db: Session = Depends(get_db)):
 
     # Detect stale queued/running state (worker down or queue not consumed).
     if state and sync_status == "running":
-        age = now_local() - (state.updated_at or now_local())
+        _now = now_local()
+        _updated = state.updated_at or _now
+        # Ensure both are aware or both are naive before subtracting
+        if _updated.tzinfo is None:
+            _updated = _updated.replace(tzinfo=_now.tzinfo)
+        age = _now - _updated
         if progress.get("processed", 0) == 0 and progress.get("total", 0) == 0 and age > timedelta(seconds=300):
             sync_status = "error"
             sync_message = "Sincronização sem progresso inicial por 5 minutos. Verifique backend/credenciais Bling/rede."
@@ -648,3 +746,89 @@ async def diagnose_order(order_numero: str, db: Session = Depends(get_db)):
         } if bling_data else None,
         "expected_mapping": KNOWN_STATUSES,
     }
+
+
+@router.put("/items/{sku}/production", response_model=ItemProductionNoteResponse)
+async def update_order_item_production(
+    sku: str,
+    body: ItemProductionNoteUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    """Upsert production status for a SKU from the global orders page.
+
+    Uses the event_id from the most recent existing note for this SKU,
+    or falls back to the most recent active event.
+    """
+    from app.models.database import SalesEventModel
+
+    norm_sku = sku.strip().upper()
+
+    # Try to find existing note for this SKU (latest).
+    note_map = ItemProductionNoteRepository.get_latest_by_sku(db, DEFAULT_TENANT_ID)
+    existing = note_map.get(norm_sku)
+
+    if existing:
+        event_id = existing.event_id
+    else:
+        # Fallback: use the most recent event.
+        latest_event = (
+            db.query(SalesEventModel)
+            .filter(SalesEventModel.tenant_id == DEFAULT_TENANT_ID)
+            .order_by(SalesEventModel.start_date.desc())
+            .first()
+        )
+        if not latest_event:
+            raise HTTPException(status_code=400, detail="Nenhuma campanha encontrada para associar a nota de produção")
+        event_id = latest_event.id
+
+    row = ItemProductionNoteRepository.upsert(
+        db, DEFAULT_TENANT_ID, event_id, norm_sku, body.production_status, body.notes,
+        bling_order_id=body.bling_order_id,
+    )
+    return ItemProductionNoteResponse(
+        sku=row.sku, production_status=row.production_status, notes=row.notes,
+        bling_order_id=row.bling_order_id,
+    )
+
+
+@router.put("/orders/{order_id}/status")
+async def update_order_bling_status(
+    order_id: int,
+    body: OrderStatusUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    """Update a Bling order status (e.g. mark as Atendido) from the global orders page."""
+    client = _make_client(db)
+    if not client:
+        raise HTTPException(status_code=401, detail="Bling não autenticado")
+
+    sit_ids = await get_bling_status_ids(client)
+
+    target_key = body.situacao.strip().lower()
+    target_id = None
+    if "atendido" in target_key:
+        target_id = sit_ids.get("atendido")
+    elif "envio" in target_key:
+        target_id = sit_ids.get("pronto_envio")
+    elif "retirada" in target_key:
+        target_id = sit_ids.get("pronto_retirada")
+
+    if not target_id:
+        raise HTTPException(status_code=400, detail=f"Situação '{body.situacao}' não encontrada no Bling")
+
+    try:
+        await client.patch(f"/pedidos/vendas/{order_id}/situacoes/{target_id}", {})
+    except BlingAPIError as exc:
+        raise HTTPException(status_code=502, detail=f"Erro ao atualizar status no Bling: {exc}")
+
+    # Update local snapshot.
+    snapshot = db.query(BlingOrderSnapshotModel).filter(
+        BlingOrderSnapshotModel.bling_order_id == order_id,
+        BlingOrderSnapshotModel.tenant_id == DEFAULT_TENANT_ID,
+    ).first()
+    if snapshot:
+        snapshot.status_id = target_id
+        snapshot.status_name = body.situacao
+        db.commit()
+
+    return {"ok": True, "order_id": order_id, "new_status": body.situacao}

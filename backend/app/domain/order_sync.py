@@ -15,9 +15,6 @@ from app.utils.datetime_utils import now_local
 logger = get_logger(__name__)
 
 
-KNOWN_STATUS_IDS = [6, 9, 12, 15]
-
-
 async def sync_orders(
     db: Session,
     tenant_id: UUID,
@@ -32,13 +29,12 @@ async def sync_orders(
     state = OrderSnapshotRepository.get_or_create_sync_state(db, tenant_id)
 
     if mode == "full":
-        list_orders = await _fetch_all_orders(client, KNOWN_STATUS_IDS)
+        list_orders = await _fetch_all_orders(client)
     else:
-        since = state.last_successful_sync_at or (now_local() - timedelta(days=7))
-        # Overlap window avoids missing updates around boundaries.
-        since = since - timedelta(days=2)
-        until = now_local() + timedelta(days=1)
-        list_orders = await _fetch_orders_by_date_range(client, since, until, KNOWN_STATUS_IDS)
+        # Bling date filters are based on order date and can miss status-only
+        # changes on older orders. For correctness, incremental fetches all
+        # orders and only differs from full by operational intent.
+        list_orders = await _fetch_all_orders(client)
 
     if not list_orders:
         msg = f"sync {mode}: no orders returned"
@@ -55,43 +51,44 @@ async def sync_orders(
     )
     db.commit()
 
-    semaphore = asyncio.Semaphore(max(1, max_concurrency))
-
-    async def _fetch_detail(order: Dict[str, Any]):
-        order_id = order.get("id")
-        if order_id is None:
-            return order, None, ValueError("missing order id")
-        try:
-            async with semaphore:
-                detail = await client.get(f"/pedidos/vendas/{order_id}")
-            return order, detail, None
-        except Exception as exc:
-            return order, None, exc
-
-    tasks = [asyncio.create_task(_fetch_detail(order)) for order in list_orders]
-
     processed = 0
     upserted = 0
     failed = 0
 
-    for fut in asyncio.as_completed(tasks):
-        order, detail, err = await fut
-        if err is not None or detail is None:
-            failed += 1
-        else:
-            OrderSnapshotRepository.upsert_order(db, tenant_id, order, detail)
-            upserted += 1
+    # Process in small batches to avoid event-loop congestion and allow
+    # progress commits that are visible from other threads/connections.
+    batch_size = max_concurrency
 
-        processed += 1
-        # Persist progress periodically to avoid too many commits.
-        if processed == total or processed % 10 == 0:
-            OrderSnapshotRepository.mark_sync_running(
-                db,
-                tenant_id,
-                mode,
-                f"processed={processed}|total={total}|upserted={upserted}|failed={failed}",
-            )
-            db.commit()
+    for batch_start in range(0, total, batch_size):
+        batch = list_orders[batch_start : batch_start + batch_size]
+
+        async def _fetch_detail(order: Dict[str, Any]):
+            order_id = order.get("id")
+            if order_id is None:
+                return order, None, ValueError("missing order id")
+            try:
+                detail = await client.get(f"/pedidos/vendas/{order_id}")
+                return order, detail, None
+            except Exception as exc:
+                return order, None, exc
+
+        results = await asyncio.gather(*[_fetch_detail(o) for o in batch])
+
+        for order, detail, err in results:
+            if err is not None or detail is None:
+                failed += 1
+            else:
+                OrderSnapshotRepository.upsert_order(db, tenant_id, order, detail)
+                upserted += 1
+            processed += 1
+
+        OrderSnapshotRepository.mark_sync_running(
+            db,
+            tenant_id,
+            mode,
+            f"processed={processed}|total={total}|upserted={upserted}|failed={failed}",
+        )
+        db.commit()
 
     msg = f"sync {mode}: listed={total} upserted={upserted} failed={failed}"
     if failed > 0:
@@ -111,15 +108,13 @@ async def sync_orders(
     }
 
 
-async def _fetch_all_orders(client, status_ids: List[int]) -> List[Dict[str, Any]]:
+async def _fetch_all_orders(client) -> List[Dict[str, Any]]:
     page = 1
     limit = 100
     all_orders: List[Dict[str, Any]] = []
 
     while True:
         params: List[tuple] = [("pagina", page), ("limite", limit)]
-        for sid in status_ids:
-            params.append(("idsSituacoes[]", sid))
 
         resp = await client.get("/pedidos/vendas", params=params)
         page_data = resp.get("data", []) if isinstance(resp, dict) else []
@@ -141,7 +136,6 @@ async def _fetch_orders_by_date_range(
     client,
     start_dt: datetime,
     end_dt: datetime,
-    status_ids: List[int],
 ) -> List[Dict[str, Any]]:
     page = 1
     limit = 100
@@ -154,8 +148,6 @@ async def _fetch_orders_by_date_range(
             ("dataInicial", start_dt.strftime("%Y-%m-%d")),
             ("dataFinal", end_dt.strftime("%Y-%m-%d")),
         ]
-        for sid in status_ids:
-            params.append(("idsSituacoes[]", sid))
 
         resp = await client.get("/pedidos/vendas", params=params)
         page_data = resp.get("data", []) if isinstance(resp, dict) else []

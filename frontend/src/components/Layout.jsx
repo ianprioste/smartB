@@ -176,7 +176,7 @@ export function Layout({ children }) {
               onClick={() => go('/events')}
             >
               <span className="nav-icon">🎪</span>
-              <span className="nav-label">Eventos de Vendas</span>
+              <span className="nav-label">Campanhas</span>
             </button>
             <div className="nav-sub">
               <button
@@ -184,14 +184,14 @@ export function Layout({ children }) {
                 onClick={() => go('/events')}
               >
                 <span className="nav-icon">📝</span>
-                <span className="nav-label">Cadastrar Evento</span>
+                <span className="nav-label">Cadastrar Campanha</span>
               </button>
               <button
                 className={`nav-item nav-sub-item ${isActive('/events/sales') ? 'active' : ''}`}
                 onClick={() => go('/events/sales')}
               >
                 <span className="nav-icon">💵</span>
-                <span className="nav-label">Vendas por Evento</span>
+                <span className="nav-label">Vendas por Campanha</span>
               </button>
             </div>
           </div>

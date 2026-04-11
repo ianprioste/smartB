@@ -199,6 +199,18 @@ async def bling_callback(
         logger.info(
             f"oauth_token_saved - request_id={request_id}, tenant_id={str(tenant.id)}"
         )
+
+        # Auto-trigger full sync if DB is empty (first connection)
+        try:
+            from app.repositories.order_snapshot_repo import OrderSnapshotRepository
+            count = OrderSnapshotRepository.count_by_tenant(db, tenant.id)
+            if count == 0:
+                from app.api.orders import _run_sync_in_local_background
+                logger.info("auto_sync_triggered tenant_id=%s reason=first_bling_connect", str(tenant.id))
+                _run_sync_in_local_background("full")
+        except Exception as exc:
+            logger.warning("auto_sync_trigger_failed error=%s", str(exc))
+
         return TokenAuthResponse(
             message="Connected to Bling successfully",
             access_token=token_data["access_token"][:20] + "...",  # Partial for display

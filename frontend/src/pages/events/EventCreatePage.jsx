@@ -29,7 +29,7 @@ export function EventCreatePage() {
     try {
       setLoadingEvents(true);
       const resp = await fetch(`${API_BASE}/events`);
-      if (!resp.ok) throw new Error('Falha ao carregar eventos');
+      if (!resp.ok) throw new Error('Falha ao carregar campanhas');
       const data = await resp.json();
       setEvents(Array.isArray(data) ? data : []);
     } catch (err) {
@@ -101,7 +101,7 @@ export function EventCreatePage() {
     try {
       setError(null);
       const resp = await fetch(`${API_BASE}/events/${eventId}`);
-      if (!resp.ok) throw new Error('Falha ao carregar evento');
+      if (!resp.ok) throw new Error('Falha ao carregar campanha');
       const event = await resp.json();
 
       setEditingEventId(event.id);
@@ -122,19 +122,19 @@ export function EventCreatePage() {
   }
 
   async function handleDelete(eventId) {
-    const ok = window.confirm('Deseja realmente excluir este evento?');
+    const ok = window.confirm('Deseja realmente excluir esta campanha?');
     if (!ok) return;
 
     try {
       setError(null);
       const resp = await fetch(`${API_BASE}/events/${eventId}`, { method: 'DELETE' });
-      if (!resp.ok) throw new Error('Falha ao excluir evento');
+      if (!resp.ok) throw new Error('Falha ao excluir campanha');
 
       if (editingEventId === eventId) {
         resetForm();
       }
 
-      setSuccess('Evento excluído com sucesso');
+      setSuccess('Campanha excluída com sucesso');
       await loadEvents();
     } catch (err) {
       setError(err.message);
@@ -147,7 +147,7 @@ export function EventCreatePage() {
     setSuccess(null);
 
     if (!name.trim()) {
-      setError('Informe o nome do evento');
+      setError('Informe o nome da campanha');
       return;
     }
 
@@ -157,7 +157,7 @@ export function EventCreatePage() {
     }
 
     if (selectedProducts.length === 0) {
-      setError('Selecione ao menos um produto para o evento');
+      setError('Selecione ao menos um produto para a campanha');
       return;
     }
 
@@ -177,10 +177,10 @@ export function EventCreatePage() {
 
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
-        throw new Error(errData.detail || 'Falha ao criar evento');
+        throw new Error(errData.detail || 'Falha ao criar campanha');
       }
 
-      setSuccess(isEditing ? 'Evento atualizado com sucesso' : 'Evento criado com sucesso');
+      setSuccess(isEditing ? 'Campanha atualizada com sucesso' : 'Campanha criada com sucesso');
       resetForm();
       await loadEvents();
     } catch (err) {
@@ -195,8 +195,8 @@ export function EventCreatePage() {
       <div className="page-inner">
         <div className="page-header">
           <div>
-            <h2>Cadastro de Eventos</h2>
-            <p className="page-subtitle">Crie eventos com período e produtos específicos para análise de vendas</p>
+            <h2>Cadastro de Campanhas</h2>
+            <p className="page-subtitle">Crie campanhas com período e produtos específicos para análise de vendas</p>
           </div>
         </div>
 
@@ -205,12 +205,12 @@ export function EventCreatePage() {
 
         <div className="card" style={{ marginBottom: 20 }}>
           <div className="card-header">
-            <h3>{editingEventId ? '✏️ Editar Evento' : '🎪 Novo Evento'}</h3>
+            <h3>{editingEventId ? '✏️ Editar Campanha' : '📣 Nova Campanha'}</h3>
           </div>
           <form className="form" onSubmit={handleSubmit}>
             <div className="form-grid">
               <div className="form-group form-group-full">
-                <label>Nome do Evento</label>
+                <label>Nome da Campanha</label>
                 <input
                   type="text"
                   placeholder="Ex: Feira de Março"
@@ -229,8 +229,8 @@ export function EventCreatePage() {
             </div>
 
             <div className="form-group">
-              <label>Produtos do Evento</label>
-              <p className="helper-text">Ao selecionar um produto pai, todas as variações filhas são incluídas automaticamente no evento.</p>
+              <label>Produtos da Campanha</label>
+              <p className="helper-text">Ao selecionar um produto pai, todas as variações filhas são incluídas automaticamente na campanha.</p>
               <div className="search-box">
                 <input
                   type="text"
@@ -280,7 +280,7 @@ export function EventCreatePage() {
             </div>
 
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              <button type="submit" disabled={saving}>{saving ? 'Salvando...' : (editingEventId ? 'Atualizar Evento' : 'Salvar Evento')}</button>
+              <button type="submit" disabled={saving}>{saving ? 'Salvando...' : (editingEventId ? 'Atualizar Campanha' : 'Salvar Campanha')}</button>
               {editingEventId && (
                 <button type="button" className="btn-secondary" onClick={resetForm}>Cancelar edição</button>
               )}
@@ -290,20 +290,20 @@ export function EventCreatePage() {
 
         <div className="card">
           <div className="card-header">
-            <h3>📚 Eventos Cadastrados</h3>
+            <h3>📚 Campanhas Cadastradas</h3>
           </div>
           {loadingEvents ? (
             <p className="loading">Carregando eventos...</p>
           ) : events.length === 0 ? (
             <div className="empty-state">
               <span className="empty-state-icon">🗂️</span>
-              <p>Nenhum evento cadastrado ainda.</p>
+              <p>Nenhuma campanha cadastrada ainda.</p>
             </div>
           ) : (
             <table className="table">
               <thead>
                 <tr>
-                  <th>Evento</th>
+                  <th>Campanha</th>
                   <th>Período</th>
                   <th>Produtos</th>
                   <th>Criado em</th>

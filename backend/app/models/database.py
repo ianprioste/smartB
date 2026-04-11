@@ -1,11 +1,44 @@
 """Data models for SQLAlchemy ORM."""
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Date, Integer, Text, ForeignKey, Enum, JSON, Boolean, UniqueConstraint, BigInteger, Float
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Column, String, DateTime, Date, Integer, Text, ForeignKey, Enum, JSON, Boolean, UniqueConstraint, BigInteger, Float, TypeDecorator, CHAR
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from app.infra.db import Base
+from app.settings import settings
 import enum
 from app.models.enums import TemplateKindEnum, PlanTypeEnum, PlanStatusEnum
+
+
+# Cross-database UUID type: uses native PG UUID when on PostgreSQL, CHAR(32) otherwise.
+class UUID(TypeDecorator):
+    """Platform-independent UUID type."""
+    impl = CHAR
+    cache_ok = True
+
+    def __init__(self, as_uuid=True):
+        self.as_uuid = as_uuid
+        super().__init__(length=32)
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            return dialect.type_descriptor(PG_UUID(as_uuid=self.as_uuid))
+        return dialect.type_descriptor(CHAR(32))
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return value
+        if dialect.name == "postgresql":
+            return str(value) if not isinstance(value, uuid.UUID) else value
+        if isinstance(value, uuid.UUID):
+            return value.hex
+        return uuid.UUID(value).hex
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return value
+        if not isinstance(value, uuid.UUID):
+            value = uuid.UUID(value)
+        return value
 
 
 class TenantModel(Base):
@@ -174,6 +207,25 @@ class SalesEventProductModel(Base):
 
     __table_args__ = (
         UniqueConstraint("event_id", "sku", name="uq_sales_event_products_event_sku"),
+    )
+
+
+class ItemProductionNoteModel(Base):
+    """User-managed production status and notes per item+order in an event. Independent from Bling sync."""
+    __tablename__ = "item_production_notes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    event_id = Column(UUID(as_uuid=True), ForeignKey("sales_events.id"), nullable=False)
+    sku = Column(String(255), nullable=False)
+    bling_order_id = Column(BigInteger, nullable=True)
+    production_status = Column(String(100), nullable=False, default="Pendente")
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "event_id", "sku", "bling_order_id", name="uq_item_production_notes_tenant_event_sku_order"),
     )
 
 
