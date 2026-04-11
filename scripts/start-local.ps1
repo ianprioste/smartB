@@ -14,34 +14,6 @@ function Is-Listening($port) {
     return [bool](Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
 }
 
-function Ensure-Docker {
-    try {
-        docker info | Out-Null
-        Write-Step 'Docker ja esta ativo.'
-        return
-    } catch {
-        $dockerDesktop = 'C:\Program Files\Docker\Docker\Docker Desktop.exe'
-        if (-not (Test-Path $dockerDesktop)) {
-            throw 'Docker Desktop nao encontrado. Instale e execute manualmente.'
-        }
-
-        Write-Step 'Iniciando Docker Desktop...'
-        Start-Process -FilePath $dockerDesktop | Out-Null
-
-        for ($i = 0; $i -lt 30; $i++) {
-            Start-Sleep -Seconds 2
-            try {
-                docker info | Out-Null
-                Write-Step 'Docker pronto.'
-                return
-            } catch {
-            }
-        }
-
-        throw 'Docker Desktop nao ficou pronto a tempo.'
-    }
-}
-
 function Ensure-PythonVenv {
     if (Test-Path $venvPython) {
         return
@@ -74,8 +46,6 @@ function Ensure-BackendReady {
     Push-Location $backendPath
     try {
         & $venvPython -m pip install -r requirements.txt | Out-Host
-        Write-Step 'Subindo PostgreSQL e Redis com Docker Compose...'
-        docker-compose up -d | Out-Host
         Write-Step 'Aplicando migrations Alembic...'
         & $venvPython -m alembic upgrade head | Out-Host
     } finally {
@@ -127,7 +97,6 @@ function Ensure-WorkerRunning {
 }
 
 Write-Step 'Preparando stack local...'
-Ensure-Docker
 Ensure-PythonVenv
 Ensure-BackendReady
 Ensure-FrontendReady

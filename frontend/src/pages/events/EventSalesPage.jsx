@@ -1,14 +1,8 @@
-import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { Layout } from '../../components/Layout';
+import { ProductionStatusBadge, ProductionNotesInput } from '../../components/ProductionControls';
 
 const API_BASE = '/api';
-const PRODUCTION_STATUSES = ['Pendente', 'Em produção', 'Produzido', 'Embalado'];
-const PROD_COLORS = {
-  Pendente: { bg: '#f1f5f9', color: '#475569', border: '#cbd5e1' },
-  'Em produção': { bg: '#dbeafe', color: '#1e40af', border: '#93c5fd' },
-  Produzido: { bg: '#dcfce7', color: '#166534', border: '#86efac' },
-  Embalado: { bg: '#f3e8ff', color: '#6b21a8', border: '#c4b5fd' },
-};
 
 function formatBRL(value) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value ?? 0);
@@ -23,112 +17,6 @@ function StatusBadge({ text }) {
   const lower = (text || '').toLowerCase();
   const cls = lower.includes('atendido') ? 'badge badge--green' : 'badge badge--yellow';
   return <span className={cls}>{text || '—'}</span>;
-}
-
-function ProductionBadge({ status, sku, eventId, orderId, onSaved }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-  const colors = PROD_COLORS[status] || PROD_COLORS.Pendente;
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
-
-  const handleSelect = async (newStatus) => {
-    setOpen(false);
-    if (newStatus === status) return;
-    try {
-      await fetch(`${API_BASE}/events/${eventId}/items/${encodeURIComponent(sku)}/production`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ production_status: newStatus, bling_order_id: orderId || null }),
-      });
-      if (onSaved) onSaved(sku, newStatus, undefined, orderId);
-    } catch (err) { console.error('Failed to save production status', err); }
-  };
-
-  return (
-    <span ref={ref} style={{ position: 'relative', display: 'inline-block' }}>
-      <button
-        onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
-        style={{
-          cursor: 'pointer', border: `1.5px solid ${colors.border}`, padding: '3px 10px',
-          borderRadius: 12, fontSize: 12, fontWeight: 600, background: colors.bg, color: colors.color,
-          transition: 'all 0.15s ease', lineHeight: '18px',
-        }}
-      >
-        {status || 'Pendente'}
-      </button>
-      {open && (
-        <div style={{
-          position: 'absolute', top: '100%', left: 0, marginTop: 4, background: '#fff',
-          border: '1px solid #e2e8f0', borderRadius: 8, boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-          zIndex: 50, minWidth: 140, overflow: 'hidden',
-        }}>
-          {PRODUCTION_STATUSES.map((s) => {
-            const sc = PROD_COLORS[s];
-            return (
-              <div
-                key={s}
-                onClick={(e) => { e.stopPropagation(); handleSelect(s); }}
-                style={{
-                  padding: '8px 14px', cursor: 'pointer', fontSize: 13,
-                  background: s === status ? sc.bg : '#fff', color: sc.color, fontWeight: s === status ? 600 : 400,
-                  borderLeft: `3px solid ${s === status ? sc.border : 'transparent'}`,
-                  transition: 'background 0.1s',
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.background = sc.bg}
-                onMouseLeave={(e) => e.currentTarget.style.background = s === status ? sc.bg : '#fff'}
-              >
-                {s}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </span>
-  );
-}
-
-function NotesInput({ sku, eventId, orderId, initialValue, productionStatus, onSaved }) {
-  const [value, setValue] = useState(initialValue || '');
-  const timerRef = useRef(null);
-
-  useEffect(() => { setValue(initialValue || ''); }, [initialValue]);
-
-  const save = useCallback((text) => {
-    fetch(`${API_BASE}/events/${eventId}/items/${encodeURIComponent(sku)}/production`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ production_status: productionStatus || 'Pendente', notes: text, bling_order_id: orderId || null }),
-    }).catch(() => {});
-    if (onSaved) onSaved(sku, undefined, text, orderId);
-  }, [eventId, sku, productionStatus, orderId, onSaved]);
-
-  const handleChange = (e) => {
-    const text = e.target.value;
-    setValue(text);
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => save(text), 800);
-  };
-
-  return (
-    <textarea
-      value={value}
-      onChange={handleChange}
-      onClick={(e) => e.stopPropagation()}
-      placeholder="Notas..."
-      rows={1}
-      style={{
-        width: '100%', fontSize: 12, padding: '4px 8px', border: '1px solid #e2e8f0',
-        borderRadius: 6, resize: 'vertical', fontFamily: 'inherit', color: '#334155',
-        background: '#f8fafc', minHeight: 28, lineHeight: '18px',
-      }}
-    />
-  );
 }
 
 function ChevronIcon({ isExpanded }) {
@@ -192,6 +80,29 @@ export function EventSalesPage() {
       return { ...prev, orders };
     });
   }, []);
+
+  const handleProductionStatusChange = useCallback(async (sku, orderId, currentStatus, nextStatus) => {
+    if (nextStatus === currentStatus) return;
+    try {
+      await fetch(`${API_BASE}/events/${selectedEventId}/items/${encodeURIComponent(sku)}/production`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ production_status: nextStatus, bling_order_id: orderId || null }),
+      });
+      handleProductionSaved(sku, nextStatus, undefined, orderId);
+    } catch (err) {
+      console.error('Failed to save production status', err);
+    }
+  }, [selectedEventId, handleProductionSaved]);
+
+  const handleProductionNotesChange = useCallback((sku, orderId, productionStatus, notes) => {
+    fetch(`${API_BASE}/events/${selectedEventId}/items/${encodeURIComponent(sku)}/production`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ production_status: productionStatus || 'Pendente', notes, bling_order_id: orderId || null }),
+    }).catch(() => {});
+    handleProductionSaved(sku, undefined, notes, orderId);
+  }, [selectedEventId, handleProductionSaved]);
 
   const handleOrderStatusChange = useCallback(async (orderId, newStatus) => {
     try {
@@ -584,12 +495,18 @@ export function EventSalesPage() {
                                             <td style={{ padding: '8px', color: '#334155' }}>{o.cliente || '—'}</td>
                                             <td style={{ padding: '8px' }}><StatusBadge text={o.situacao} /></td>
                                             <td style={{ padding: '8px' }}>
-                                              <ProductionBadge status={o.production_status} sku={group.sku} eventId={selectedEventId} orderId={o.order_id} onSaved={handleProductionSaved} />
+                                              <ProductionStatusBadge
+                                                status={o.production_status}
+                                                onChangeStatus={(nextStatus) => handleProductionStatusChange(group.sku, o.order_id, o.production_status, nextStatus)}
+                                              />
                                             </td>
                                             <td style={{ textAlign: 'right', padding: '8px', color: '#64748b' }}>{o.quantity}</td>
                                             <td style={{ textAlign: 'right', padding: '8px', fontWeight: 600, color: '#1e293b' }}>{formatBRL(o.paid_total)}</td>
                                             <td style={{ padding: '8px', minWidth: 150 }}>
-                                              <NotesInput sku={group.sku} eventId={selectedEventId} orderId={o.order_id} initialValue={o.notes} productionStatus={o.production_status} onSaved={handleProductionSaved} />
+                                              <ProductionNotesInput
+                                                initialValue={o.notes}
+                                                onChangeNotes={(notes) => handleProductionNotesChange(group.sku, o.order_id, o.production_status, notes)}
+                                              />
                                             </td>
                                           </tr>
                                         ))}
@@ -683,12 +600,18 @@ export function EventSalesPage() {
                                           <td style={{ padding: '8px', color: '#64748b', fontFamily: 'monospace' }}>{item.sku || '—'}</td>
                                           <td style={{ padding: '8px', color: '#334155' }}>{item.product_name}</td>
                                           <td style={{ padding: '8px' }}>
-                                            <ProductionBadge status={item.production_status} sku={item.sku} eventId={selectedEventId} orderId={order.id} onSaved={handleProductionSaved} />
+                                            <ProductionStatusBadge
+                                              status={item.production_status}
+                                              onChangeStatus={(nextStatus) => handleProductionStatusChange(item.sku, order.id, item.production_status, nextStatus)}
+                                            />
                                           </td>
                                           <td style={{ textAlign: 'right', padding: '8px', color: '#64748b' }}>{item.quantity}</td>
                                           <td style={{ textAlign: 'right', padding: '8px', fontWeight: 600, color: '#1e293b' }}>{formatBRL(item.paid_total)}</td>
                                           <td style={{ padding: '8px', minWidth: 150 }}>
-                                            <NotesInput sku={item.sku} eventId={selectedEventId} orderId={order.id} initialValue={item.notes} productionStatus={item.production_status} onSaved={handleProductionSaved} />
+                                            <ProductionNotesInput
+                                              initialValue={item.notes}
+                                              onChangeNotes={(notes) => handleProductionNotesChange(item.sku, order.id, item.production_status, notes)}
+                                            />
                                           </td>
                                         </tr>
                                       ))}

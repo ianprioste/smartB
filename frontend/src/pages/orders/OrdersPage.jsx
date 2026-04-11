@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Layout } from '../../components/Layout';
+import { ProductionStatusBadge, ProductionNotesInput } from '../../components/ProductionControls';
 
 const API_BASE = '/api';
 
@@ -10,14 +11,6 @@ const KNOWN_STATUSES = [
 ];
 
 const DEFAULT_STATUS_IDS = [6, 9, 15];
-
-const PRODUCTION_STATUSES = ['Pendente', 'Em produção', 'Produzido', 'Embalado'];
-const PROD_COLORS = {
-  Pendente: { bg: '#f1f5f9', color: '#475569', border: '#cbd5e1' },
-  'Em produção': { bg: '#dbeafe', color: '#1e40af', border: '#93c5fd' },
-  Produzido: { bg: '#dcfce7', color: '#166534', border: '#86efac' },
-  Embalado: { bg: '#f3e8ff', color: '#6b21a8', border: '#c4b5fd' },
-};
 
 function formatBRL(value) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value ?? 0);
@@ -47,112 +40,6 @@ function ChevronIcon({ isExpanded }) {
       style={{ transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s ease', display: 'block' }}>
       <polyline points="9 18 15 12 9 6" />
     </svg>
-  );
-}
-
-function ProductionBadge({ status, sku, onSaved }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-  const colors = PROD_COLORS[status] || PROD_COLORS.Pendente;
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
-
-  const handleSelect = async (newStatus) => {
-    setOpen(false);
-    if (newStatus === status) return;
-    try {
-      await fetch(`${API_BASE}/orders/items/${encodeURIComponent(sku)}/production`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ production_status: newStatus }),
-      });
-      if (onSaved) onSaved(sku, newStatus, undefined);
-    } catch (err) { console.error('Failed to save production status', err); }
-  };
-
-  return (
-    <span ref={ref} style={{ position: 'relative', display: 'inline-block' }}>
-      <button
-        onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
-        style={{
-          cursor: 'pointer', border: `1.5px solid ${colors.border}`, padding: '3px 10px',
-          borderRadius: 12, fontSize: 12, fontWeight: 600, background: colors.bg, color: colors.color,
-          transition: 'all 0.15s ease', lineHeight: '18px',
-        }}
-      >
-        {status || 'Pendente'}
-      </button>
-      {open && (
-        <div style={{
-          position: 'absolute', top: '100%', left: 0, marginTop: 4, background: '#fff',
-          border: '1px solid #e2e8f0', borderRadius: 8, boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-          zIndex: 50, minWidth: 140, overflow: 'hidden',
-        }}>
-          {PRODUCTION_STATUSES.map((s) => {
-            const sc = PROD_COLORS[s];
-            return (
-              <div
-                key={s}
-                onClick={(e) => { e.stopPropagation(); handleSelect(s); }}
-                style={{
-                  padding: '8px 14px', cursor: 'pointer', fontSize: 13,
-                  background: s === status ? sc.bg : '#fff', color: sc.color, fontWeight: s === status ? 600 : 400,
-                  borderLeft: `3px solid ${s === status ? sc.border : 'transparent'}`,
-                  transition: 'background 0.1s',
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.background = sc.bg}
-                onMouseLeave={(e) => e.currentTarget.style.background = s === status ? sc.bg : '#fff'}
-              >
-                {s}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </span>
-  );
-}
-
-function NotesInput({ sku, initialValue, productionStatus, onSaved }) {
-  const [value, setValue] = useState(initialValue || '');
-  const timerRef = useRef(null);
-
-  useEffect(() => { setValue(initialValue || ''); }, [initialValue]);
-
-  const save = useCallback((text) => {
-    fetch(`${API_BASE}/orders/items/${encodeURIComponent(sku)}/production`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ production_status: productionStatus || 'Pendente', notes: text }),
-    }).catch(() => {});
-    if (onSaved) onSaved(sku, undefined, text);
-  }, [sku, productionStatus, onSaved]);
-
-  const handleChange = (e) => {
-    const text = e.target.value;
-    setValue(text);
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => save(text), 800);
-  };
-
-  return (
-    <textarea
-      value={value}
-      onChange={handleChange}
-      onClick={(e) => e.stopPropagation()}
-      placeholder="Notas..."
-      rows={1}
-      style={{
-        width: '100%', fontSize: 12, padding: '4px 8px', border: '1px solid #e2e8f0',
-        borderRadius: 6, resize: 'vertical', fontFamily: 'inherit', color: '#334155',
-        background: '#f8fafc', minHeight: 28, lineHeight: '18px',
-      }}
-    />
   );
 }
 
@@ -311,6 +198,29 @@ export function OrdersPage() {
       }),
     );
   }, []);
+
+  const handleProductionStatusChange = useCallback(async (sku, currentStatus, nextStatus) => {
+    if (nextStatus === currentStatus) return;
+    try {
+      await fetch(`${API_BASE}/orders/items/${encodeURIComponent(sku)}/production`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ production_status: nextStatus }),
+      });
+      handleProductionSaved(sku, nextStatus, undefined);
+    } catch (err) {
+      console.error('Failed to save production status', err);
+    }
+  }, [handleProductionSaved]);
+
+  const handleProductionNotesChange = useCallback((sku, productionStatus, notes) => {
+    fetch(`${API_BASE}/orders/items/${encodeURIComponent(sku)}/production`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ production_status: productionStatus || 'Pendente', notes }),
+    }).catch(() => {});
+    handleProductionSaved(sku, undefined, notes);
+  }, [handleProductionSaved]);
 
   const handleOrderStatusChange = useCallback(async (orderId, newStatus) => {
     try {
@@ -589,12 +499,18 @@ export function OrdersPage() {
                                       <td style={{ padding: '7px 8px', color: '#64748b', fontFamily: 'monospace', fontSize: 12 }}>{item.sku || '—'}</td>
                                       <td style={{ padding: '7px 8px', color: '#334155' }}>{item.product_name}</td>
                                       <td style={{ padding: '7px 8px' }}>
-                                        <ProductionBadge status={item.production_status} sku={item.sku} onSaved={handleProductionSaved} />
+                                        <ProductionStatusBadge
+                                          status={item.production_status}
+                                          onChangeStatus={(nextStatus) => handleProductionStatusChange(item.sku, item.production_status, nextStatus)}
+                                        />
                                       </td>
                                       <td style={{ textAlign: 'right', padding: '7px 8px', color: '#64748b' }}>{item.quantity}</td>
                                       <td style={{ textAlign: 'right', padding: '7px 8px', fontWeight: 600, color: '#0f172a' }}>{formatBRL(item.paid_total ?? item.total)}</td>
                                       <td style={{ padding: '7px 8px', minWidth: 150 }}>
-                                        <NotesInput sku={item.sku} initialValue={item.notes} productionStatus={item.production_status} onSaved={handleProductionSaved} />
+                                        <ProductionNotesInput
+                                          initialValue={item.notes}
+                                          onChangeNotes={(notes) => handleProductionNotesChange(item.sku, item.production_status, notes)}
+                                        />
                                       </td>
                                     </tr>
                                   ))}

@@ -12,16 +12,11 @@ SalesPanel e uma camada de interface amigavel para o ERP Bling, focada em consul
 
 - apps/web: dashboard e telas operacionais
 - apps/api: API intermediaria, sincronizacao e regras de negocio
-- infra: docker-compose e apoio de infraestrutura
+- infra: apoio de infraestrutura
 
 ## Como rodar
 
-1. Suba o PostgreSQL:
-
-```bash
-cd infra
-docker compose up -d
-```
+1. Garanta um PostgreSQL local em execucao.
 
 2. Instale dependencias na raiz:
 

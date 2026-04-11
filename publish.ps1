@@ -68,10 +68,10 @@ try {
     Write-Status "✓ Deploy pushed successfully!" "Success"
     Write-Host ""
     Write-Host "GitHub Actions will now automatically:" -ForegroundColor Cyan
-    Write-Host "  1. Build Docker images"
+    Write-Host "  1. Run production pipeline"
     Write-Host "  2. SSH into VPS (191.252.204.67)"
-    Write-Host "  3. Run deployment script"
-    Write-Host "  4. Start all services"
+    Write-Host "  3. Update backend/frontend services"
+    Write-Host "  4. Verify health checks"
     Write-Host ""
     Write-Status "Monitor progress: gh run list --workflow 'Deploy Production (main)' --limit 5" "Info"
     Write-Host ""
