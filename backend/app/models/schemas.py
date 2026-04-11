@@ -225,6 +225,7 @@ class BlingProductSearchItem(BaseModel):
     situacao: Optional[str] = None
     tipo_estoque: Optional[str] = None
     pai: Optional[int] = None  # Parent product ID if this is a variation
+    quantidade_estoque: Optional[float] = None
 
 
 class BlingProductSearchResponse(BaseModel):

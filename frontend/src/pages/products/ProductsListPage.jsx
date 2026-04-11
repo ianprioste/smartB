@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { Layout } from '../../components/Layout';
 
 const API_BASE = '/api';
-const PRODUCTS_CACHE_KEY = 'smartb_products_catalog_v2';
-const PRODUCTS_CACHE_SAVED_AT_KEY = 'smartb_products_catalog_saved_at_v2';
+const PRODUCTS_CACHE_KEY = 'smartb_products_catalog_v3';
+const PRODUCTS_CACHE_SAVED_AT_KEY = 'smartb_products_catalog_saved_at_v3';
 
 function groupProductsByParent(products) {
   if (!products || products.length === 0) return [];
@@ -95,8 +95,34 @@ function childHasPhysicalStock(product) {
   return (product.tipo_estoque || '').toUpperCase() === 'F';
 }
 
-function filterGroupsWithPhysicalStock(groups) {
-  return groups.filter((group) => group.children.some((child) => childHasPhysicalStock(child)));
+function groupHasPhysicalStock(group) {
+  if (!group?.children?.length) {
+    return childHasPhysicalStock(group?.parent || {});
+  }
+  return group.children.some((child) => childHasPhysicalStock(child));
+}
+
+function filterGroupsByTab(groups, activeTab) {
+  if (activeTab === 'virtual') {
+    return groups.filter((group) => !groupHasPhysicalStock(group));
+  }
+  return groups.filter((group) => groupHasPhysicalStock(group));
+}
+
+function formatStock(qty) {
+  if (qty === null || qty === undefined || Number.isNaN(Number(qty))) return '—';
+  return Number(qty).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
+function getGroupStockQuantity(group) {
+  if (!group?.children?.length) return group?.parent?.quantidade_estoque;
+
+  const childStocks = group.children
+    .map((child) => child.quantidade_estoque)
+    .filter((qty) => qty !== null && qty !== undefined && !Number.isNaN(Number(qty)));
+
+  if (childStocks.length === 0) return group?.parent?.quantidade_estoque;
+  return childStocks.reduce((acc, qty) => acc + Number(qty), 0);
 }
 
 export function ProductsListPage() {
@@ -105,7 +131,7 @@ export function ProductsListPage() {
   const [groupedProducts, setGroupedProducts] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeQuery, setActiveQuery] = useState('');
-  const [filterPhysical, setFilterPhysical] = useState(false);
+  const [activeTab, setActiveTab] = useState('fisico');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [page, setPage] = useState(1);
@@ -213,9 +239,7 @@ export function ProductsListPage() {
   const applyLocalFilterAndPagination = useCallback(() => {
     const allGroups = groupProductsByParent(allProducts);
     let filteredGroups = filterGroupedProducts(allGroups, activeQuery);
-    if (filterPhysical) {
-      filteredGroups = filterGroupsWithPhysicalStock(filteredGroups);
-    }
+    filteredGroups = filterGroupsByTab(filteredGroups, activeTab);
 
     const safeTotalPages = Math.max(1, Math.ceil(filteredGroups.length / limit));
     const safePage = Math.min(page, safeTotalPages);
@@ -240,7 +264,7 @@ export function ProductsListPage() {
     } else {
       setError(null);
     }
-  }, [activeQuery, allProducts, filterPhysical, limit, page]);
+  }, [activeQuery, activeTab, allProducts, limit, page]);
 
   const handleSearch = useCallback((e) => {
     e.preventDefault();
@@ -283,6 +307,9 @@ export function ProductsListPage() {
   }, [applyLocalFilterAndPagination]);
 
   const totalPages = Math.ceil(totalGroups / limit);
+  let tabBaseGroups = filterGroupedProducts(groupProductsByParent(allProducts), activeQuery);
+  const fisicoCount = tabBaseGroups.filter((group) => groupHasPhysicalStock(group)).length;
+  const virtualCount = tabBaseGroups.filter((group) => !groupHasPhysicalStock(group)).length;
 
   return (
     <Layout>
@@ -334,15 +361,6 @@ export function ProductsListPage() {
               <p style={{ fontSize: 12, color: '#94a3b8', margin: 0 }}>
                 Deixe em branco para ver todos os produtos • Busca por nome/SKU/ID sem diferenciar maiúsculas e minúsculas
               </p>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#475569', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}>
-                <input
-                  type="checkbox"
-                  checked={filterPhysical}
-                  onChange={(e) => { setFilterPhysical(e.target.checked); setPage(1); setExpandedGroups(new Set()); }}
-                  disabled={loading}
-                />
-                📦 Apenas estoque físico
-              </label>
             </div>
           </form>
         </div>
@@ -358,6 +376,23 @@ export function ProductsListPage() {
                 </span>
               )}
             </h3>
+          </div>
+
+          <div style={{ padding: '12px 20px 0', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              className={activeTab === 'fisico' ? 'btn-primary' : 'btn-secondary'}
+              onClick={() => { setActiveTab('fisico'); setPage(1); setExpandedGroups(new Set()); }}
+              disabled={loading}
+            >
+              Estoque Físico ({fisicoCount})
+            </button>
+            <button
+              className={activeTab === 'virtual' ? 'btn-primary' : 'btn-secondary'}
+              onClick={() => { setActiveTab('virtual'); setPage(1); setExpandedGroups(new Set()); }}
+              disabled={loading}
+            >
+              Estoque Virtual ({virtualCount})
+            </button>
           </div>
 
           {!loading && groupedProducts.length > 0 && (
@@ -395,10 +430,11 @@ export function ProductsListPage() {
                 <table className="table">
                   <thead>
                     <tr>
-                      <th style={{ width: '35%' }}>Nome do Produto</th>
-                      <th style={{ width: '25%' }}>SKU</th>
-                      <th style={{ width: '25%' }}>Tipo</th>
-                      <th style={{ width: '12%' }}></th>
+                      <th style={{ width: '31%' }}>Nome do Produto</th>
+                      <th style={{ width: '22%' }}>SKU</th>
+                      <th style={{ width: '18%' }}>Tipo</th>
+                      <th style={{ width: '13%' }}>Estoque</th>
+                      <th style={{ width: '16%' }}></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -436,6 +472,9 @@ export function ProductsListPage() {
                           </td>
                           <td style={{ fontSize: 12 }}>
                             {getProductTypeLabel(group.parent, group.children.length)}
+                          </td>
+                          <td style={{ fontSize: 12, fontWeight: 600 }}>
+                            {formatStock(getGroupStockQuantity(group))}
                           </td>
                           <td onClick={(e) => e.stopPropagation()}>
                             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -494,6 +533,7 @@ export function ProductsListPage() {
                                 </code>
                               </td>
                               <td style={{ fontSize: 12 }}>{getSubproductTypeLabel(child)}</td>
+                              <td style={{ fontSize: 12, fontWeight: 600 }}>{formatStock(child.quantidade_estoque)}</td>
                               <td />
                             </tr>
                           ))}
