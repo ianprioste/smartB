@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - BLING_API_KEY=${BLING_API_KEY}
+      - BLING_CLIENT_ID=${BLING_CLIENT_ID}
+      - BLING_CLIENT_SECRET=${BLING_CLIENT_SECRET}
+      - BLING_REDIRECT_URI=${BLING_REDIRECT_URI}
+      - DEBUG=True
+    volumes:
+      - ./backend:/app
+      - ./backend/uploads:/app/uploads
+      - ./backend/exports:/app/exports
+    command: python main.py run --host 0.0.0.0
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: npm run dev
+    depends_on:
+      - backend
+
+volumes:
+  uploads:
+  exports:

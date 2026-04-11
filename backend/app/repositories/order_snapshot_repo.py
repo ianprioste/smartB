@@ -17,6 +17,9 @@ logger = get_logger(__name__)
 
 
 # Status name mapping
+# Bling situacao.valor categories: 0=Em aberto, 1=Atendido, 2=Cancelado.
+_VALOR_LABEL = {0: "Em aberto", 1: "Atendido", 2: "Cancelado"}
+
 KNOWN_STATUSES = [
     {"id": 6, "nome": "Em aberto"},
     {"id": 9, "nome": "Atendido"},
@@ -25,28 +28,45 @@ KNOWN_STATUSES = [
 STATUS_NAME_MAP = {
     6: "Em aberto",
     9: "Atendido",
-    12: "Atendido",  # merge Concluido into Atendido
+    12: "Cancelado",
     15: "Cancelado",
 }
+VALID_STATUS_NAMES = {"Em aberto", "Atendido", "Cancelado"}
 
 
 def _normalize_status_name(name: Optional[str]) -> Optional[str]:
     if not name:
         return name
     lower = name.strip().lower()
-    if "conclu" in lower or "atendid" in lower or "entreg" in lower:
+    if "atendid" in lower or "entreg" in lower:
         return "Atendido"
+    if "cancel" in lower or "conclu" in lower or "devolv" in lower:
+        return "Cancelado"
+    if "pendente" in lower:
+        return "Em aberto"
     return name
 
 
 def _resolve_status_name(situacao: Dict[str, Any], status_id: Optional[int], persisted_status_name: Optional[str] = None) -> Optional[str]:
-    if persisted_status_name:
-        return _normalize_status_name(persisted_status_name)
-
+    # Prefer valor (category) — always semantically correct.
     if isinstance(situacao, dict):
+        valor = situacao.get("valor")
+        if valor is not None:
+            try:
+                label = _VALOR_LABEL.get(int(valor))
+                if label:
+                    return label
+            except (TypeError, ValueError):
+                pass
+
         name = situacao.get("nome")
         if name:
             return _normalize_status_name(str(name))
+
+    if persisted_status_name:
+        normalized = _normalize_status_name(persisted_status_name)
+        if normalized in VALID_STATUS_NAMES:
+            return normalized
 
     if status_id is not None:
         return STATUS_NAME_MAP.get(status_id, f"Status {status_id}")
@@ -92,15 +112,19 @@ class OrderSnapshotRepository:
         row.numero_loja = order_list_payload.get("numeroLoja")
         row.order_date = _try_parse_datetime(order_list_payload.get("data"))
         row.customer_name = contato.get("nome") if isinstance(contato, dict) else None
+
+        detail_data = order_detail_payload.get("data") if isinstance(order_detail_payload.get("data"), dict) else {}
+        detail_situacao = detail_data.get("situacao") if isinstance(detail_data.get("situacao"), dict) else {}
+        effective_situacao = situacao if isinstance(situacao, dict) and situacao else detail_situacao
         
         # Extract status_id
-        if isinstance(situacao, dict) and situacao.get("id"):
-            row.status_id = _try_int(situacao.get("id"))
+        if isinstance(effective_situacao, dict) and effective_situacao.get("id"):
+            row.status_id = _try_int(effective_situacao.get("id"))
         else:
             row.status_id = _try_int(order_list_payload.get("situacao"))
 
         persisted_status_name = existing.status_name if existing and existing.status_id == row.status_id else None
-        row.status_name = _resolve_status_name(situacao, row.status_id, persisted_status_name)
+        row.status_name = _resolve_status_name(effective_situacao, row.status_id, persisted_status_name)
         
         # Log para diagnóstico
         logger.info(
@@ -109,7 +133,7 @@ class OrderSnapshotRepository:
             row.numero,
             row.status_id,
             row.status_name,
-            str(situacao)[:200],
+            str(effective_situacao)[:200],
         )
         
         row.total_value = _extract_paid_total(order_detail_payload, order_list_payload)
@@ -136,12 +160,13 @@ class OrderSnapshotRepository:
 
         term = (search or "").strip().lower()
         if term:
-            query = query.filter(
-                or_(
-                    BlingOrderSnapshotModel.customer_name.ilike(f"%{term}%"),
-                    BlingOrderSnapshotModel.numero_loja.ilike(f"%{term}%"),
+            if not term.isdigit():
+                query = query.filter(
+                    or_(
+                        BlingOrderSnapshotModel.customer_name.ilike(f"%{term}%"),
+                        BlingOrderSnapshotModel.numero_loja.ilike(f"%{term}%"),
+                    )
                 )
-            )
             # numeric match on numero can be checked in python for portability
 
         rows = query.order_by(BlingOrderSnapshotModel.order_date.desc().nullslast()).all()

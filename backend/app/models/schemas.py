@@ -519,18 +519,23 @@ class EventMatchedItemResponse(BaseModel):
     quantity: float
     unit_price: float
     total: float
-    paid_unit_price: float  # Unit price after discount consideration
-    paid_total: float  # Total price after discount consideration
+    paid_unit_price: float
+    paid_total: float
+    production_status: str = "Pendente"
+    notes: Optional[str] = None
 
 
 class EventOrderResponse(BaseModel):
     id: Optional[int] = None
     numero: Optional[int] = None
+    numero_loja: Optional[str] = None
     data: Optional[str] = None
     cliente: str = "—"
     situacao: str = "—"
     total_order: float = 0.0
     total_matched: float = 0.0
+    has_frete: bool = False
+    production_summary: Optional[str] = None
     matched_items: List[EventMatchedItemResponse] = Field(default_factory=list)
 
 
@@ -544,5 +549,22 @@ class EventSalesResponse(BaseModel):
     event: SalesEventResponse
     summary: EventSalesSummaryResponse
     orders: List[EventOrderResponse] = Field(default_factory=list)
+
+
+class ItemProductionNoteUpdateRequest(BaseModel):
+    production_status: str
+    notes: Optional[str] = None
+    bling_order_id: Optional[int] = None
+
+
+class ItemProductionNoteResponse(BaseModel):
+    sku: str
+    production_status: str
+    notes: Optional[str] = None
+    bling_order_id: Optional[int] = None
+
+
+class OrderStatusUpdateRequest(BaseModel):
+    situacao: str
 
 

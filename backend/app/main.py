@@ -29,15 +29,61 @@ PUBLIC_PATHS = {
 # Create database tables
 Base.metadata.create_all(bind=engine)
 
+# Ensure default tenant exists
+def _ensure_default_tenant():
+    from app.models.database import TenantModel
+    _default_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
+    db = SessionLocal()
+    try:
+        existing = db.query(TenantModel).filter(TenantModel.id == _default_id).first()
+        if not existing:
+            db.add(TenantModel(id=_default_id, name="Default"))
+            db.commit()
+            logger.info("Default tenant created (id=%s)", _default_id)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+_ensure_default_tenant()
+
+
+_incremental_sync_stop = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown events."""
+    global _incremental_sync_stop
     
     logger.info("application_startup - version=%s, debug=%s", settings.VERSION, settings.DEBUG)
+
+    # Start periodic incremental sync (every N minutes, without Celery)
+    import threading, time as _time
+    interval = getattr(settings, "ORDERS_INCREMENTAL_SYNC_MINUTES", 15) * 60
+    stop_event = threading.Event()
+    _incremental_sync_stop = stop_event
+
+    def _periodic_incremental_sync():
+        # Wait one full interval before first run
+        if stop_event.wait(timeout=interval):
+            return
+        while not stop_event.is_set():
+            try:
+                from app.api.orders import _run_sync_in_local_background
+                logger.info("periodic_incremental_sync_triggered")
+                _run_sync_in_local_background("incremental")
+            except Exception as exc:
+                logger.warning("periodic_incremental_sync_error error=%s", str(exc))
+            if stop_event.wait(timeout=interval):
+                return
+
+    t = threading.Thread(target=_periodic_incremental_sync, daemon=True)
+    t.start()
     
     yield
     
+    stop_event.set()
     logger.info("application_shutdown")
 
 

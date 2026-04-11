@@ -25,11 +25,20 @@ class RateLimiter:
         self.min_interval = 1.0 / requests_per_second  # 0.333 seconds between requests
         self.last_request_time = 0.0
         self.cooldown_until = 0.0
-        self._lock = asyncio.Lock()
+        self._lock: asyncio.Lock | None = None
+        self._lock_loop_id: int | None = None
+
+    def _get_lock(self) -> asyncio.Lock:
+        """Return an asyncio.Lock bound to the current event loop."""
+        loop_id = id(asyncio.get_event_loop())
+        if self._lock is None or self._lock_loop_id != loop_id:
+            self._lock = asyncio.Lock()
+            self._lock_loop_id = loop_id
+        return self._lock
     
     async def acquire(self):
         """Wait if necessary to respect rate limit."""
-        async with self._lock:
+        async with self._get_lock():
             now = time.monotonic()
             time_since_last = now - self.last_request_time
             wait_time = max(0.0, self.cooldown_until - now)
@@ -48,7 +57,7 @@ class RateLimiter:
         if delay_seconds == 0:
             return
 
-        async with self._lock:
+        async with self._get_lock():
             self.cooldown_until = max(self.cooldown_until, time.monotonic() + delay_seconds)
 
 
