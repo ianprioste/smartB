@@ -254,13 +254,20 @@ fix_nginx_backend_proxy() {
 enforce_nginx_public_server() {
   [ "$REQUIRE_NGINX" = "true" ] || return 0
 
-  local conf_path
+  local conf_path listen_v4 listen_v6
   conf_path="/etc/nginx/conf.d/smartbling-public.conf"
+  listen_v4="listen 80;"
+  listen_v6="listen [::]:80;"
+
+  if ! nginx -T 2>/dev/null | grep -qE 'listen[[:space:]]+80[[:space:]]+default_server'; then
+    listen_v4="listen 80 default_server;"
+    listen_v6="listen [::]:80 default_server;"
+  fi
 
   cat > "$conf_path" <<EOF
 server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
+    ${listen_v4}
+    ${listen_v6}
     server_name _;
 
     gzip on;
