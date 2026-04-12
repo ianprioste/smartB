@@ -31,19 +31,52 @@ jobs:
             exit 1
           fi
 
-          # Supports both real multiline private keys and single-line with escaped \n.
-          if printf '%s' "$VPS_SSH_KEY" | grep -q '\\n'; then
-            printf '%b' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
-          else
-            printf '%s' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          KEY_RAW="$VPS_SSH_KEY"
+
+          # Remove optional surrounding quotes added accidentally when copying secrets.
+          if [[ ${KEY_RAW:0:1} == '"' && ${KEY_RAW: -1} == '"' ]]; then
+            KEY_RAW="${KEY_RAW:1:${#KEY_RAW}-2}"
+          fi
+          if [[ ${KEY_RAW:0:1} == "'" && ${KEY_RAW: -1} == "'" ]]; then
+            KEY_RAW="${KEY_RAW:1:${#KEY_RAW}-2}"
           fi
 
-          # Remove CR in case secret was pasted with Windows line endings.
+          KEY_OK=0
+
+          # Try 1: secret already in proper multiline format.
+          printf '%s' "$KEY_RAW" > ~/.ssh/deploy_key
           sed -i 's/\r$//' ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
+          if ssh-keygen -y -f ~/.ssh/deploy_key >/dev/null 2>&1; then
+            KEY_OK=1
+          fi
 
-          # Fail early with a clear message if key content is invalid.
-          ssh-keygen -y -f ~/.ssh/deploy_key >/dev/null
+          # Try 2: secret pasted as single line with escaped newlines.
+          if [ "$KEY_OK" -eq 0 ]; then
+            printf '%b' "$KEY_RAW" > ~/.ssh/deploy_key
+            sed -i 's/\r$//' ~/.ssh/deploy_key
+            chmod 600 ~/.ssh/deploy_key
+            if ssh-keygen -y -f ~/.ssh/deploy_key >/dev/null 2>&1; then
+              KEY_OK=1
+            fi
+          fi
+
+          # Try 3: secret stored as base64 of private key content.
+          if [ "$KEY_OK" -eq 0 ]; then
+            if printf '%s' "$KEY_RAW" | base64 -d > ~/.ssh/deploy_key 2>/dev/null; then
+              sed -i 's/\r$//' ~/.ssh/deploy_key
+              chmod 600 ~/.ssh/deploy_key
+              if ssh-keygen -y -f ~/.ssh/deploy_key >/dev/null 2>&1; then
+                KEY_OK=1
+              fi
+            fi
+          fi
+
+          if [ "$KEY_OK" -eq 0 ]; then
+            echo "VPS_SSH_KEY invalida: use a chave privada completa (BEGIN/END), sem markdown e sem senha."
+            exit 1
+          fi
+
           ssh-keyscan -p "$VPS_PORT" "$VPS_HOST" >> ~/.ssh/known_hosts
 
       - name: Deploy via SSH
