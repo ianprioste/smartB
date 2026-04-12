@@ -18,8 +18,26 @@ FRONTEND_TARGET_DIR="${FRONTEND_TARGET_DIR:-${VPS_FRONTEND_DIR:-/usr/share/nginx
 BACKEND_PID_FILE="${BACKEND_PID_FILE:-/tmp/smartbling-backend.pid}"
 BACKEND_LOG_FILE="${BACKEND_LOG_FILE:-/tmp/smartbling-backend.log}"
 MIGRATIONS_MODE="${MIGRATIONS_MODE:-auto}"
+SQLITE_FALLBACK_URL="${SQLITE_FALLBACK_URL:-sqlite:///./smartbling.db}"
 
 cd "${REPO_ROOT}"
+
+EFFECTIVE_DB_URL="${DATABASE_URL:-}"
+if [ -z "${EFFECTIVE_DB_URL}" ] && [ -f backend/.env ]; then
+  EFFECTIVE_DB_URL="$(grep -E '^DATABASE_URL=' backend/.env | tail -n 1 | cut -d '=' -f 2- || true)"
+fi
+
+pg_local_unreachable() {
+  local db_url="$1"
+  if [[ "$db_url" =~ ^postgresql:// ]]; then
+    if [[ "$db_url" == *"@localhost:"* || "$db_url" == *"@127.0.0.1:"* || "$db_url" == *"@localhost/"* || "$db_url" == *"@127.0.0.1/"* ]]; then
+      if ! timeout 2 bash -c '</dev/tcp/127.0.0.1/5432' 2>/dev/null; then
+        return 0
+      fi
+    fi
+  fi
+  return 1
+}
 
 bash scripts/bootstrap-vps-deps.sh
 
@@ -38,22 +56,13 @@ log "Atualizando pip e instalando dependencias do backend"
 ./.venv/bin/python -m pip install -r backend/requirements.txt
 
 if [ -f backend/alembic.ini ]; then
-  EFFECTIVE_DB_URL="${DATABASE_URL:-}"
-  if [ -z "${EFFECTIVE_DB_URL}" ] && [ -f backend/.env ]; then
-    EFFECTIVE_DB_URL="$(grep -E '^DATABASE_URL=' backend/.env | tail -n 1 | cut -d '=' -f 2- || true)"
-  fi
-
   SKIP_MIGRATIONS=0
   if [ "${MIGRATIONS_MODE}" = "off" ]; then
     SKIP_MIGRATIONS=1
     log "Migrations desativadas por MIGRATIONS_MODE=off"
-  elif [ "${MIGRATIONS_MODE}" = "auto" ] && [[ "${EFFECTIVE_DB_URL}" =~ ^postgresql:// ]]; then
-    if [[ "${EFFECTIVE_DB_URL}" == *"@localhost:"* || "${EFFECTIVE_DB_URL}" == *"@127.0.0.1:"* || "${EFFECTIVE_DB_URL}" == *"@localhost/"* || "${EFFECTIVE_DB_URL}" == *"@127.0.0.1/"* ]]; then
-      if ! timeout 2 bash -c '</dev/tcp/127.0.0.1/5432' 2>/dev/null; then
-        SKIP_MIGRATIONS=1
-        log "PostgreSQL local indisponivel em 127.0.0.1:5432; pulando Alembic nesta execucao"
-      fi
-    fi
+  elif [ "${MIGRATIONS_MODE}" = "auto" ] && pg_local_unreachable "${EFFECTIVE_DB_URL}"; then
+    SKIP_MIGRATIONS=1
+    log "PostgreSQL local indisponivel em 127.0.0.1:5432; pulando Alembic nesta execucao"
   fi
 
   if [ "${SKIP_MIGRATIONS}" -eq 0 ]; then
@@ -100,8 +109,18 @@ if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files | grep -q "
 else
   log "Service ${BACKEND_SERVICE} nao encontrado; iniciando backend em fallback (nohup)"
   pkill -f "run-backend-prod.sh|backend/run.py|uvicorn app.main:app" >/dev/null 2>&1 || true
-  nohup bash scripts/run-backend-prod.sh > "${BACKEND_LOG_FILE}" 2>&1 &
+  if pg_local_unreachable "${EFFECTIVE_DB_URL}"; then
+    log "PostgreSQL local indisponivel para runtime; iniciando backend com fallback DATABASE_URL=${SQLITE_FALLBACK_URL}"
+    nohup env DATABASE_URL="${SQLITE_FALLBACK_URL}" bash scripts/run-backend-prod.sh > "${BACKEND_LOG_FILE}" 2>&1 &
+  else
+    nohup bash scripts/run-backend-prod.sh > "${BACKEND_LOG_FILE}" 2>&1 &
+  fi
   echo $! > "${BACKEND_PID_FILE}"
+  sleep 1
+  if ! kill -0 "$(cat "${BACKEND_PID_FILE}")" >/dev/null 2>&1; then
+    tail -n 120 "${BACKEND_LOG_FILE}" || true
+    fail "Processo backend caiu logo apos iniciar"
+  fi
 fi
 
 if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet nginx; then
@@ -110,11 +129,14 @@ if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet nginx; th
 fi
 
 log "Validando health-check ${HEALTH_URL}"
-if ! curl --fail --retry 20 --retry-delay 3 "${HEALTH_URL}"; then
+if ! curl --fail --silent --show-error --retry 20 --retry-delay 3 --retry-connrefused --max-time 5 "${HEALTH_URL}"; then
   if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files | grep -q "^${BACKEND_SERVICE}\.service"; then
     systemctl status "${BACKEND_SERVICE}" --no-pager || true
     journalctl -u "${BACKEND_SERVICE}" -n 100 --no-pager || true
   else
+    if [ -f "${BACKEND_PID_FILE}" ] && ! kill -0 "$(cat "${BACKEND_PID_FILE}")" >/dev/null 2>&1; then
+      log "Processo backend nao esta em execucao"
+    fi
     tail -n 100 "${BACKEND_LOG_FILE}" || true
   fi
   fail "Health-check falhou"

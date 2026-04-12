@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 HOST="${BACKEND_HOST:-0.0.0.0}"
 PORT="${BACKEND_PORT:-8000}"
 LOG_LEVEL="${BACKEND_LOG_LEVEL:-info}"
+export PYTHONUNBUFFERED=1
 
 cd "${REPO_ROOT}/backend"
 exec "${REPO_ROOT}/.venv/bin/python" -m uvicorn app.main:app --host "${HOST}" --port "${PORT}" --log-level "${LOG_LEVEL}"
