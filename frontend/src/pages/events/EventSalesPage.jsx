@@ -572,6 +572,7 @@ export function EventSalesPage() {
                                     </div>
                                     <ProductionNotesInput
                                       initialValue={o.notes}
+                                      status={o.production_status}
                                       onChangeNotes={(notes) => handleProductionNotesChange(group.sku, o.order_id, o.production_status, notes)}
                                     />
                                   </div>
@@ -650,6 +651,7 @@ export function EventSalesPage() {
                                             <td style={{ padding: '8px', minWidth: 150 }}>
                                               <ProductionNotesInput
                                                 initialValue={o.notes}
+                                                status={o.production_status}
                                                 onChangeNotes={(notes) => handleProductionNotesChange(group.sku, o.order_id, o.production_status, notes)}
                                               />
                                             </td>
@@ -730,6 +732,7 @@ export function EventSalesPage() {
                                   </div>
                                   <ProductionNotesInput
                                     initialValue={item.notes}
+                                    status={item.production_status}
                                     onChangeNotes={(notes) => handleProductionNotesChange(item.sku, order.id, item.production_status, notes)}
                                   />
                                 </div>
@@ -825,6 +828,7 @@ export function EventSalesPage() {
                                           <td style={{ padding: '8px', minWidth: 150 }}>
                                             <ProductionNotesInput
                                               initialValue={item.notes}
+                                              status={item.production_status}
                                               onChangeNotes={(notes) => handleProductionNotesChange(item.sku, order.id, item.production_status, notes)}
                                             />
                                           </td>

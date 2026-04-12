@@ -575,6 +575,7 @@ export function OrdersPage() {
                                   </div>
                                   <ProductionNotesInput
                                     initialValue={item.notes}
+                                    status={item.production_status}
                                     onChangeNotes={(notes) => handleProductionNotesChange(item.sku, item.production_status, notes)}
                                   />
                                 </div>
@@ -665,6 +666,7 @@ export function OrdersPage() {
                                         <td style={{ padding: '7px 8px', minWidth: 150 }}>
                                           <ProductionNotesInput
                                             initialValue={item.notes}
+                                            status={item.production_status}
                                             onChangeNotes={(notes) => handleProductionNotesChange(item.sku, item.production_status, notes)}
                                           />
                                         </td>
