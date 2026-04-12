@@ -22,6 +22,7 @@ BUILD_ID="${BUILD_ID:-$(date '+%Y%m%d%H%M%S')-${GIT_COMMIT}}"
 BUILD_TIMESTAMP="${BUILD_TIMESTAMP:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
 REQUIRE_NGINX="${REQUIRE_NGINX:-true}"
 AUTO_FIX_NGINX_PROXY="${AUTO_FIX_NGINX_PROXY:-true}"
+DISABLE_LEGACY_DOCKER="${DISABLE_LEGACY_DOCKER:-true}"
 SYSTEMD_USER="${SYSTEMD_USER:-root}"
 BACKEND_ENV_B64="${BACKEND_ENV_B64:-}"
 DEPLOY_SECRET_KEY="${DEPLOY_SECRET_KEY:-}"
@@ -248,6 +249,47 @@ fix_nginx_backend_proxy() {
   if [ "$changed" -eq 1 ]; then
     nginx -t || fail "nginx invalido apos ajuste automatico de proxy"
     systemctl reload nginx || fail "Falha ao recarregar nginx apos ajuste automatico"
+  fi
+}
+
+stop_legacy_docker_ingress() {
+  [ "${DISABLE_LEGACY_DOCKER}" = "true" ] || return 0
+
+  if ! command -v docker >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local legacy_rows cid proxy_listeners
+  legacy_rows="$(
+    docker ps --format '{{.ID}}\t{{.Ports}}' \
+      | awk -F '\t' '$2 ~ /(^|, )[[:space:]]*[^,]*:(80|443|8000)->/ { print }' \
+      || true
+  )"
+
+  if [ -n "$legacy_rows" ]; then
+    warn "Containers Docker com publish em 80/443/8000 detectados; desativando para evitar conflito com nginx"
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      cid="$(printf '%s' "$row" | awk -F '\t' '{print $1}')"
+      [ -n "$cid" ] || continue
+      docker update --restart=no "$cid" >/dev/null 2>&1 || true
+      docker stop "$cid" >/dev/null 2>&1 || true
+      docker rm "$cid" >/dev/null 2>&1 || true
+    done <<< "$legacy_rows"
+  fi
+
+  proxy_listeners=""
+  if command -v ss >/dev/null 2>&1; then
+    proxy_listeners="$(ss -ltnp 2>/dev/null | awk '/:(80|8000)[[:space:]]/ && /docker-proxy/ { print }' || true)"
+  elif command -v lsof >/dev/null 2>&1; then
+    proxy_listeners="$(lsof -nP -iTCP:80 -iTCP:8000 -sTCP:LISTEN 2>/dev/null | awk '/docker-proxy/ { print }' || true)"
+  else
+    warn "Nem ss nem lsof disponiveis para verificar listeners docker-proxy em 80/8000"
+  fi
+
+  if [ -n "$proxy_listeners" ]; then
+    printf '%s\n' "$proxy_listeners" >&2
+    fail "docker-proxy ainda escutando em 80/8000 apos limpeza de containers legados. Interrompendo deploy para evitar conflito de ingress."
   fi
 }
 
@@ -478,6 +520,7 @@ if [ -n "${FRONTEND_TARGET_DIR}" ]; then
   sync_frontend_to_nginx_roots
 fi
 
+stop_legacy_docker_ingress
 enforce_nginx_public_server
 
 log "Reiniciando backend via systemd (${BACKEND_SERVICE})"
