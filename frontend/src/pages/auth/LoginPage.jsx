@@ -75,9 +75,7 @@ export function LoginPage({ onLoginSuccess }) {
             <label htmlFor="email">E-mail</label>
             <input
               id="email"
-              name="email"
               type="email"
-              autoComplete="email"
               required
               value={email}
               placeholder="nome@empresa.com"
@@ -89,9 +87,7 @@ export function LoginPage({ onLoginSuccess }) {
             <label htmlFor="password">Senha</label>
             <input
               id="password"
-              name="password"
               type="password"
-              autoComplete="current-password"
               required
               value={password}
               placeholder="Digite sua senha"

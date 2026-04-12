@@ -109,11 +109,6 @@ is_local_postgres_unreachable() {
   return 1
 }
 
-is_sqlite_database_url() {
-  local db_url="$1"
-  [[ "$db_url" =~ ^sqlite: ]]
-}
-
 ensure_runtime_safe_defaults() {
   local secret_key database_url bling_id bling_secret generated_key
   secret_key="$(env_value SECRET_KEY)"
@@ -318,7 +313,7 @@ enforce_nginx_public_server() {
 server {
     ${listen_v4}
     ${listen_v6}
-  server_name ${PUBLIC_HOST};
+    server_name _;
 
     gzip on;
     gzip_types text/plain text/css application/json application/javascript text/xml application/xml+rss text/javascript;
@@ -522,11 +517,8 @@ log "Atualizando pip e instalando dependencias do backend"
 ./.venv/bin/python -m pip install -r backend/requirements.txt
 
 if [ -f backend/alembic.ini ]; then
-  database_url="$(env_value DATABASE_URL)"
   if [ "${MIGRATIONS_MODE}" = "off" ]; then
     log "Migrations desativadas por MIGRATIONS_MODE=off"
-  elif is_sqlite_database_url "$database_url" && [ "${MIGRATIONS_MODE}" = "auto" ]; then
-    warn "MIGRATIONS_MODE=auto com SQLite detectado; pulando Alembic (migrations focadas em PostgreSQL)"
   else
     log "Aplicando migrations Alembic"
     if ! (

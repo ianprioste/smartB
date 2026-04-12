@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { Layout } from '../../components/Layout';
 import { ProductionStatusBadge, ProductionNotesInput } from '../../components/ProductionControls';
-import { ItemsFilterTab } from '../../components/ItemsFilterTab';
 import useIsMobile from '../../hooks/useIsMobile';
 import { useVersionPolling } from '../../hooks/useVersionPolling';
 
@@ -63,7 +62,6 @@ export function EventSalesPage() {
   const [selectedStatuses, setSelectedStatuses] = useState(null);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
   const [groupBy, setGroupBy] = useState('pedido');
-  const [itemsData, setItemsData] = useState(null);
   const deltaCursorRef = useRef(null);
   const suppressDeltaUntilRef = useRef(0);
 
@@ -178,28 +176,6 @@ export function EventSalesPage() {
     }
   }, []);
 
-  const loadItems = useCallback(async (eventId) => {
-    if (!eventId) {
-      setItemsData(null);
-      return;
-    }
-
-    try {
-      setLoadingSales(true);
-      const resp = await fetch(`${API_BASE}/events/${eventId}/items`);
-      if (!resp.ok) {
-        const errData = await resp.json().catch(() => ({}));
-        throw new Error(errData.detail || 'Falha ao carregar itens da campanha');
-      }
-      setItemsData(await resp.json());
-    } catch (err) {
-      setError(err.message);
-      setItemsData(null);
-    } finally {
-      setLoadingSales(false);
-    }
-  }, []);
-
   const fetchEventVersion = useCallback(async () => {
     if (!selectedEventId) return null;
     const resp = await fetch(`${API_BASE}/events/${selectedEventId}/sync/version`);
@@ -274,13 +250,9 @@ export function EventSalesPage() {
   useEffect(() => {
     if (selectedEventId) {
       setSelectedStatuses(null);
-      if (groupBy === 'item') {
-        loadItems(selectedEventId);
-      } else {
-        loadSales(selectedEventId);
-      }
+      loadSales(selectedEventId);
     }
-  }, [groupBy, loadItems, loadSales, selectedEventId]);
+  }, [loadSales, selectedEventId]);
 
   useVersionPolling({
     enabled: Boolean(selectedEventId) && !loadingSales,
@@ -379,40 +351,9 @@ export function EventSalesPage() {
     }
 
     const itemMap = {};
-    const apiItems = Array.isArray(itemsData?.items) ? itemsData.items : [];
-
-    if (apiItems.length > 0) {
-      apiItems.forEach((entry) => {
-        const key = entry.sku || entry.product_name;
-        if (!itemMap[key]) {
-          const { model, size } = extractModelAndSize(entry.sku, entry.product_name);
-          itemMap[key] = {
-            sku: entry.sku, product_name: entry.product_name, total_qty: 0, total_paid: 0, orders: [],
-            _model: model, _size: size,
-            production_status: entry.production_status || 'Pendente',
-            notes: entry.production_notes || '',
-          };
-        }
-        itemMap[key].total_qty += (entry.quantity || 0);
-        itemMap[key].total_paid += (entry.paid_total || 0);
-        itemMap[key].orders.push({
-          order_id: entry.order_id,
-          numero: entry.order_numero || entry.order_id,
-          numero_loja: entry.order_numero_loja,
-          data: entry.order_data,
-          cliente: entry.cliente,
-          situacao: entry.situacao,
-          quantity: entry.quantity,
-          paid_unit_price: entry.paid_unit_price,
-          paid_total: entry.paid_total,
-          production_status: entry.production_status || 'Pendente',
-          notes: entry.production_notes || '',
-        });
-      });
-    } else {
-      visibleOrders.forEach((order) => {
-        const items = Array.isArray(order.matched_items) ? order.matched_items : [];
-        items.forEach((item) => {
+    visibleOrders.forEach((order) => {
+      const items = Array.isArray(order.matched_items) ? order.matched_items : [];
+      items.forEach((item) => {
         const key = item.sku || item.product_name;
         if (!itemMap[key]) {
           const { model, size } = extractModelAndSize(item.sku, item.product_name);
@@ -438,9 +379,8 @@ export function EventSalesPage() {
           production_status: item.production_status || 'Pendente',
           notes: item.notes || '',
         });
-        });
       });
-    }
+    });
 
     return Object.values(itemMap).sort((a, b) => {
       if (a._model < b._model) return -1;
@@ -449,7 +389,7 @@ export function EventSalesPage() {
       const bi = SIZE_ORDER.indexOf(b._size);
       return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
     });
-  }, [groupBy, itemsData, visibleOrders]);
+  }, [visibleOrders, groupBy]);
 
   return (
     <Layout>
@@ -558,14 +498,7 @@ export function EventSalesPage() {
                   {[{ key: 'pedido', label: 'Por Pedido' }, { key: 'item', label: 'Por Item' }].map((opt) => (
                     <button
                       key={opt.key}
-                      onClick={() => {
-                        setGroupBy(opt.key);
-                        setExpandedOrderId(null);
-                        if (selectedEventId) {
-                          if (opt.key === 'item') loadItems(selectedEventId);
-                          else loadSales(selectedEventId);
-                        }
-                      }}
+                      onClick={() => { setGroupBy(opt.key); setExpandedOrderId(null); }}
                       style={{
                         cursor: 'pointer',
                         border: groupBy === opt.key ? '2px solid #3b82f6' : '2px solid transparent',
@@ -588,16 +521,151 @@ export function EventSalesPage() {
                 <p className="loading">Carregando vendas...</p>
               ) : (
                 groupBy === 'item' ? (
-                  <ItemsFilterTab
-                    groups={groupedByItem}
-                    isMobile={isMobile}
-                    expandedKey={expandedOrderId}
-                    onToggle={(key) => toggleOrder(key)}
-                    formatCurrency={formatBRL}
-                    renderStatus={(situacao) => <StatusBadge text={situacao} />}
-                    onChangeStatus={(sku, order, nextStatus) => handleProductionStatusChange(sku, order.order_id, order.production_status, nextStatus)}
-                    onChangeNotes={(sku, order, notes) => handleProductionNotesChange(sku, order.order_id, order.production_status, notes)}
-                  />
+                  groupedByItem.length === 0 ? (
+                    <div className="empty-state">
+                      <span className="empty-state-icon">📭</span>
+                      <p>Nenhum item encontrado.</p>
+                    </div>
+                  ) : isMobile ? (
+                    <div style={{ display: 'grid', gap: 12, padding: 12 }}>
+                      {groupedByItem.map((group) => {
+                        const gKey = group.sku || group.product_name;
+                        const isExpanded = expandedOrderId === gKey;
+                        return (
+                          <div key={gKey} style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
+                            <button
+                              onClick={() => toggleOrder(gKey)}
+                              style={{ width: '100%', border: 'none', textAlign: 'left', background: isExpanded ? '#f0f9ff' : '#fff', padding: 14, cursor: 'pointer' }}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                                <div style={{ fontWeight: 700, color: '#1e293b' }}>{group.sku || '—'}</div>
+                                <ChevronIcon isExpanded={isExpanded} />
+                              </div>
+                              <div style={{ fontSize: 13, fontWeight: 600, color: '#334155', marginBottom: 8 }}>{group.product_name}</div>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, fontSize: 12, color: '#64748b' }}>
+                                <span><strong>Qtd:</strong> {group.total_qty}</span>
+                                <span><strong>Total:</strong> {formatBRL(group.total_paid)}</span>
+                                <span><strong>Pedidos:</strong> {group.orders.length}</span>
+                              </div>
+                            </button>
+
+                            {isExpanded && (
+                              <div style={{ borderTop: '1px solid #e2e8f0', background: '#f8fafc', padding: 12, display: 'grid', gap: 10 }}>
+                                {group.orders.map((o, idx) => (
+                                  <div key={`${gKey}-${o.numero}-${idx}`} style={{ border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff', padding: 10 }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+                                      <div style={{ fontWeight: 700, color: '#1e293b' }}>Pedido {o.numero}</div>
+                                      <div style={{ fontWeight: 700, color: '#1e293b' }}>{formatBRL(o.paid_total)}</div>
+                                    </div>
+                                    <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}><strong>Cliente:</strong> {o.cliente || '—'}</div>
+                                    <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}><strong>Nuvemshop:</strong> {o.numero_loja || '—'}</div>
+                                    <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}><strong>Data:</strong> {formatDate(o.data)}</div>
+                                    <div style={{ marginBottom: 8 }}><StatusBadge text={o.situacao} /></div>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, color: '#64748b', marginBottom: 8 }}>
+                                      <span><strong>Qtd:</strong> {o.quantity}</span>
+                                    </div>
+                                    <div style={{ marginBottom: 8 }}>
+                                      <ProductionStatusBadge
+                                        status={o.production_status}
+                                        onChangeStatus={(nextStatus) => handleProductionStatusChange(group.sku, o.order_id, o.production_status, nextStatus)}
+                                      />
+                                    </div>
+                                    <ProductionNotesInput
+                                      initialValue={o.notes}
+                                      onChangeNotes={(notes) => handleProductionNotesChange(group.sku, o.order_id, o.production_status, notes)}
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th style={{ width: 40 }}></th>
+                          <th>SKU</th>
+                          <th>Produto</th>
+                          <th style={{ textAlign: 'right' }}>Qtd Total</th>
+                          <th style={{ textAlign: 'right' }}>Total Pago</th>
+                          <th style={{ textAlign: 'right' }}>Pedidos</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {groupedByItem.map((group) => {
+                          const gKey = group.sku || group.product_name;
+                          const isExpanded = expandedOrderId === gKey;
+                          return (
+                            <React.Fragment key={gKey}>
+                              <tr
+                                style={{ cursor: 'pointer', background: isExpanded ? '#f0f9ff' : undefined }}
+                                onClick={() => toggleOrder(gKey)}
+                              >
+                                <td style={{ textAlign: 'center', color: '#64748b', paddingTop: 12, paddingBottom: 12 }}>
+                                  <ChevronIcon isExpanded={isExpanded} />
+                                </td>
+                                <td style={{ fontFamily: 'monospace', color: '#64748b' }}>{group.sku || '—'}</td>
+                                <td style={{ fontWeight: 600 }}>{group.product_name}</td>
+                                <td style={{ textAlign: 'right', fontWeight: 600 }}>{group.total_qty}</td>
+                                <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatBRL(group.total_paid)}</td>
+                                <td style={{ textAlign: 'right', color: '#64748b' }}>{group.orders.length}</td>
+                              </tr>
+                              {isExpanded && (
+                                <tr style={{ background: '#f8fafc', borderTop: '2px solid #e2e8f0' }}>
+                                  <td colSpan="6" style={{ padding: '16px 20px' }}>
+                                    <h4 style={{ margin: '0 0 12px 0', color: '#1e293b', fontSize: 14 }}>📦 Pedidos com este item</h4>
+                                    <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+                                      <thead>
+                                        <tr style={{ borderBottom: '1px solid #cbd5e1' }}>
+                                          <th style={{ textAlign: 'left', padding: '8px', fontWeight: 600, color: '#475569' }}>Pedido</th>
+                                          <th style={{ textAlign: 'left', padding: '8px', fontWeight: 600, color: '#475569' }}>Nuvemshop</th>
+                                          <th style={{ textAlign: 'left', padding: '8px', fontWeight: 600, color: '#475569' }}>Data</th>
+                                          <th style={{ textAlign: 'left', padding: '8px', fontWeight: 600, color: '#475569' }}>Cliente</th>
+                                          <th style={{ textAlign: 'left', padding: '8px', fontWeight: 600, color: '#475569' }}>Situação</th>
+                                          <th style={{ textAlign: 'left', padding: '8px', fontWeight: 600, color: '#475569' }}>Produção</th>
+                                          <th style={{ textAlign: 'right', padding: '8px', fontWeight: 600, color: '#475569', width: 80 }}>Qtd</th>
+                                          <th style={{ textAlign: 'right', padding: '8px', fontWeight: 600, color: '#475569', width: 100 }}>Total Pago</th>
+                                          <th style={{ textAlign: 'left', padding: '8px', fontWeight: 600, color: '#475569' }}>Notas</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {group.orders.map((o, idx) => (
+                                          <tr key={`${gKey}-${o.numero}-${idx}`} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                                            <td style={{ padding: '8px', fontWeight: 600 }}>{o.numero}</td>
+                                            <td style={{ padding: '8px', color: '#64748b' }}>{o.numero_loja || '—'}</td>
+                                            <td style={{ padding: '8px', color: '#64748b' }}>{formatDate(o.data)}</td>
+                                            <td style={{ padding: '8px', color: '#334155' }}>{o.cliente || '—'}</td>
+                                            <td style={{ padding: '8px' }}><StatusBadge text={o.situacao} /></td>
+                                            <td style={{ padding: '8px' }}>
+                                              <ProductionStatusBadge
+                                                status={o.production_status}
+                                                onChangeStatus={(nextStatus) => handleProductionStatusChange(group.sku, o.order_id, o.production_status, nextStatus)}
+                                              />
+                                            </td>
+                                            <td style={{ textAlign: 'right', padding: '8px', color: '#64748b' }}>{o.quantity}</td>
+                                            <td style={{ textAlign: 'right', padding: '8px', fontWeight: 600, color: '#1e293b' }}>{formatBRL(o.paid_total)}</td>
+                                            <td style={{ padding: '8px', minWidth: 150 }}>
+                                              <ProductionNotesInput
+                                                initialValue={o.notes}
+                                                onChangeNotes={(notes) => handleProductionNotesChange(group.sku, o.order_id, o.production_status, notes)}
+                                              />
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                              </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )
                 ) : visibleOrders.length === 0 ? (
                 <div className="empty-state">
                   <span className="empty-state-icon">📭</span>

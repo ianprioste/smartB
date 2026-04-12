@@ -1,0 +1,21 @@
+{
+  "print": {
+    "code": "TEST",
+    "name": "Teste Plan",
+    "short_desc": "Teste",
+    "long_desc": "Teste completo",
+    "composition": "Algodão"
+  },
+  "models": [
+    {
+      "code": "CAM",
+      "price": 50.00,
+      "selected_sizes": ["P", "M", "G"]
+    }
+  ],
+  "colors": ["BR", "PR"],
+  "overrides": {},
+  "options": {
+    "auto_seed_enabled": true
+  }
+}

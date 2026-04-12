@@ -1,7 +1,6 @@
-import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Layout } from '../../components/Layout';
 import { ProductionStatusBadge, ProductionNotesInput } from '../../components/ProductionControls';
-import { ItemsFilterTab } from '../../components/ItemsFilterTab';
 import useIsMobile from '../../hooks/useIsMobile';
 import { useVersionPolling } from '../../hooks/useVersionPolling';
 
@@ -180,7 +179,6 @@ export function OrdersPage() {
   const [total, setTotal] = useState(0);
   const [syncMessage, setSyncMessage] = useState('');
   const [expandedOrderId, setExpandedOrderId] = useState(null);
-  const [groupBy, setGroupBy] = useState('pedido');
   const [syncModalOpen, setSyncModalOpen] = useState(false);
   const debounceRef = useRef(null);
   const pollRef = useRef(null);
@@ -194,10 +192,9 @@ export function OrdersPage() {
     suppressDeltaUntilRef.current = Date.now() + 4000;
   }, []);
 
-  const handleProductionSaved = useCallback((sku, newStatus, newNotes, orderId) => {
+  const handleProductionSaved = useCallback((sku, newStatus, newNotes) => {
     setOrders((prev) =>
       prev.map((order) => {
-        if (orderId && Number(order.id) !== Number(orderId)) return order;
         const itens = (order.itens || []).map((item) => {
           if ((item.sku || '').toUpperCase() !== (sku || '').toUpperCase()) return item;
           return {
@@ -212,29 +209,29 @@ export function OrdersPage() {
     );
   }, []);
 
-  const handleProductionStatusChange = useCallback(async (sku, currentStatus, nextStatus, orderId = null) => {
+  const handleProductionStatusChange = useCallback(async (sku, currentStatus, nextStatus) => {
     if (nextStatus === currentStatus) return;
     try {
       await fetch(`${API_BASE}/orders/items/${encodeURIComponent(sku)}/production`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ production_status: nextStatus, bling_order_id: orderId }),
+        body: JSON.stringify({ production_status: nextStatus }),
       });
       markLocalMutation();
-      handleProductionSaved(sku, nextStatus, undefined, orderId);
+      handleProductionSaved(sku, nextStatus, undefined);
     } catch (err) {
       console.error('Failed to save production status', err);
     }
   }, [handleProductionSaved, markLocalMutation]);
 
-  const handleProductionNotesChange = useCallback((sku, productionStatus, notes, orderId = null) => {
+  const handleProductionNotesChange = useCallback((sku, productionStatus, notes) => {
     fetch(`${API_BASE}/orders/items/${encodeURIComponent(sku)}/production`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ production_status: productionStatus || 'Pendente', notes, bling_order_id: orderId }),
+      body: JSON.stringify({ production_status: productionStatus || 'Pendente', notes }),
     }).catch(() => {});
     markLocalMutation();
-    handleProductionSaved(sku, undefined, notes, orderId);
+    handleProductionSaved(sku, undefined, notes);
   }, [handleProductionSaved, markLocalMutation]);
 
   const handleOrderStatusChange = useCallback(async (orderId, newStatus) => {
@@ -434,41 +431,6 @@ export function OrdersPage() {
   const syncOk = syncStatus?.sync?.last_sync_status === 'ok';
   const localCount = syncStatus?.snapshot?.total_orders ?? 0;
 
-  const groupedByItem = useMemo(() => {
-    if (groupBy !== 'item') return [];
-    const map = {};
-    for (const order of orders) {
-      for (const item of (order.itens || [])) {
-        const key = (item.sku || item.product_name || '').toUpperCase();
-        if (!key) continue;
-        if (!map[key]) {
-          map[key] = {
-            sku: item.sku || '',
-            product_name: item.product_name || '',
-            total_qty: 0,
-            total_paid: 0,
-            orders: [],
-          };
-        }
-        map[key].total_qty += Number(item.quantity || 0);
-        map[key].total_paid += Number(item.paid_total ?? item.total ?? 0);
-        map[key].orders.push({
-          order_id: order.id,
-          numero: order.numero,
-          numero_loja: order.numeroLoja,
-          data: order.data,
-          cliente: order.cliente,
-          situacao: order.situacao,
-          quantity: item.quantity,
-          paid_total: item.paid_total ?? item.total,
-          production_status: item.production_status || 'Pendente',
-          notes: item.notes || '',
-        });
-      }
-    }
-    return Object.values(map).sort((a, b) => (a.sku || '').localeCompare(b.sku || ''));
-  }, [groupBy, orders]);
-
   return (
     <Layout>
       <div className="page-inner">
@@ -538,30 +500,6 @@ export function OrdersPage() {
               );
             })}
           </div>
-          <div style={{ display: 'flex', gap: 6 }}>
-            {[{ key: 'pedido', label: 'Por Pedido' }, { key: 'item', label: 'Por Item' }].map((opt) => {
-              const active = groupBy === opt.key;
-              return (
-                <button
-                  key={opt.key}
-                  onClick={() => { setGroupBy(opt.key); setExpandedOrderId(null); }}
-                  style={{
-                    padding: '8px 14px',
-                    borderRadius: 20,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    transition: 'all .15s',
-                    border: active ? '1.5px solid #2563eb' : '1.5px solid transparent',
-                    background: active ? '#dbeafe' : '#f1f5f9',
-                    color: active ? '#1d4ed8' : '#64748b',
-                  }}
-                >
-                  {opt.label}
-                </button>
-              );
-            })}
-          </div>
         </div>
 
         {/* ── Table ── */}
@@ -577,18 +515,7 @@ export function OrdersPage() {
 
           {!loading && orders.length > 0 && (
             <>
-              {groupBy === 'item' ? (
-                <ItemsFilterTab
-                  groups={groupedByItem}
-                  isMobile={isMobile}
-                  expandedKey={expandedOrderId}
-                  onToggle={(key) => setExpandedOrderId(expandedOrderId === key ? null : key)}
-                  formatCurrency={formatBRL}
-                  renderStatus={(situacao) => <StatusBadge text={situacao} />}
-                  onChangeStatus={(sku, order, nextStatus) => handleProductionStatusChange(sku, order.production_status, nextStatus, order.order_id)}
-                  onChangeNotes={(sku, order, notes) => handleProductionNotesChange(sku, order.production_status, notes, order.order_id)}
-                />
-              ) : isMobile ? (
+              {isMobile ? (
                 <div style={{ padding: 12, display: 'grid', gap: 12 }}>
                   {orders.map((order) => {
                     const itens = order.itens || [];
@@ -643,12 +570,12 @@ export function OrdersPage() {
                                   <div style={{ marginBottom: 8 }}>
                                     <ProductionStatusBadge
                                       status={item.production_status}
-                                      onChangeStatus={(nextStatus) => handleProductionStatusChange(item.sku, item.production_status, nextStatus, order.id)}
+                                      onChangeStatus={(nextStatus) => handleProductionStatusChange(item.sku, item.production_status, nextStatus)}
                                     />
                                   </div>
                                   <ProductionNotesInput
                                     initialValue={item.notes}
-                                    onChangeNotes={(notes) => handleProductionNotesChange(item.sku, item.production_status, notes, order.id)}
+                                    onChangeNotes={(notes) => handleProductionNotesChange(item.sku, item.production_status, notes)}
                                   />
                                 </div>
                               ))}
@@ -730,7 +657,7 @@ export function OrdersPage() {
                                         <td style={{ padding: '7px 8px' }}>
                                           <ProductionStatusBadge
                                             status={item.production_status}
-                                            onChangeStatus={(nextStatus) => handleProductionStatusChange(item.sku, item.production_status, nextStatus, order.id)}
+                                            onChangeStatus={(nextStatus) => handleProductionStatusChange(item.sku, item.production_status, nextStatus)}
                                           />
                                         </td>
                                         <td style={{ textAlign: 'right', padding: '7px 8px', color: '#64748b' }}>{item.quantity}</td>
@@ -738,7 +665,7 @@ export function OrdersPage() {
                                         <td style={{ padding: '7px 8px', minWidth: 150 }}>
                                           <ProductionNotesInput
                                             initialValue={item.notes}
-                                            onChangeNotes={(notes) => handleProductionNotesChange(item.sku, item.production_status, notes, order.id)}
+                                            onChangeNotes={(notes) => handleProductionNotesChange(item.sku, item.production_status, notes)}
                                           />
                                         </td>
                                       </tr>
