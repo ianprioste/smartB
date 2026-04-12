@@ -34,7 +34,7 @@ Este projeto foi padronizado para deploy sem Docker.
 1. Garantir checkout do projeto:
 
 ```bash
-git clone git@github.com:ianprioste/smartB.git /opt/smartB
+git clone https://github.com/ianprioste/smartB.git /opt/smartB
 ```
 
 2. Bootstrap de dependencias do sistema:
@@ -105,7 +105,7 @@ Configure em Settings > Secrets and variables > Actions:
 - `VPS_APP_DIR` (caminho do projeto na VPS, recomendado `/opt/smartB`)
 - `VPS_BACKEND_SERVICE` (opcional, default `smartbling-backend`)
 - `VPS_FRONTEND_DIR` (opcional, default `/usr/share/nginx/html`)
-- `VPS_REPO_URL` (opcional, default `git@github.com:<owner>/<repo>.git`)
+- `VPS_REPO_URL` (opcional, default `https://github.com/<owner>/<repo>.git`)
 
 ### Fluxo recomendado
 

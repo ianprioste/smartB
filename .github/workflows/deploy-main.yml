@@ -99,7 +99,7 @@ jobs:
           BACKEND_SERVICE="${VPS_BACKEND_SERVICE:-smartbling-backend}"
           FRONTEND_TARGET_DIR="${VPS_FRONTEND_DIR:-/usr/share/nginx/html}"
           DEPLOY_BRANCH="production"
-          REPO_URL="${VPS_REPO_URL:-git@github.com:${GITHUB_REPOSITORY}.git}"
+          REPO_URL="${VPS_REPO_URL:-https://github.com/${GITHUB_REPOSITORY}.git}"
 
           # Secrets can accidentally contain leading/trailing spaces.
           APP_DIR="$(printf '%s' "$APP_DIR" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
@@ -111,6 +111,7 @@ jobs:
           fi
 
           cd "$APP_DIR"
+          git remote set-url origin "$REPO_URL"
 
           if [ -n "$(git status --porcelain)" ]; then
             git stash push -u -m "auto-stash before deploy $(date '+%Y-%m-%d %H:%M:%S')"
