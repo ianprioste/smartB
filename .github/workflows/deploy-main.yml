@@ -44,6 +44,17 @@ jobs:
               exit 1
             fi
 
+            REPO_URL="${{ secrets.VPS_REPO_URL }}"
+            if [ -z "$REPO_URL" ]; then
+              REPO_URL="git@github.com:${{ github.repository }}.git"
+            fi
+
+            if [ ! -d "$APP_DIR/.git" ]; then
+              echo "Diretorio nao encontrado. Clonando repositorio..."
+              mkdir -p "$APP_DIR"
+              git clone --branch "$DEPLOY_BRANCH" "$REPO_URL" "$APP_DIR"
+            fi
+
             cd "$APP_DIR"
 
             # If server has local manual edits, stash them to allow clean pull/deploy.
