@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import uuid
+import hashlib
+import secrets
 from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
@@ -9,12 +11,15 @@ from uuid import UUID
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
-from app.models.database import AccessProfileModel, AccessUserModel, AccessSessionModel
+from app.models.database import AccessProfileModel, AccessUserModel, AccessSessionModel, PasswordResetCodeModel
+from app.settings import settings
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 class AccessRepository:
+    PASSWORD_RESET_MAX_ATTEMPTS = 5
+
     @staticmethod
     def get_or_create_admin_profile(db: Session, tenant_id: UUID) -> AccessProfileModel:
         profile = (
@@ -282,3 +287,89 @@ class AccessRepository:
     @staticmethod
     def revoke_user_sessions(db: Session, user_id: UUID) -> None:
         db.query(AccessSessionModel).filter(AccessSessionModel.user_id == user_id).delete()
+
+    @staticmethod
+    def generate_password_reset_code() -> str:
+        return f"{secrets.randbelow(1000000):06d}"
+
+    @staticmethod
+    def hash_password_reset_code(email: str, code: str) -> str:
+        payload = f"{email.strip().lower()}:{code}:{settings.SECRET_KEY}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def invalidate_password_reset_codes(db: Session, user_id: UUID) -> None:
+        now = datetime.utcnow()
+        (
+            db.query(PasswordResetCodeModel)
+            .filter(
+                PasswordResetCodeModel.user_id == user_id,
+                PasswordResetCodeModel.used_at.is_(None),
+            )
+            .update(
+                {
+                    PasswordResetCodeModel.used_at: now,
+                    PasswordResetCodeModel.updated_at: now,
+                },
+                synchronize_session=False,
+            )
+        )
+
+    @staticmethod
+    def create_password_reset_code(
+        db: Session,
+        tenant_id: UUID,
+        user_id: UUID,
+        email: str,
+        code: str,
+        expires_minutes: int,
+    ) -> PasswordResetCodeModel:
+        AccessRepository.invalidate_password_reset_codes(db, user_id)
+        row = PasswordResetCodeModel(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            email=email.strip().lower(),
+            code_hash=AccessRepository.hash_password_reset_code(email, code),
+            expires_at=datetime.utcnow() + timedelta(minutes=expires_minutes),
+        )
+        db.add(row)
+        db.flush()
+        return row
+
+    @staticmethod
+    def get_active_password_reset_code(db: Session, user_id: UUID) -> Optional[PasswordResetCodeModel]:
+        now = datetime.utcnow()
+        return (
+            db.query(PasswordResetCodeModel)
+            .filter(
+                PasswordResetCodeModel.user_id == user_id,
+                PasswordResetCodeModel.used_at.is_(None),
+                PasswordResetCodeModel.expires_at > now,
+                PasswordResetCodeModel.attempts_count < AccessRepository.PASSWORD_RESET_MAX_ATTEMPTS,
+            )
+            .order_by(PasswordResetCodeModel.created_at.desc())
+            .first()
+        )
+
+    @staticmethod
+    def verify_password_reset_code(
+        db: Session,
+        reset_code: PasswordResetCodeModel,
+        email: str,
+        code: str,
+    ) -> bool:
+        expected_hash = AccessRepository.hash_password_reset_code(email, code)
+        is_valid = secrets.compare_digest(reset_code.code_hash, expected_hash)
+        if is_valid:
+            return True
+
+        reset_code.attempts_count += 1
+        reset_code.updated_at = datetime.utcnow()
+        if reset_code.attempts_count >= AccessRepository.PASSWORD_RESET_MAX_ATTEMPTS:
+            reset_code.used_at = datetime.utcnow()
+        return False
+
+    @staticmethod
+    def mark_password_reset_code_used(reset_code: PasswordResetCodeModel) -> None:
+        reset_code.used_at = datetime.utcnow()
+        reset_code.updated_at = datetime.utcnow()

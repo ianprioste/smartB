@@ -343,3 +343,19 @@ class AccessSessionModel(Base):
         UniqueConstraint("token", name="uq_access_sessions_token"),
     )
 
+
+class PasswordResetCodeModel(Base):
+    """One-time password reset code for access users."""
+    __tablename__ = "password_reset_codes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("access_users.id"), nullable=False)
+    email = Column(String(320), nullable=False)
+    code_hash = Column(String(255), nullable=False)
+    attempts_count = Column(Integer, nullable=False, default=0)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+

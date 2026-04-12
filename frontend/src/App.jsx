@@ -10,6 +10,7 @@ import { EventCreatePage } from './pages/events/EventCreatePage';
 import { EventSalesPage } from './pages/events/EventSalesPage';
 import { AccessControlPage } from './pages/admin/AccessControlPage';
 import { LoginPage } from './pages/auth/LoginPage';
+import { ForgotPasswordPage } from './pages/auth/ForgotPasswordPage';
 import './styles/admin.css';
 
 const API_BASE = '/api';
@@ -58,6 +59,7 @@ function App() {
     <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <Routes>
         <Route path="/login" element={<LoginPage onLoginSuccess={setUser} />} />
+        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
 
         <Route path="/" element={<ProtectedRoute user={user} loading={loading}><HomePage /></ProtectedRoute>} />
         <Route path="/products" element={<ProtectedRoute user={user} loading={loading}><ProductsListPage /></ProtectedRoute>} />
