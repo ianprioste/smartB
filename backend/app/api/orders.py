@@ -13,6 +13,7 @@ from app.infra.bling_client import BlingClient, BlingAuthError, BlingAPIError
 from app.infra.logging import get_logger
 from app.domain.order_sync import sync_orders
 from app.domain.bling_situacoes import get_bling_status_ids
+from app.domain.status_propagation import StatusPropagationService
 from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.order_snapshot_repo import OrderSnapshotRepository, parse_progress_from_sync_message
 from app.repositories.item_production_note_repo import ItemProductionNoteRepository
@@ -430,6 +431,48 @@ def _format_snapshot_order(row) -> Dict[str, Any]:
     }
 
 
+def _flatten_orders_by_items(orders: List[Dict[str, Any]], item_sku: str = "") -> List[Dict[str, Any]]:
+    """Flatten order list into item rows for item-based filtering."""
+    rows: List[Dict[str, Any]] = []
+    item_sku_norm = (item_sku or "").strip().upper()
+
+    for order in orders:
+        order_id = order.get("id")
+        order_numero = order.get("numero")
+        order_numero_loja = order.get("numeroLoja")
+        order_data = order.get("data")
+        cliente = order.get("cliente")
+        situacao = order.get("situacao")
+        situacao_id = order.get("situacaoId")
+
+        for item in (order.get("itens") or []):
+            sku = (item.get("sku") or "").strip().upper()
+            if item_sku_norm and sku != item_sku_norm:
+                continue
+
+            rows.append({
+                "order_id": order_id,
+                "order_numero": order_numero,
+                "order_numero_loja": order_numero_loja,
+                "order_data": order_data,
+                "cliente": cliente,
+                "situacao": situacao,
+                "situacaoId": situacao_id,
+                "sku": item.get("sku") or "",
+                "product_name": item.get("product_name") or "",
+                "quantity": _to_float(item.get("quantity")),
+                "unit_price": _to_float(item.get("unit_price")),
+                "total": _to_float(item.get("total")),
+                "paid_unit_price": _to_float(item.get("paid_unit_price")),
+                "paid_total": _to_float(item.get("paid_total")),
+                "production_status": item.get("production_status") or "Pendente",
+                "notes": item.get("notes"),
+                "event_id": item.get("event_id"),
+            })
+
+    return rows
+
+
 @router.get("")
 async def list_orders(
     db: Session = Depends(get_db),
@@ -558,6 +601,38 @@ async def list_orders(
         "pages": pages,
         "statuses": KNOWN_STATUSES,
         "source": "local-db",
+    }
+
+
+@router.get("/by-items")
+async def list_orders_by_items(
+    db: Session = Depends(get_db),
+    search: str = Query("", description="Search by order number, client name, or Nuvemshop number"),
+    item_sku: str = Query("", description="Optional exact SKU filter"),
+    statuses: str = Query("6,9,15", description="Comma-separated Bling status IDs"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """List orders flattened by item rows with item filtering support."""
+    base = await list_orders(db=db, search=search, statuses=statuses, page=1, limit=10000)
+
+    data = base.get("data") or []
+    flat_items = _flatten_orders_by_items(data, item_sku=item_sku)
+
+    total = len(flat_items)
+    pages = (total + limit - 1) // limit if total > 0 else 0
+    start = (page - 1) * limit
+    end = start + limit
+    page_data = flat_items[start:end]
+
+    return {
+        "has_bling_auth": base.get("has_bling_auth", False),
+        "data": page_data,
+        "total": total,
+        "page": page,
+        "pages": pages,
+        "statuses": KNOWN_STATUSES,
+        "source": base.get("source", "local-db"),
     }
 
 
@@ -845,11 +920,23 @@ async def update_order_item_production(
         db, DEFAULT_TENANT_ID, event_id, norm_sku, body.production_status, body.notes,
         bling_order_id=body.bling_order_id,
     )
+
+    if row.is_parent:
+        StatusPropagationService.propagate_status_to_children(
+            db, event_id, norm_sku, body.production_status, body.bling_order_id
+        )
+    elif row.parent_sku:
+        StatusPropagationService.sync_parent_status_from_children(
+            db, event_id, row.parent_sku, body.bling_order_id
+        )
+
     SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
     db.commit()
     return ItemProductionNoteResponse(
         sku=row.sku, production_status=row.production_status, notes=row.notes,
         bling_order_id=row.bling_order_id,
+        parent_sku=row.parent_sku,
+        is_parent=row.is_parent,
     )
 
 

@@ -223,6 +223,8 @@ class ItemProductionNoteModel(Base):
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    parent_sku = Column(String(255), nullable=True)
+    is_parent = Column(Boolean, default=False)
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "event_id", "sku", "bling_order_id", name="uq_item_production_notes_tenant_event_sku_order"),

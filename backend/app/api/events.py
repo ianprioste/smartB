@@ -12,6 +12,7 @@ from app.infra.bling_client import BlingClient, BlingAuthError, BlingAPIError
 from app.infra.logging import get_logger
 from app.domain.order_local_cache import get_cached_order_detail, warm_order_details
 from app.domain.bling_situacoes import get_bling_status_ids
+from app.domain.status_propagation import StatusPropagationService
 from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.order_snapshot_repo import OrderSnapshotRepository
 from app.repositories.sales_event_repo import SalesEventRepository
@@ -31,6 +32,8 @@ from app.models.schemas import (
     EventOrderResponse,
     EventSalesSummaryResponse,
     EventSalesResponse,
+    EventItemResponse,
+    EventItemsSalesResponse,
     ItemProductionNoteUpdateRequest,
     ItemProductionNoteResponse,
     OrderStatusUpdateRequest,
@@ -910,6 +913,61 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Erro ao buscar vendas do evento: {exc}")
 
 
+@router.get("/{event_id}/items", response_model=EventItemsSalesResponse)
+async def get_event_items_sales(
+    event_id: UUID,
+    item_sku: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Return event sales flattened by item rows for item-centric filtering UI."""
+    sales = await get_event_sales(event_id=event_id, db=db)
+
+    all_items: List[EventItemResponse] = []
+    sku_filter = (item_sku or "").strip().upper()
+    unique_orders: set[int] = set()
+
+    for order in sales.orders:
+        order_id = int(order.id) if order.id is not None else None
+        for item in (order.matched_items or []):
+            sku = (item.sku or "").strip().upper()
+            if sku_filter and sku != sku_filter:
+                continue
+            if order_id is not None:
+                unique_orders.add(order_id)
+
+            all_items.append(
+                EventItemResponse(
+                    order_id=order_id,
+                    order_numero=order.numero,
+                    order_numero_loja=order.numero_loja,
+                    order_data=order.data,
+                    cliente=order.cliente,
+                    situacao=order.situacao,
+                    sku=item.sku,
+                    product_name=item.product_name,
+                    quantity=item.quantity,
+                    unit_price=item.unit_price,
+                    total=item.total,
+                    paid_unit_price=item.paid_unit_price,
+                    paid_total=item.paid_total,
+                    production_status=item.production_status,
+                    production_notes=item.notes,
+                )
+            )
+
+    total_matched = sum((i.paid_total or 0.0) for i in all_items)
+
+    return EventItemsSalesResponse(
+        event=sales.event,
+        summary=EventSalesSummaryResponse(
+            orders_count=len(unique_orders),
+            matched_items_count=len(all_items),
+            total_matched=total_matched,
+        ),
+        items=all_items,
+    )
+
+
 @router.get("/{event_id}/sync/version")
 async def get_event_sync_version(event_id: UUID, db: Session = Depends(get_db)):
     """Lightweight version token for event sales delta polling."""
@@ -998,6 +1056,16 @@ async def update_item_production(
         bling_order_id=body.bling_order_id,
     )
 
+    # Propagate status if this is a parent item.
+    if row.is_parent:
+        StatusPropagationService.propagate_status_to_children(
+            db, event_id, norm_sku, body.production_status, body.bling_order_id
+        )
+    elif row.parent_sku:
+        StatusPropagationService.sync_parent_status_from_children(
+            db, event_id, row.parent_sku, body.bling_order_id
+        )
+
     # Auto-update Bling when all items of an order become "Embalado".
     if body.production_status == "Embalado":
         await _check_and_update_bling_orders(db, event, event_id)
@@ -1009,6 +1077,8 @@ async def update_item_production(
     return ItemProductionNoteResponse(
         sku=row.sku, production_status=row.production_status, notes=row.notes,
         bling_order_id=row.bling_order_id,
+        parent_sku=row.parent_sku,
+        is_parent=row.is_parent,
     )
 
 

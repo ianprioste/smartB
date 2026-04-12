@@ -565,9 +565,54 @@ class ItemProductionNoteResponse(BaseModel):
     production_status: str
     notes: Optional[str] = None
     bling_order_id: Optional[int] = None
+    parent_sku: Optional[str] = None
+    is_parent: bool = False
+
+
+class ParentChildHierarchyResponse(BaseModel):
+    """Response containing parent-child hierarchy for an item."""
+    is_parent: bool
+    parent: Optional[ItemProductionNoteResponse] = None
+    children: List[ItemProductionNoteResponse] = Field(default_factory=list)
+
+
+class ItemProductionUpdateWithPropagationRequest(BaseModel):
+    """Request to update production status with propagation to children."""
+    production_status: str
+    notes: Optional[str] = None
+    bling_order_id: Optional[int] = None
+    propagate_to_children: bool = False
 
 
 class OrderStatusUpdateRequest(BaseModel):
     situacao: str
+
+
+class EventItemResponse(BaseModel):
+    """Single item from an order in event sales context."""
+    order_id: Optional[int] = None
+    order_numero: Optional[int] = None
+    order_numero_loja: Optional[str] = None
+    order_data: Optional[str] = None
+    cliente: Optional[str] = None
+    situacao: str
+    sku: str
+    product_name: Optional[str] = None
+    quantity: float
+    unit_price: float
+    total: float
+    paid_unit_price: float
+    paid_total: float
+    production_status: str = "Pendente"
+    production_notes: Optional[str] = None
+    parent_sku: Optional[str] = None
+    is_parent: bool = False
+
+
+class EventItemsSalesResponse(BaseModel):
+    """Event sales filtered by items instead of orders."""
+    event: SalesEventResponse
+    summary: EventSalesSummaryResponse
+    items: List[EventItemResponse] = Field(default_factory=list)
 
 
