@@ -630,12 +630,55 @@ async def toggle_event_status(event_id: UUID, db: Session = Depends(get_db)):
 
 @router.get("", response_model=List[SalesEventListItemResponse])
 async def list_events(db: Session = Depends(get_db)):
-    events = SalesEventRepository.list_by_tenant(db, DEFAULT_TENANT_ID)
+    from sqlalchemy.exc import OperationalError
+    from sqlalchemy import text
+
+    # Primary path: full ORM query including is_active column.
+    try:
+        events = SalesEventRepository.list_by_tenant(db, DEFAULT_TENANT_ID)
+    except OperationalError as exc:
+        # Fallback: is_active column may not exist yet (pending migration).
+        # Query without that column and default to True so the page loads normally.
+        logger.warning("list_events_is_active_missing – running fallback query. error=%s", str(exc)[:200])
+        db.rollback()
+        try:
+            rows = db.execute(
+                text(
+                    "SELECT id, name, start_date, end_date, created_at "
+                    "FROM sales_events WHERE tenant_id = :tid ORDER BY created_at DESC"
+                ),
+                {"tid": str(DEFAULT_TENANT_ID).replace("-", "")},
+            ).fetchall()
+        except Exception:
+            rows = db.execute(
+                text(
+                    "SELECT id, name, start_date, end_date, created_at "
+                    "FROM sales_events WHERE tenant_id = :tid ORDER BY created_at DESC"
+                ),
+                {"tid": str(DEFAULT_TENANT_ID)},
+            ).fetchall()
+
+        class _PlainEvent:
+            __slots__ = ("id", "name", "start_date", "end_date", "created_at", "is_active")
+
+            def __init__(self, row):
+                self.id = row[0]
+                self.name = row[1]
+                self.start_date = row[2]
+                self.end_date = row[3]
+                self.created_at = row[4]
+                self.is_active = True
+
+        events = [_PlainEvent(r) for r in rows]
+
     results: List[SalesEventListItemResponse] = []
 
     for event in events:
-        products = SalesEventRepository.list_products(db, event.id)
-        # Defensive casting avoids response-model validation errors when legacy rows are inconsistent.
+        try:
+            products = SalesEventRepository.list_products(db, event.id)
+        except Exception:
+            products = []
+        # Defensive casting: guard against NULL is_active from legacy rows.
         is_active = True if event.is_active is None else bool(event.is_active)
         if event.is_active is None:
             logger.warning("event_list_null_is_active event_id=%s defaulting_true", str(event.id))
