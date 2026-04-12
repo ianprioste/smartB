@@ -156,8 +156,9 @@ jobs:
             exit 1
           fi
 
-          if ! command -v npm >/dev/null 2>&1; then
-            echo "Falha ao instalar npm no servidor."
+          NODE_MAJOR="$(node -v | sed -E 's/^v([0-9]+).*/\1/' || echo 0)"
+          if [ "${NODE_MAJOR:-0}" -lt 20 ]; then
+            echo "Node.js ${NODE_MAJOR} detectado; Vite exige Node 20+."
             exit 1
           fi
 
@@ -166,10 +167,17 @@ jobs:
           npm run build
           cd ..
 
-          if command -v systemctl >/dev/null 2>&1; then
-            systemctl restart "$BACKEND_SERVICE" || true
-            systemctl reload nginx || true
+          if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files | grep -q "^${BACKEND_SERVICE}\.service"; then
+            systemctl restart "$BACKEND_SERVICE"
+          else
+            echo "Service ${BACKEND_SERVICE} nao encontrado; iniciando backend em fallback (nohup)."
+            pkill -f "backend/run.py|app.main:app|uvicorn" >/dev/null 2>&1 || true
+            nohup ./.venv/bin/python backend/run.py > /tmp/smartbling-backend.log 2>&1 &
           fi
 
-          curl --fail --retry 5 --retry-delay 3 http://127.0.0.1:8000/health
+          if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet nginx; then
+            systemctl reload nginx
+          fi
+
+          curl --fail --retry 20 --retry-delay 3 http://127.0.0.1:8000/health
           REMOTE_SCRIPT

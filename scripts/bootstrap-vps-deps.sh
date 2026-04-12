@@ -36,4 +36,20 @@ apt-get update
 log "Instalando dependencias base: ${APT_PACKAGES[*]}"
 apt-get install -y "${APT_PACKAGES[@]}" || apt-get install -y ca-certificates curl git python3 python3-pip python3-venv nodejs npm
 
+if command -v node >/dev/null 2>&1; then
+  NODE_MAJOR="$(node -v | sed -E 's/^v([0-9]+).*/\1/')"
+else
+  NODE_MAJOR="0"
+fi
+
+if [ "${NODE_MAJOR:-0}" -lt 20 ]; then
+  log "Node.js < 20 detectado (${NODE_MAJOR}); instalando Node.js 20.x"
+  if [ ! -f /etc/apt/sources.list.d/nodesource.list ]; then
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  else
+    apt-get update
+  fi
+  apt-get install -y nodejs
+fi
+
 log "Bootstrap de dependencias concluido"
