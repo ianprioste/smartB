@@ -141,9 +141,10 @@ export function EventSalesPage() {
       if (!resp.ok) throw new Error('Falha ao carregar campanhas');
       const data = await resp.json();
       const list = Array.isArray(data) ? data : [];
-      setEvents(list);
-      if (!selectedEventId && list.length > 0) {
-        setSelectedEventId(list[0].id);
+      const activeList = list.filter((event) => event.is_active !== false);
+      setEvents(activeList);
+      if (!selectedEventId && activeList.length > 0) {
+        setSelectedEventId(activeList[0].id);
       }
     } catch (err) {
       setError(err.message);
@@ -246,6 +247,18 @@ export function EventSalesPage() {
   useEffect(() => {
     loadEvents();
   }, []);
+
+  useEffect(() => {
+    if (events.length === 0) {
+      setSelectedEventId('');
+      setSalesData(null);
+      return;
+    }
+    const hasSelected = events.some((event) => event.id === selectedEventId);
+    if (!hasSelected) {
+      setSelectedEventId(events[0].id);
+    }
+  }, [events, selectedEventId]);
 
   useEffect(() => {
     if (selectedEventId) {
@@ -413,17 +426,39 @@ export function EventSalesPage() {
           <div style={{ padding: 20 }}>
             {loadingEvents ? (
               <p className="loading">Carregando campanhas...</p>
+            ) : events.length === 0 ? (
+              <div className="empty-state" style={{ padding: '24px 8px' }}>
+                <span className="empty-state-icon">🗂️</span>
+                <p>Nenhuma campanha ativa disponível.</p>
+              </div>
             ) : (
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label>Campanha</label>
-                <select value={selectedEventId} onChange={(e) => setSelectedEventId(e.target.value)}>
-                  <option value="">Selecione uma campanha</option>
-                  {events.map((event) => (
-                    <option value={event.id} key={event.id}>
-                      {event.name} ({formatDate(event.start_date)} - {formatDate(event.end_date)})
-                    </option>
-                  ))}
-                </select>
+              <div style={{ display: 'grid', gap: 10 }}>
+                {events.map((event) => {
+                  const selected = selectedEventId === event.id;
+                  return (
+                    <button
+                      key={event.id}
+                      type="button"
+                      onClick={() => setSelectedEventId(event.id)}
+                      style={{
+                        border: selected ? '2px solid #2563eb' : '1px solid #e2e8f0',
+                        borderRadius: 10,
+                        background: selected ? '#eff6ff' : '#ffffff',
+                        padding: '12px 14px',
+                        textAlign: 'left',
+                        cursor: 'pointer',
+                        display: 'grid',
+                        gap: 4,
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, color: selected ? '#1d4ed8' : '#0f172a' }}>{event.name}</div>
+                      <div style={{ fontSize: 12, color: '#475569' }}>
+                        {formatDate(event.start_date)} - {formatDate(event.end_date)}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#64748b' }}>{event.products_count} produto(s)</div>
+                    </button>
+                  );
+                })}
               </div>
             )}
           </div>
