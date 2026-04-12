@@ -157,6 +157,23 @@ jobs:
           ./.venv/bin/python -m pip install --upgrade pip
           ./.venv/bin/python -m pip install -r backend/requirements.txt
 
+          if ! command -v npm >/dev/null 2>&1; then
+            echo "npm nao encontrado; tentando instalar Node.js/NPM no sistema..."
+            if command -v apt-get >/dev/null 2>&1; then
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y nodejs npm
+            else
+              echo "npm nao encontrado e apt-get nao esta disponivel para instalar dependencias do sistema."
+              exit 1
+            fi
+          fi
+
+          if ! command -v npm >/dev/null 2>&1; then
+            echo "Falha ao instalar npm no servidor."
+            exit 1
+          fi
+
           cd frontend
           npm ci
           npm run build
