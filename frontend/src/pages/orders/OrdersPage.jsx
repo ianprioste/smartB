@@ -164,7 +164,7 @@ function TimelineItem({ label, value }) {
 /* ── Main Page ──────────────────────────────────────────────── */
 export function OrdersPage() {
   const [orders, setOrders] = useState([]);
-  const isMobile = useIsMobile(768);
+  const isMobile = useIsMobile(1024);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [hasBling, setHasBling] = useState(false);

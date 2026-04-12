@@ -51,7 +51,7 @@ function normalizeStatusLabel(value) {
 }
 
 export function EventSalesPage() {
-  const isMobile = useIsMobile(768);
+  const isMobile = useIsMobile(1024);
   const [events, setEvents] = useState([]);
   const [selectedEventId, setSelectedEventId] = useState('');
   const [salesData, setSalesData] = useState(null);
