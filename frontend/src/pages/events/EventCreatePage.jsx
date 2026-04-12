@@ -240,14 +240,25 @@ export function EventCreatePage() {
             <div className="form-group">
               <label>Produtos da Campanha</label>
               <p className="helper-text">Ao selecionar um produto pai, todas as variações filhas são incluídas automaticamente na campanha.</p>
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-                <input
-                  type="checkbox"
-                  checked={includeChildren}
-                  onChange={(e) => setIncludeChildren(e.target.checked)}
-                />
-                Exibir itens filhos na busca
-              </label>
+              <div className="campaign-toggle-row">
+                <span className="campaign-toggle-title">Exibir itens filhos na busca</span>
+                <label className="campaign-toggle" aria-label="Exibir itens filhos na busca">
+                  <input
+                    type="checkbox"
+                    checked={includeChildren}
+                    onChange={(e) => setIncludeChildren(e.target.checked)}
+                  />
+                  <span className="campaign-toggle-slider" />
+                </label>
+                <span className={`campaign-toggle-state ${includeChildren ? 'on' : 'off'}`}>
+                  {includeChildren ? 'Ativo' : 'Inativo'}
+                </span>
+              </div>
+              <p className="helper-text">
+                {includeChildren
+                  ? 'Ativo: busca retorna produtos pai e filhos.'
+                  : 'Inativo: busca retorna apenas produtos pai.'}
+              </p>
               <div className="search-box">
                 <input
                   type="text"
