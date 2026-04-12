@@ -606,6 +606,25 @@ async def delete_event(event_id: UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Evento não encontrado")
 
     SalesEventRepository.delete(db, event)
+
+
+    @router.patch("/{event_id}/toggle-status")
+    async def toggle_event_status(event_id: UUID, db: Session = Depends(get_db)):
+        """Toggle event active status between active and inactive."""
+        event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
+        if not event:
+            raise HTTPException(status_code=404, detail="Evento não encontrado")
+
+        event.is_active = not event.is_active
+        db.commit()
+        db.refresh(event)
+
+        return {
+            "ok": True,
+            "id": event.id,
+            "name": event.name,
+            "is_active": event.is_active,
+        }
     return None
 
 
@@ -623,10 +642,13 @@ async def list_events(db: Session = Depends(get_db)):
                 start_date=event.start_date,
                 end_date=event.end_date,
                 products_count=len(products),
+                                is_active=event.is_active,
                 created_at=event.created_at,
             )
         )
 
+    # Sort by end_date DESC, then start_date DESC
+    results.sort(key=lambda x: (x.end_date, x.start_date), reverse=True)
     return results
 
 

@@ -145,6 +145,19 @@ export function EventCreatePage() {
 
       setSuccess('Campanha excluída com sucesso');
       await loadEvents();
+
+      async function handleToggleStatus(eventId) {
+        try {
+          setError(null);
+          const resp = await fetch(`${API_BASE}/events/${eventId}/toggle-status`, { method: 'PATCH' });
+          if (!resp.ok) throw new Error('Falha ao alternar status da campanha');
+
+          setSuccess('Status da campanha alterado com sucesso');
+          await loadEvents();
+        } catch (err) {
+          setError(err.message);
+        }
+      }
     } catch (err) {
       setError(err.message);
     }
@@ -336,6 +349,7 @@ export function EventCreatePage() {
                   <th>Período</th>
                   <th>Produtos</th>
                   <th>Criado em</th>
+                                    <th>Status</th>
                   <th>Ações</th>
                 </tr>
               </thead>
@@ -346,9 +360,26 @@ export function EventCreatePage() {
                     <td>{formatDate(event.start_date)} até {formatDate(event.end_date)}</td>
                     <td>{event.products_count}</td>
                     <td>{formatDate(event.created_at)}</td>
+                                        <td>
+                                          <span style={{
+                                            display: 'inline-block',
+                                            padding: '4px 10px',
+                                            borderRadius: 4,
+                                            fontSize: 12,
+                                            fontWeight: 600,
+                                            background: event.is_active ? '#dcfce7' : '#f1f5f9',
+                                            color: event.is_active ? '#166534' : '#64748b',
+                                            border: `1px solid ${event.is_active ? '#86efac' : '#cbd5e1'}`
+                                          }}>
+                                            {event.is_active ? '✓ Ativo' : '○ Inativo'}
+                                          </span>
+                                        </td>
                     <td style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                       <button type="button" className="btn-secondary" onClick={() => handleEdit(event.id)}>Editar</button>
                       <button type="button" onClick={() => handleDelete(event.id)}>Excluir</button>
+                                          <button type="button" className="btn-secondary" onClick={() => handleToggleStatus(event.id)}>
+                                            {event.is_active ? 'Desativar' : 'Ativar'}
+                                          </button>
                     </td>
                   </tr>
                 ))}
