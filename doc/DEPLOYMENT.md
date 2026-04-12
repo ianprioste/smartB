@@ -114,6 +114,7 @@ Configure em Settings > Secrets and variables > Actions:
 - `VPS_BACKEND_SERVICE` (opcional, default `smartbling-backend`)
 - `VPS_FRONTEND_DIR` (opcional, default `/usr/share/nginx/html`)
 - `VPS_REPO_URL` (opcional, default `https://github.com/<owner>/<repo>.git`)
+- `BACKEND_ENV_B64` (opcional, recomendado no primeiro deploy: conteudo do `backend/.env` em base64)
 
 ### Fluxo recomendado
 

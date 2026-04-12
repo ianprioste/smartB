@@ -23,6 +23,7 @@ BUILD_TIMESTAMP="${BUILD_TIMESTAMP:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
 REQUIRE_NGINX="${REQUIRE_NGINX:-true}"
 AUTO_FIX_NGINX_PROXY="${AUTO_FIX_NGINX_PROXY:-true}"
 SYSTEMD_USER="${SYSTEMD_USER:-root}"
+BACKEND_ENV_B64="${BACKEND_ENV_B64:-}"
 
 cd "${REPO_ROOT}"
 
@@ -54,6 +55,26 @@ assert_not_empty() {
   [ -n "$val" ] || fail "Variavel obrigatoria ausente em backend/.env: $key"
 }
 
+bootstrap_backend_env() {
+  if [ -f backend/.env ]; then
+    return 0
+  fi
+
+  if [ -n "${BACKEND_ENV_B64}" ]; then
+    log "Criando backend/.env a partir de BACKEND_ENV_B64"
+    printf '%s' "${BACKEND_ENV_B64}" | base64 -d > backend/.env || fail "Falha ao decodificar BACKEND_ENV_B64"
+    return 0
+  fi
+
+  if [ -f backend/.env.example ]; then
+    log "backend/.env ausente; copiando backend/.env.example"
+    cp backend/.env.example backend/.env
+    return 0
+  fi
+
+  fail "backend/.env ausente e sem backend/.env.example para bootstrap"
+}
+
 upsert_env_key() {
   local key="$1"
   local val="$2"
@@ -83,6 +104,9 @@ validate_backend_env() {
   assert_not_empty BLING_CLIENT_SECRET "$bling_secret"
 
   [ "$secret_key" != "dev-secret-key-change-in-production" ] || fail "SECRET_KEY insegura (default de desenvolvimento)"
+  [ "$secret_key" != "your-secret-key-change-in-production" ] || fail "SECRET_KEY placeholder detectada"
+  [ "$bling_id" != "your_client_id_here" ] || fail "BLING_CLIENT_ID placeholder detectado"
+  [ "$bling_secret" != "your_client_secret_here" ] || fail "BLING_CLIENT_SECRET placeholder detectado"
   if echo "$cors_origins" | grep -qiE 'localhost:5173|localhost:3000'; then
     fail "CORS_ORIGINS contem endpoints de desenvolvimento: $cors_origins"
   fi
@@ -182,6 +206,7 @@ if ! systemctl list-unit-files | grep -q "^${BACKEND_SERVICE}\.service"; then
   fail "Falha ao instalar unit systemd obrigatoria: ${BACKEND_SERVICE}.service"
 fi
 
+bootstrap_backend_env
 validate_backend_env
 
 upsert_env_key GIT_COMMIT "$GIT_COMMIT"
