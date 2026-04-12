@@ -30,8 +30,17 @@ jobs:
             BACKEND_SERVICE="${{ secrets.VPS_BACKEND_SERVICE || 'smartbling-backend' }}"
             DEPLOY_BRANCH="production"
 
-            if [ -z "$APP_DIR" ]; then
-              echo "VPS_APP_DIR nao configurado"
+            # Secrets can accidentally contain leading/trailing spaces.
+            APP_DIR="$(printf '%s' "$APP_DIR" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+            # Fallback: if VPS_APP_DIR is missing/invalid, try to locate the repo dir automatically.
+            if [ -z "$APP_DIR" ] || [ ! -d "$APP_DIR" ]; then
+              APP_DIR="$(find /opt /var/www /srv /home -maxdepth 4 -type d \( -name 'smartB' -o -name 'smartbling' -o -name 'smartBling' \) 2>/dev/null | head -n 1 || true)"
+            fi
+
+            if [ -z "$APP_DIR" ] || [ ! -d "$APP_DIR" ]; then
+              echo "VPS_APP_DIR invalido e pasta do projeto nao encontrada automaticamente"
+              echo "Defina o secret VPS_APP_DIR com caminho absoluto, ex: /opt/smartB"
               exit 1
             fi
 
