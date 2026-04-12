@@ -307,7 +307,6 @@ export function OrdersPage() {
       }
       const resp = await fetch(`${API_BASE}/orders/sync/updates?${params.toString()}`);
       if (!resp.ok) {
-        fetchOrders(search, selectedStatuses, page);
         return;
       }
       const delta = await resp.json();
@@ -345,9 +344,9 @@ export function OrdersPage() {
       }));
       fetchSyncStatus();
     } catch {
-      fetchOrders(search, selectedStatuses, page);
+      // Keep current list stable; retry on next polling cycle.
     }
-  }, [fetchOrders, fetchSyncStatus, page, search, selectedStatuses]);
+  }, [fetchSyncStatus]);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }

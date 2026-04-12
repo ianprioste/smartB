@@ -199,7 +199,6 @@ export function EventSalesPage() {
       }
       const resp = await fetch(`${API_BASE}/events/${selectedEventId}/sync/updates?${params.toString()}`);
       if (!resp.ok) {
-        loadSales(selectedEventId);
         return;
       }
       const delta = await resp.json();
@@ -240,9 +239,9 @@ export function EventSalesPage() {
         return { ...prev, orders };
       });
     } catch {
-      loadSales(selectedEventId);
+      // Keep current list stable; retry on next polling cycle.
     }
-  }, [loadSales, selectedEventId]);
+  }, [selectedEventId]);
 
   useEffect(() => {
     loadEvents();
