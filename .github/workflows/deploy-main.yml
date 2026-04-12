@@ -152,6 +152,15 @@ jobs:
           curl --fail --silent --show-error --dump-header /tmp/build.headers "http://${PUBLIC_HOST}/build-info.json?b=${BUILD_ID}" > /tmp/build-info.json
           curl --fail --silent --show-error --dump-header /tmp/health.headers "http://${PUBLIC_HOST}/api/health?b=${BUILD_ID}" > /tmp/health.json
 
+          echo "--- verify headers: build-info ---"
+          sed -n '1,20p' /tmp/build.headers || true
+          echo "--- verify headers: api/health ---"
+          sed -n '1,20p' /tmp/health.headers || true
+          echo "--- verify body preview: build-info ---"
+          head -c 220 /tmp/build-info.json; echo
+          echo "--- verify body preview: api/health ---"
+          head -c 220 /tmp/health.json; echo
+
           python3 - <<'PY'
           import json
           import os
@@ -223,6 +232,7 @@ jobs:
           hostname -I || true
           curl -s --max-time 8 https://api.ipify.org || true
           echo
+          getent hosts "${PUBLIC_HOST:-}" || true
 
           echo "--- systemd status ---"
           systemctl status "$BACKEND_SERVICE" --no-pager -n 40 || true
