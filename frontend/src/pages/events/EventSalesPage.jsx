@@ -214,6 +214,20 @@ export function EventSalesPage() {
 
       const statusMap = new Map((delta.order_status_updates || []).map((u) => [Number(u.order_id), u.situacao]));
       const productionUpdates = delta.production_updates || [];
+      const productionByExactKey = new Map();
+      const productionBySku = new Map();
+      productionUpdates.forEach((u) => {
+        const sku = (u.sku || '').toUpperCase();
+        if (!sku) return;
+        if (u.bling_order_id == null) {
+          // Keep only latest update per SKU (last write wins).
+          productionBySku.set(sku, u);
+          return;
+        }
+        const exactKey = `${sku}::${Number(u.bling_order_id)}`;
+        // Keep only latest update per SKU+order (last write wins).
+        productionByExactKey.set(exactKey, u);
+      });
 
       setSalesData((prev) => {
         if (!prev) return prev;
@@ -222,11 +236,9 @@ export function EventSalesPage() {
           const nextStatus = statusMap.get(orderId);
           const matchedItems = (order.matched_items || []).map((item) => {
             const sku = (item.sku || '').toUpperCase();
-            const match = productionUpdates.find((u) => {
-              if ((u.sku || '').toUpperCase() !== sku) return false;
-              if (u.bling_order_id == null) return true;
-              return Number(u.bling_order_id) === orderId;
-            });
+            const exactKey = `${sku}::${orderId}`;
+            // Prefer strict SKU+order match, fallback to SKU-only update.
+            const match = productionByExactKey.get(exactKey) || productionBySku.get(sku);
             if (!match) return item;
             return {
               ...item,

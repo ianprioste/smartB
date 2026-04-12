@@ -89,16 +89,19 @@ def _inject_production_data(db: Session, event_id: UUID, filtered_orders: list) 
     """Populate production_status, notes, and production_summary on order items."""
     notes = ItemProductionNoteRepository.get_all_for_event(db, DEFAULT_TENANT_ID, event_id)
     note_map = {}
+    sku_fallback_map = {}
     for n in notes:
         sku_key = n.sku.strip().upper()
         note_map[(sku_key, n.bling_order_id)] = n
+        if n.bling_order_id is None:
+            sku_fallback_map[sku_key] = n
     for order in filtered_orders:
         embalado_count = 0
         total_items = len(order.matched_items)
         order_bling_id = order.id  # bling_order_id stored as order.id
         for item in order.matched_items:
             sku_key = (item.sku or "").strip().upper()
-            note = note_map.get((sku_key, order_bling_id))
+            note = note_map.get((sku_key, order_bling_id)) or sku_fallback_map.get(sku_key)
             if note:
                 item.production_status = note.production_status
                 item.notes = note.notes
