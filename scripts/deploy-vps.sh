@@ -15,54 +15,136 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BACKEND_SERVICE="${BACKEND_SERVICE:-${VPS_BACKEND_SERVICE:-smartbling-backend}}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8000/health}"
 FRONTEND_TARGET_DIR="${FRONTEND_TARGET_DIR:-${VPS_FRONTEND_DIR:-/usr/share/nginx/html}}"
-BACKEND_PID_FILE="${BACKEND_PID_FILE:-/tmp/smartbling-backend.pid}"
-BACKEND_LOG_FILE="${BACKEND_LOG_FILE:-/tmp/smartbling-backend.log}"
-MIGRATIONS_MODE="${MIGRATIONS_MODE:-auto}"
-SQLITE_FALLBACK_URL="${SQLITE_FALLBACK_URL:-sqlite:///./smartbling.db}"
+MIGRATIONS_MODE="${MIGRATIONS_MODE:-required}"
+PUBLIC_HOST="${PUBLIC_HOST:-191.252.204.67}"
+GIT_COMMIT="${GIT_COMMIT:-$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)}"
+BUILD_ID="${BUILD_ID:-$(date '+%Y%m%d%H%M%S')-${GIT_COMMIT}}"
+BUILD_TIMESTAMP="${BUILD_TIMESTAMP:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
+REQUIRE_NGINX="${REQUIRE_NGINX:-true}"
+AUTO_FIX_NGINX_PROXY="${AUTO_FIX_NGINX_PROXY:-true}"
 
 cd "${REPO_ROOT}"
 
-normalize_db_url() {
-  local raw="$1"
-  raw="$(printf '%s' "$raw" | sed 's/\r$//;s/^[[:space:]]*//;s/[[:space:]]*$//')"
-  if [[ ${raw:0:1} == '"' && ${raw: -1} == '"' ]]; then
-    raw="${raw:1:${#raw}-2}"
-  fi
-  if [[ ${raw:0:1} == "'" && ${raw: -1} == "'" ]]; then
-    raw="${raw:1:${#raw}-2}"
-  fi
-  printf '%s' "$raw"
+trim() {
+  printf '%s' "$1" | sed 's/\r$//;s/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
-EFFECTIVE_DB_URL="${DATABASE_URL:-}"
-if [ -z "${EFFECTIVE_DB_URL}" ] && [ -f backend/.env ]; then
-  EFFECTIVE_DB_URL="$(grep -E '^DATABASE_URL=' backend/.env | tail -n 1 | cut -d '=' -f 2- || true)"
-fi
-EFFECTIVE_DB_URL="$(normalize_db_url "${EFFECTIVE_DB_URL}")"
-
-pg_local_unreachable() {
-  local db_url="$1"
-  if [[ "$db_url" =~ ^(postgres|postgresql)(\+[a-zA-Z0-9_]+)?:// ]]; then
-    if [[ "$db_url" == *"@localhost:"* || "$db_url" == *"@127.0.0.1:"* || "$db_url" == *"@localhost/"* || "$db_url" == *"@127.0.0.1/"* ]]; then
-      if ! timeout 2 bash -c '</dev/tcp/127.0.0.1/5432' 2>/dev/null; then
-        return 0
-      fi
-    fi
-  fi
-  return 1
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || fail "Comando obrigatorio nao encontrado: $1"
 }
 
-start_backend_fallback() {
-  local mode="$1"
-  if [ "$mode" = "sqlite" ]; then
-    log "Iniciando backend fallback com SQLite (${SQLITE_FALLBACK_URL})"
-    nohup env DATABASE_URL="${SQLITE_FALLBACK_URL}" bash scripts/run-backend-prod.sh > "${BACKEND_LOG_FILE}" 2>&1 &
+env_value() {
+  local key="$1"
+  local val
+  val="$(grep -E "^${key}=" backend/.env | tail -n 1 | cut -d '=' -f 2- || true)"
+  val="$(trim "$val")"
+  if [[ ${val:0:1} == '"' && ${val: -1} == '"' ]]; then
+    val="${val:1:${#val}-2}"
+  fi
+  if [[ ${val:0:1} == "'" && ${val: -1} == "'" ]]; then
+    val="${val:1:${#val}-2}"
+  fi
+  printf '%s' "$val"
+}
+
+assert_not_empty() {
+  local key="$1"
+  local val="$2"
+  [ -n "$val" ] || fail "Variavel obrigatoria ausente em backend/.env: $key"
+}
+
+upsert_env_key() {
+  local key="$1"
+  local val="$2"
+  local escaped
+  escaped="$(printf '%s' "$val" | sed 's/[&/]/\\&/g')"
+  if grep -qE "^${key}=" backend/.env; then
+    sed -i "s#^${key}=.*#${key}=${escaped}#" backend/.env
   else
-    log "Iniciando backend fallback com configuracao padrao"
-    nohup bash scripts/run-backend-prod.sh > "${BACKEND_LOG_FILE}" 2>&1 &
+    printf '\n%s=%s\n' "$key" "$val" >> backend/.env
   fi
-  echo $! > "${BACKEND_PID_FILE}"
 }
+
+validate_backend_env() {
+  [ -f backend/.env ] || fail "Arquivo backend/.env nao encontrado na VPS"
+
+  local secret_key database_url cors_origins bling_id bling_secret
+  secret_key="$(env_value SECRET_KEY)"
+  database_url="$(env_value DATABASE_URL)"
+  cors_origins="$(env_value CORS_ORIGINS)"
+  bling_id="$(env_value BLING_CLIENT_ID)"
+  bling_secret="$(env_value BLING_CLIENT_SECRET)"
+
+  assert_not_empty SECRET_KEY "$secret_key"
+  assert_not_empty DATABASE_URL "$database_url"
+  assert_not_empty CORS_ORIGINS "$cors_origins"
+  assert_not_empty BLING_CLIENT_ID "$bling_id"
+  assert_not_empty BLING_CLIENT_SECRET "$bling_secret"
+
+  [ "$secret_key" != "dev-secret-key-change-in-production" ] || fail "SECRET_KEY insegura (default de desenvolvimento)"
+  if echo "$cors_origins" | grep -qiE 'localhost:5173|localhost:3000'; then
+    fail "CORS_ORIGINS contem endpoints de desenvolvimento: $cors_origins"
+  fi
+}
+
+fix_nginx_backend_proxy() {
+  [ "$AUTO_FIX_NGINX_PROXY" = "true" ] || return 0
+  local files
+  files="$(find /etc/nginx/sites-enabled /etc/nginx/sites-available /etc/nginx/conf.d -maxdepth 1 -type f 2>/dev/null || true)"
+  [ -n "$files" ] || return 0
+
+  local changed=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if grep -q 'proxy_pass http://backend:8000/' "$f" 2>/dev/null; then
+      sed -i 's#proxy_pass http://backend:8000/#proxy_pass http://127.0.0.1:8000/#g' "$f"
+      changed=1
+      log "Ajustado proxy nginx em $f"
+    fi
+  done <<< "$files"
+
+  if [ "$changed" -eq 1 ]; then
+    nginx -t || fail "nginx invalido apos ajuste automatico de proxy"
+    systemctl reload nginx || fail "Falha ao recarregar nginx apos ajuste automatico"
+  fi
+}
+
+publish_frontend_atomic() {
+  local tmp_target prev_target
+  tmp_target="${FRONTEND_TARGET_DIR}.next"
+  prev_target="${FRONTEND_TARGET_DIR}.prev"
+
+  mkdir -p "$(dirname "$FRONTEND_TARGET_DIR")"
+  rm -rf "$tmp_target"
+  mkdir -p "$tmp_target"
+  cp -a frontend/dist/. "$tmp_target/"
+  [ -f "$tmp_target/index.html" ] || fail "index.html ausente no build frontend"
+
+  rm -rf "$prev_target"
+  if [ -e "$FRONTEND_TARGET_DIR" ] || [ -L "$FRONTEND_TARGET_DIR" ]; then
+    mv "$FRONTEND_TARGET_DIR" "$prev_target"
+  fi
+  mv "$tmp_target" "$FRONTEND_TARGET_DIR"
+  log "Frontend publicado atomicamente em $FRONTEND_TARGET_DIR"
+}
+
+require_cmd git
+require_cmd python3
+require_cmd npm
+require_cmd node
+require_cmd systemctl
+require_cmd curl
+require_cmd nginx
+
+if ! systemctl list-unit-files | grep -q "^${BACKEND_SERVICE}\.service"; then
+  fail "Unit systemd obrigatoria nao encontrada: ${BACKEND_SERVICE}.service"
+fi
+
+validate_backend_env
+
+upsert_env_key GIT_COMMIT "$GIT_COMMIT"
+upsert_env_key BUILD_ID "$BUILD_ID"
+upsert_env_key BUILD_TIMESTAMP "$BUILD_TIMESTAMP"
 
 bash scripts/bootstrap-vps-deps.sh
 
@@ -81,27 +163,12 @@ log "Atualizando pip e instalando dependencias do backend"
 ./.venv/bin/python -m pip install -r backend/requirements.txt
 
 if [ -f backend/alembic.ini ]; then
-  SKIP_MIGRATIONS=0
-  if [ "${MIGRATIONS_MODE}" = "off" ]; then
-    SKIP_MIGRATIONS=1
-    log "Migrations desativadas por MIGRATIONS_MODE=off"
-  elif [ "${MIGRATIONS_MODE}" = "auto" ] && pg_local_unreachable "${EFFECTIVE_DB_URL}"; then
-    SKIP_MIGRATIONS=1
-    log "PostgreSQL local indisponivel em 127.0.0.1:5432; pulando Alembic nesta execucao"
-  fi
-
-  if [ "${SKIP_MIGRATIONS}" -eq 0 ]; then
-    log "Aplicando migrations Alembic"
-    if ! (
-      cd backend
-      ../.venv/bin/python -m alembic -c alembic.ini upgrade head
-    ); then
-      if [ "${MIGRATIONS_MODE}" = "required" ]; then
-        fail "Falha ao aplicar migrations com MIGRATIONS_MODE=required"
-      fi
-      log "Falha ao aplicar migrations; continuando deploy (defina MIGRATIONS_MODE=required para bloquear)"
-    fi
-  fi
+  [ "${MIGRATIONS_MODE}" = "required" ] || fail "MIGRATIONS_MODE deve ser required em producao"
+  log "Aplicando migrations Alembic"
+  (
+    cd backend
+    ../.venv/bin/python -m alembic -c alembic.ini upgrade head
+  )
 fi
 
 command -v npm >/dev/null 2>&1 || fail "npm nao encontrado apos bootstrap"
@@ -116,69 +183,48 @@ log "Instalando dependencias do frontend e gerando build"
   npm run build
 )
 
+cat > frontend/dist/build-info.json <<EOF
+{
+  "git_commit": "${GIT_COMMIT}",
+  "build_id": "${BUILD_ID}",
+  "build_timestamp": "${BUILD_TIMESTAMP}"
+}
+EOF
+
 if [ -n "${FRONTEND_TARGET_DIR}" ]; then
-  log "Publicando frontend em ${FRONTEND_TARGET_DIR}"
-  mkdir -p "${FRONTEND_TARGET_DIR}"
-  rm -rf "${FRONTEND_TARGET_DIR}"/*
-  cp -a frontend/dist/. "${FRONTEND_TARGET_DIR}/"
+  publish_frontend_atomic
 fi
 
-if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files | grep -q "^${BACKEND_SERVICE}\.service"; then
-  log "Reiniciando backend via systemd (${BACKEND_SERVICE})"
-  systemctl daemon-reload || true
-  systemctl restart "${BACKEND_SERVICE}" || {
-    systemctl status "${BACKEND_SERVICE}" --no-pager || true
-    journalctl -u "${BACKEND_SERVICE}" -n 100 --no-pager || true
-    fail "Falha ao reiniciar ${BACKEND_SERVICE}"
-  }
-else
-  log "Service ${BACKEND_SERVICE} nao encontrado; iniciando backend em fallback (nohup)"
-  pkill -f "run-backend-prod.sh|backend/run.py|uvicorn app.main:app" >/dev/null 2>&1 || true
-  if pg_local_unreachable "${EFFECTIVE_DB_URL}"; then
-    log "PostgreSQL local indisponivel para runtime; usando fallback SQLite"
-    start_backend_fallback "sqlite"
-  else
-    start_backend_fallback "default"
-  fi
-  sleep 2
-  if ! kill -0 "$(cat "${BACKEND_PID_FILE}")" >/dev/null 2>&1; then
-    if grep -qiE "connection to server at .*localhost.* port 5432 failed|psycopg2\.OperationalError" "${BACKEND_LOG_FILE}" 2>/dev/null; then
-      log "Backend caiu por PostgreSQL local indisponivel; reiniciando automaticamente com SQLite"
-      start_backend_fallback "sqlite"
-      sleep 2
-    fi
-  fi
-  if ! kill -0 "$(cat "${BACKEND_PID_FILE}")" >/dev/null 2>&1; then
-    tail -n 120 "${BACKEND_LOG_FILE}" || true
-    fail "Processo backend caiu logo apos iniciar"
-  fi
-fi
+log "Reiniciando backend via systemd (${BACKEND_SERVICE})"
+systemctl daemon-reload || true
+systemctl restart "${BACKEND_SERVICE}" || {
+  systemctl status "${BACKEND_SERVICE}" --no-pager || true
+  journalctl -u "${BACKEND_SERVICE}" -n 150 --no-pager || true
+  fail "Falha ao reiniciar ${BACKEND_SERVICE}"
+}
+systemctl is-active --quiet "${BACKEND_SERVICE}" || fail "${BACKEND_SERVICE} nao ficou ativo apos restart"
 
-if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet nginx; then
+fix_nginx_backend_proxy
+
+if [ "${REQUIRE_NGINX}" = "true" ]; then
+  systemctl is-active --quiet nginx || fail "Nginx precisa estar ativo em producao"
+  nginx -t || fail "Configuracao nginx invalida"
   log "Recarregando nginx"
-  systemctl reload nginx || true
+  systemctl reload nginx || fail "Falha ao recarregar nginx"
 fi
 
 log "Validando health-check ${HEALTH_URL}"
 if ! curl --fail --silent --show-error --retry 20 --retry-delay 3 --retry-connrefused --max-time 5 "${HEALTH_URL}"; then
-  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files | grep -q "^${BACKEND_SERVICE}\.service"; then
-    systemctl status "${BACKEND_SERVICE}" --no-pager || true
-    journalctl -u "${BACKEND_SERVICE}" -n 100 --no-pager || true
-  else
-    if [ -f "${BACKEND_PID_FILE}" ] && ! kill -0 "$(cat "${BACKEND_PID_FILE}")" >/dev/null 2>&1; then
-      log "Processo backend nao esta em execucao"
-      log "Tentando ultima recuperacao com SQLite antes de falhar"
-      start_backend_fallback "sqlite"
-      sleep 3
-      if curl --fail --silent --show-error --retry 10 --retry-delay 2 --retry-connrefused --max-time 5 "${HEALTH_URL}"; then
-        log "Recuperacao com SQLite concluida"
-        log "Deploy concluido com sucesso"
-        exit 0
-      fi
-    fi
-    tail -n 100 "${BACKEND_LOG_FILE}" || true
-  fi
+  systemctl status "${BACKEND_SERVICE}" --no-pager || true
+  journalctl -u "${BACKEND_SERVICE}" -n 150 --no-pager || true
   fail "Health-check falhou"
 fi
+
+health_payload="$(curl --fail --silent --show-error "${HEALTH_URL}")"
+printf '%s' "$health_payload" | grep -q "\"git_commit\"" || fail "Health sem metadado git_commit"
+printf '%s' "$health_payload" | grep -q "${GIT_COMMIT}" || fail "Health nao corresponde ao commit esperado ${GIT_COMMIT}"
+
+log "Validando artefato publico de build"
+curl --fail --silent --show-error "http://${PUBLIC_HOST}/build-info.json?b=${BUILD_ID}" | grep -q "${GIT_COMMIT}" || fail "build-info publico nao corresponde ao commit esperado"
 
 log "Deploy concluido com sucesso"

@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     PROJECT_NAME: str = "smartBling v2"
     VERSION: str = "0.1.0"
+    GIT_COMMIT: str = os.getenv("GIT_COMMIT", "unknown")
+    BUILD_ID: str = os.getenv("BUILD_ID", "unknown")
+    BUILD_TIMESTAMP: str = os.getenv("BUILD_TIMESTAMP", "unknown")
     
     # Database
     DATABASE_URL: str = os.getenv(

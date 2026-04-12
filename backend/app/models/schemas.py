@@ -90,6 +90,9 @@ class HealthResponse(BaseModel):
     """Health check response."""
     status: str = "healthy"
     version: str
+    git_commit: str
+    build_id: str
+    build_timestamp: str
 
 
 # ============ Sprint 2: Governance Schemas ============

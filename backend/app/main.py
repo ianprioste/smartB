@@ -153,6 +153,9 @@ def create_app() -> FastAPI:
         return HealthResponse(
             status="healthy",
             version=settings.VERSION,
+            git_commit=settings.GIT_COMMIT,
+            build_id=settings.BUILD_ID,
+            build_timestamp=settings.BUILD_TIMESTAMP,
         )
     
     return app

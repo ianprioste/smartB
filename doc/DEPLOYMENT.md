@@ -26,8 +26,9 @@ Este projeto foi padronizado para deploy sem Docker.
 - Backend em producao: processo sem `reload`, iniciado por `scripts/run-backend-prod.sh`
 - Bootstrap de dependencias do sistema: `scripts/bootstrap-vps-deps.sh`
 - Deploy remoto idempotente: `scripts/deploy-vps.sh`
-- Gerenciamento preferencial do backend: `systemd`
+- Gerenciamento obrigatorio do backend: `systemd`
 - Health-check esperado: `http://127.0.0.1:8000/health`
+- Verificacao de rollout: commit esperado deve aparecer em `/api/health` e `/build-info.json`
 
 ## Deploy Sem Docker (VPS)
 
@@ -83,10 +84,13 @@ bash scripts/run-backend-prod.sh
 - Service inexistente: configure `systemd` com `deploy/systemd/smartbling-backend.service`
 - Health-check falhando: verifique logs do backend (`journalctl -u smartbling-backend` ou `/tmp/smartbling-backend.log`)
 - Redis indisponivel: backend pode subir sem Redis em desenvolvimento local
-- PostgreSQL local indisponivel: o deploy pula Alembic em modo `auto`; para exigir falha em migrations, use `MIGRATIONS_MODE=required`
-- Runtime sem PostgreSQL local: no fallback sem systemd, o deploy inicia com `DATABASE_URL=sqlite:///./smartbling.db` automaticamente
-- `scripts/run-backend-prod.sh` tambem aplica fallback para SQLite quando detectar PostgreSQL local inacessivel
-- URLs `postgres://` e `postgresql+<driver>://` tambem entram na deteccao de fallback
+- PostgreSQL local indisponivel: habilite banco corretamente na VPS antes do deploy (pipeline falha por contrato)
+
+## Politica de Falha
+
+- O deploy deve falhar se faltar unit systemd do backend.
+- O deploy deve falhar se variaveis criticas estiverem ausentes/inseguras em `backend/.env`.
+- O deploy deve falhar se a validacao externa nao confirmar o commit novo no IP publico.
 
 ## Deploy Automatico via Branch production
 

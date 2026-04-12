@@ -14,6 +14,9 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      PUBLIC_HOST: 191.252.204.67
+      BUILD_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       - name: Prepare SSH key
@@ -90,10 +93,13 @@ jobs:
           VPS_FRONTEND_DIR: ${{ secrets.VPS_FRONTEND_DIR || '/usr/share/nginx/html' }}
           VPS_REPO_URL: ${{ secrets.VPS_REPO_URL }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+          BUILD_ID: ${{ env.BUILD_ID }}
+          PUBLIC_HOST: ${{ env.PUBLIC_HOST }}
         run: |
           set -Eeuo pipefail
           ssh -i ~/.ssh/deploy_key -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-            "VPS_APP_DIR='$VPS_APP_DIR' VPS_BACKEND_SERVICE='$VPS_BACKEND_SERVICE' VPS_FRONTEND_DIR='$VPS_FRONTEND_DIR' VPS_REPO_URL='$VPS_REPO_URL' GITHUB_REPOSITORY='$GITHUB_REPOSITORY' bash -se" <<'REMOTE_SCRIPT'
+            "VPS_APP_DIR='$VPS_APP_DIR' VPS_BACKEND_SERVICE='$VPS_BACKEND_SERVICE' VPS_FRONTEND_DIR='$VPS_FRONTEND_DIR' VPS_REPO_URL='$VPS_REPO_URL' GITHUB_REPOSITORY='$GITHUB_REPOSITORY' GIT_COMMIT='$GITHUB_SHA' BUILD_ID='$BUILD_ID' BUILD_TIMESTAMP='$(date -u '+%Y-%m-%dT%H:%M:%SZ')' PUBLIC_HOST='$PUBLIC_HOST' bash -se" <<'REMOTE_SCRIPT'
           set -Eeuo pipefail
           APP_DIR="${VPS_APP_DIR:-/opt/smartB}"
           BACKEND_SERVICE="${VPS_BACKEND_SERVICE:-smartbling-backend}"
@@ -120,6 +126,42 @@ jobs:
           git fetch origin "$DEPLOY_BRANCH"
           git checkout "$DEPLOY_BRANCH"
           git reset --hard "origin/$DEPLOY_BRANCH"
-          APP_DIR="$APP_DIR" BACKEND_SERVICE="$BACKEND_SERVICE" FRONTEND_TARGET_DIR="$FRONTEND_TARGET_DIR" \
+          APP_DIR="$APP_DIR" BACKEND_SERVICE="$BACKEND_SERVICE" FRONTEND_TARGET_DIR="$FRONTEND_TARGET_DIR" GIT_COMMIT="$GIT_COMMIT" BUILD_ID="$BUILD_ID" BUILD_TIMESTAMP="$BUILD_TIMESTAMP" PUBLIC_HOST="$PUBLIC_HOST" \
             bash scripts/deploy-vps.sh
           REMOTE_SCRIPT
+
+      - name: Verify Public Rollout
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ github.sha }}
+          PUBLIC_HOST: ${{ env.PUBLIC_HOST }}
+          BUILD_ID: ${{ env.BUILD_ID }}
+        run: |
+          set -Eeuo pipefail
+
+          curl --fail --silent --show-error "http://${PUBLIC_HOST}/build-info.json?b=${BUILD_ID}" > /tmp/build-info.json
+          curl --fail --silent --show-error "http://${PUBLIC_HOST}/api/health?b=${BUILD_ID}" > /tmp/health.json
+
+          python3 - <<'PY'
+import json
+import os
+
+expected = os.environ["EXPECTED_COMMIT"]
+expected_short = expected[:12]
+
+with open('/tmp/build-info.json', 'r', encoding='utf-8') as f:
+    build = json.load(f)
+with open('/tmp/health.json', 'r', encoding='utf-8') as f:
+    health = json.load(f)
+
+build_commit = str(build.get('git_commit', ''))
+health_commit = str(health.get('git_commit', ''))
+
+if expected_short not in build_commit and expected not in build_commit:
+    raise SystemExit(f"Build publico desatualizado. Esperado {expected_short} ou {expected}, recebido {build_commit}")
+
+if expected_short not in health_commit and expected not in health_commit:
+    raise SystemExit(f"Backend publico desatualizado. Esperado {expected_short} ou {expected}, recebido {health_commit}")
+
+print('Public rollout verified')
+PY
