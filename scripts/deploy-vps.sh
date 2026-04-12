@@ -42,7 +42,7 @@ EFFECTIVE_DB_URL="$(normalize_db_url "${EFFECTIVE_DB_URL}")"
 
 pg_local_unreachable() {
   local db_url="$1"
-  if [[ "$db_url" =~ ^postgresql:// ]]; then
+  if [[ "$db_url" =~ ^(postgres|postgresql)(\+[a-zA-Z0-9_]+)?:// ]]; then
     if [[ "$db_url" == *"@localhost:"* || "$db_url" == *"@127.0.0.1:"* || "$db_url" == *"@localhost/"* || "$db_url" == *"@127.0.0.1/"* ]]; then
       if ! timeout 2 bash -c '</dev/tcp/127.0.0.1/5432' 2>/dev/null; then
         return 0
@@ -129,7 +129,15 @@ else
     nohup bash scripts/run-backend-prod.sh > "${BACKEND_LOG_FILE}" 2>&1 &
   fi
   echo $! > "${BACKEND_PID_FILE}"
-  sleep 1
+  sleep 2
+  if ! kill -0 "$(cat "${BACKEND_PID_FILE}")" >/dev/null 2>&1; then
+    if grep -qiE "connection to server at .*localhost.* port 5432 failed|psycopg2\.OperationalError" "${BACKEND_LOG_FILE}" 2>/dev/null; then
+      log "Backend caiu por PostgreSQL local indisponivel; reiniciando automaticamente com SQLite"
+      nohup env DATABASE_URL="${SQLITE_FALLBACK_URL}" bash scripts/run-backend-prod.sh > "${BACKEND_LOG_FILE}" 2>&1 &
+      echo $! > "${BACKEND_PID_FILE}"
+      sleep 2
+    fi
+  fi
   if ! kill -0 "$(cat "${BACKEND_PID_FILE}")" >/dev/null 2>&1; then
     tail -n 120 "${BACKEND_LOG_FILE}" || true
     fail "Processo backend caiu logo apos iniciar"

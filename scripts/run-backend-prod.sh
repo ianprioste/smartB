@@ -23,7 +23,7 @@ normalize_db_url() {
 
 is_local_pg_down() {
 	local db_url="$1"
-	if [[ "$db_url" =~ ^postgresql:// ]]; then
+	if [[ "$db_url" =~ ^(postgres|postgresql)(\+[a-zA-Z0-9_]+)?:// ]]; then
 		if [[ "$db_url" == *"@localhost:"* || "$db_url" == *"@127.0.0.1:"* || "$db_url" == *"@localhost/"* || "$db_url" == *"@127.0.0.1/"* ]]; then
 			if ! timeout 2 bash -c '</dev/tcp/127.0.0.1/5432' 2>/dev/null; then
 				return 0

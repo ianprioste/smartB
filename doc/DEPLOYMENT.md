@@ -86,6 +86,7 @@ bash scripts/run-backend-prod.sh
 - PostgreSQL local indisponivel: o deploy pula Alembic em modo `auto`; para exigir falha em migrations, use `MIGRATIONS_MODE=required`
 - Runtime sem PostgreSQL local: no fallback sem systemd, o deploy inicia com `DATABASE_URL=sqlite:///./smartbling.db` automaticamente
 - `scripts/run-backend-prod.sh` tambem aplica fallback para SQLite quando detectar PostgreSQL local inacessivel
+- URLs `postgres://` e `postgresql+<driver>://` tambem entram na deteccao de fallback
 
 ## Deploy Automatico via Branch production
 
