@@ -172,3 +172,67 @@ jobs:
 
           print('Public rollout verified')
           PY
+
+      - name: Collect Deployment Diagnostics
+        if: always()
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+          VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+          VPS_BACKEND_SERVICE: ${{ secrets.VPS_BACKEND_SERVICE || 'smartbling-backend' }}
+          VPS_FRONTEND_DIR: ${{ secrets.VPS_FRONTEND_DIR || '/usr/share/nginx/html' }}
+          PUBLIC_HOST: ${{ env.PUBLIC_HOST }}
+        run: |
+          set +e
+
+          echo "=== PUBLIC ENDPOINTS ==="
+          curl -i --max-time 12 "http://${PUBLIC_HOST}/build-info.json" | sed -n '1,25p'
+          echo
+          curl -i --max-time 12 "http://${PUBLIC_HOST}/api/health" | sed -n '1,30p'
+          echo
+
+          echo "=== VPS DIAGNOSTICS ==="
+          ssh -i ~/.ssh/deploy_key -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+            "VPS_APP_DIR='$VPS_APP_DIR' VPS_BACKEND_SERVICE='$VPS_BACKEND_SERVICE' VPS_FRONTEND_DIR='$VPS_FRONTEND_DIR' bash -se" <<'REMOTE_DIAG'
+          set +e
+          APP_DIR="${VPS_APP_DIR:-/opt/smartB}"
+          BACKEND_SERVICE="${VPS_BACKEND_SERVICE:-smartbling-backend}"
+          FRONTEND_TARGET_DIR="${VPS_FRONTEND_DIR:-/usr/share/nginx/html}"
+
+          echo "APP_DIR=$APP_DIR"
+          echo "FRONTEND_TARGET_DIR=$FRONTEND_TARGET_DIR"
+
+          echo "--- systemd status ---"
+          systemctl status "$BACKEND_SERVICE" --no-pager -n 40 || true
+
+          echo "--- systemd unit ---"
+          systemctl cat "$BACKEND_SERVICE" || true
+
+          echo "--- backend env summary ---"
+          if [ -f "$APP_DIR/backend/.env" ]; then
+            grep -E '^(DATABASE_URL|CORS_ORIGINS|GIT_COMMIT|BUILD_ID|BUILD_TIMESTAMP)=' "$APP_DIR/backend/.env" || true
+          else
+            echo "backend/.env not found"
+          fi
+
+          echo "--- local backend health ---"
+          curl -i --max-time 8 "http://127.0.0.1:8000/health" | sed -n '1,30p' || true
+
+          echo "--- frontend files (target) ---"
+          ls -la "$FRONTEND_TARGET_DIR" | sed -n '1,40p' || true
+
+          echo "--- build-info at target ---"
+          if [ -f "$FRONTEND_TARGET_DIR/build-info.json" ]; then
+            cat "$FRONTEND_TARGET_DIR/build-info.json"
+          else
+            echo "build-info.json not found in target"
+          fi
+
+          echo "--- nginx roots ---"
+          nginx -T 2>/dev/null | sed -n 's/^[[:space:]]*root[[:space:]]\+\([^;][^;]*\);/root: \1/p' | sort -u || true
+
+          echo "--- localhost nginx build-info ---"
+          curl -i --max-time 8 "http://127.0.0.1/build-info.json" | sed -n '1,25p' || true
+          REMOTE_DIAG
