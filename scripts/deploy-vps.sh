@@ -197,8 +197,8 @@ fix_nginx_backend_proxy() {
   local changed=0
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    if grep -q 'proxy_pass http://backend:8000/' "$f" 2>/dev/null; then
-      sed -i 's#proxy_pass http://backend:8000/#proxy_pass http://127.0.0.1:8000/#g' "$f"
+    if grep -qE 'proxy_pass[[:space:]]+http://backend:8000/?' "$f" 2>/dev/null; then
+      sed -i -E 's#proxy_pass[[:space:]]+http://backend:8000/?#proxy_pass http://127.0.0.1:8000/#g' "$f"
       changed=1
       log "Ajustado proxy nginx em $f"
     fi
@@ -235,14 +235,16 @@ publish_frontend_atomic() {
 sync_frontend_to_nginx_roots() {
   local roots root
   roots="$(nginx -T 2>/dev/null | sed -n 's/^[[:space:]]*root[[:space:]]\+\([^;][^;]*\);/\1/p' | sed 's/[[:space:]]*$//' | sort -u || true)"
-  [ -n "$roots" ] || return 0
+
+  # Add common roots defensively to avoid stale serving path drift.
+  roots="$(printf '%s\n%s\n%s\n' "$roots" '/usr/share/nginx/html' '/var/www/html' | sed '/^$/d' | sort -u)"
 
   while IFS= read -r root; do
     [ -n "$root" ] || continue
     case "$root" in
       /*)
         if [ "$root" != "$FRONTEND_TARGET_DIR" ] && [ "$root" != "/" ]; then
-          log "Sincronizando frontend tambem para root detectada do nginx: $root"
+          log "Sincronizando frontend tambem para root nginx: $root"
           publish_frontend_atomic "$root"
         fi
         ;;
