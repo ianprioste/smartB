@@ -13,6 +13,8 @@ fail() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BACKEND_SERVICE="${BACKEND_SERVICE:-${VPS_BACKEND_SERVICE:-smartbling-backend}}"
+# Normalize optional ".service" suffix from secrets/inputs to avoid double suffixes.
+BACKEND_SERVICE="${BACKEND_SERVICE%.service}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8000/health}"
 FRONTEND_TARGET_DIR="${FRONTEND_TARGET_DIR:-${VPS_FRONTEND_DIR:-/usr/share/nginx/html}}"
 MIGRATIONS_MODE="${MIGRATIONS_MODE:-auto}"
@@ -434,6 +436,18 @@ EOF
   systemctl enable "${BACKEND_SERVICE}" >/dev/null 2>&1 || true
 }
 
+backend_unit_exists() {
+  local unit_name unit_path
+  unit_name="${BACKEND_SERVICE}.service"
+  unit_path="/etc/systemd/system/${unit_name}"
+
+  if [ -f "$unit_path" ]; then
+    return 0
+  fi
+
+  systemctl cat "${BACKEND_SERVICE}" >/dev/null 2>&1
+}
+
 require_cmd git
 require_cmd python3
 require_cmd npm
@@ -442,13 +456,13 @@ require_cmd systemctl
 require_cmd curl
 require_cmd nginx
 
-if ! systemctl list-unit-files | grep -q "^${BACKEND_SERVICE}\.service"; then
+if ! backend_unit_exists; then
   log "Unit ${BACKEND_SERVICE}.service nao encontrada; instalando unit de producao"
 fi
 
 install_backend_systemd_unit
 
-if ! systemctl list-unit-files | grep -q "^${BACKEND_SERVICE}\.service"; then
+if ! backend_unit_exists; then
   fail "Falha ao instalar unit systemd obrigatoria: ${BACKEND_SERVICE}.service"
 fi
 
