@@ -16,70 +16,105 @@ jobs:
     timeout-minutes: 20
 
     steps:
+      - name: Prepare SSH key
+        shell: bash
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+        run: |
+          set -Eeuo pipefail
+          mkdir -p ~/.ssh
+
+          if [ -z "${VPS_SSH_KEY:-}" ]; then
+            echo "Secret VPS_SSH_KEY vazio"
+            exit 1
+          fi
+
+          # Supports both real multiline private keys and single-line with escaped \n.
+          if printf '%s' "$VPS_SSH_KEY" | grep -q '\\n'; then
+            printf '%b' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          else
+            printf '%s' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          fi
+
+          # Remove CR in case secret was pasted with Windows line endings.
+          sed -i 's/\r$//' ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          # Fail early with a clear message if key content is invalid.
+          ssh-keygen -y -f ~/.ssh/deploy_key >/dev/null
+          ssh-keyscan -p "$VPS_PORT" "$VPS_HOST" >> ~/.ssh/known_hosts
+
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT || '22' }}
-          script_stop: true
-          script: |
-            set -Eeuo pipefail
-            APP_DIR="${{ secrets.VPS_APP_DIR }}"
-            BACKEND_SERVICE="${{ secrets.VPS_BACKEND_SERVICE || 'smartbling-backend' }}"
-            DEPLOY_BRANCH="production"
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+          VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+          VPS_BACKEND_SERVICE: ${{ secrets.VPS_BACKEND_SERVICE || 'smartbling-backend' }}
+          VPS_REPO_URL: ${{ secrets.VPS_REPO_URL }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/deploy_key -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+            "VPS_APP_DIR='$VPS_APP_DIR' VPS_BACKEND_SERVICE='$VPS_BACKEND_SERVICE' VPS_REPO_URL='$VPS_REPO_URL' GITHUB_REPOSITORY='$GITHUB_REPOSITORY' bash -se" <<'REMOTE_SCRIPT'
+          set -Eeuo pipefail
+          APP_DIR="${VPS_APP_DIR:-}"
+          BACKEND_SERVICE="${VPS_BACKEND_SERVICE:-smartbling-backend}"
+          DEPLOY_BRANCH="production"
 
-            # Secrets can accidentally contain leading/trailing spaces.
-            APP_DIR="$(printf '%s' "$APP_DIR" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          # Secrets can accidentally contain leading/trailing spaces.
+          APP_DIR="$(printf '%s' "$APP_DIR" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
 
-            # Fallback: if VPS_APP_DIR is missing/invalid, try to locate the repo dir automatically.
-            if [ -z "$APP_DIR" ] || [ ! -d "$APP_DIR" ]; then
-              APP_DIR="$(find /opt /var/www /srv /home -maxdepth 4 -type d \( -name 'smartB' -o -name 'smartbling' -o -name 'smartBling' \) 2>/dev/null | head -n 1 || true)"
-            fi
+          # Fallback: if VPS_APP_DIR is missing/invalid, try to locate the repo dir automatically.
+          if [ -z "$APP_DIR" ] || [ ! -d "$APP_DIR" ]; then
+            APP_DIR="$(find /opt /var/www /srv /home -maxdepth 4 -type d \( -name 'smartB' -o -name 'smartbling' -o -name 'smartBling' \) 2>/dev/null | head -n 1 || true)"
+          fi
 
-            if [ -z "$APP_DIR" ] || [ ! -d "$APP_DIR" ]; then
-              echo "VPS_APP_DIR invalido e pasta do projeto nao encontrada automaticamente"
-              echo "Defina o secret VPS_APP_DIR com caminho absoluto, ex: /opt/smartB"
-              exit 1
-            fi
+          if [ -z "$APP_DIR" ] || [ ! -d "$APP_DIR" ]; then
+            echo "VPS_APP_DIR invalido e pasta do projeto nao encontrada automaticamente"
+            echo "Defina o secret VPS_APP_DIR com caminho absoluto, ex: /opt/smartB"
+            exit 1
+          fi
 
-            REPO_URL="${{ secrets.VPS_REPO_URL }}"
-            if [ -z "$REPO_URL" ]; then
-              REPO_URL="git@github.com:${{ github.repository }}.git"
-            fi
+          REPO_URL="${VPS_REPO_URL:-}"
+          if [ -z "$REPO_URL" ]; then
+            REPO_URL="git@github.com:${GITHUB_REPOSITORY}.git"
+          fi
 
-            if [ ! -d "$APP_DIR/.git" ]; then
-              echo "Diretorio nao encontrado. Clonando repositorio..."
-              mkdir -p "$APP_DIR"
-              git clone --branch "$DEPLOY_BRANCH" "$REPO_URL" "$APP_DIR"
-            fi
+          if [ ! -d "$APP_DIR/.git" ]; then
+            echo "Diretorio nao encontrado. Clonando repositorio..."
+            mkdir -p "$APP_DIR"
+            git clone --branch "$DEPLOY_BRANCH" "$REPO_URL" "$APP_DIR"
+          fi
 
-            cd "$APP_DIR"
+          cd "$APP_DIR"
 
-            # If server has local manual edits, stash them to allow clean pull/deploy.
-            if [ -n "$(git status --porcelain)" ]; then
-              git stash push -u -m "auto-stash before deploy $(date '+%Y-%m-%d %H:%M:%S')"
-            fi
+          if [ -n "$(git status --porcelain)" ]; then
+            git stash push -u -m "auto-stash before deploy $(date '+%Y-%m-%d %H:%M:%S')"
+          fi
 
-            git fetch origin "$DEPLOY_BRANCH"
-            git checkout "$DEPLOY_BRANCH"
-            git reset --hard "origin/$DEPLOY_BRANCH"
+          git fetch origin "$DEPLOY_BRANCH"
+          git checkout "$DEPLOY_BRANCH"
+          git reset --hard "origin/$DEPLOY_BRANCH"
 
-            if [ ! -d .venv ]; then
-              python3 -m venv .venv
-            fi
+          if [ ! -d .venv ]; then
+            python3 -m venv .venv
+          fi
 
-            ./.venv/bin/pip install -r backend/requirements.txt
+          ./.venv/bin/pip install -r backend/requirements.txt
 
-            cd frontend
-            npm ci
-            npm run build
-            cd ..
+          cd frontend
+          npm ci
+          npm run build
+          cd ..
 
-            if command -v systemctl >/dev/null 2>&1; then
-              systemctl restart "$BACKEND_SERVICE" || true
-              systemctl reload nginx || true
-            fi
+          if command -v systemctl >/dev/null 2>&1; then
+            systemctl restart "$BACKEND_SERVICE" || true
+            systemctl reload nginx || true
+          fi
 
-            curl --fail --retry 5 --retry-delay 3 http://127.0.0.1:8000/health
+          curl --fail --retry 5 --retry-delay 3 http://127.0.0.1:8000/health
+          REMOTE_SCRIPT
