@@ -2,8 +2,24 @@
 from typing import Optional, List
 from uuid import UUID
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from app.models.database import SalesEventModel, SalesEventProductModel
+
+
+def _ensure_is_active_column(db: Session) -> None:
+    """Add is_active column if missing (guard for environments where migration 009 hasn't run)."""
+    from sqlalchemy.exc import OperationalError
+    try:
+        db.execute(text("SELECT is_active FROM sales_events LIMIT 1"))
+        db.rollback()
+    except OperationalError:
+        db.rollback()
+        try:
+            db.execute(text("ALTER TABLE sales_events ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1"))
+            db.commit()
+        except Exception:
+            db.rollback()
 
 
 class SalesEventRepository:
@@ -43,6 +59,7 @@ class SalesEventRepository:
 
     @staticmethod
     def get_by_id(db: Session, event_id: UUID, tenant_id: UUID) -> Optional[SalesEventModel]:
+        _ensure_is_active_column(db)
         return (
             db.query(SalesEventModel)
             .filter(
@@ -54,6 +71,7 @@ class SalesEventRepository:
 
     @staticmethod
     def list_by_tenant(db: Session, tenant_id: UUID) -> List[SalesEventModel]:
+        _ensure_is_active_column(db)
         return (
             db.query(SalesEventModel)
             .filter(SalesEventModel.tenant_id == tenant_id)
