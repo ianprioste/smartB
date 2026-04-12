@@ -211,22 +211,43 @@ fix_nginx_backend_proxy() {
 }
 
 publish_frontend_atomic() {
+  local target="$1"
   local tmp_target prev_target
-  tmp_target="${FRONTEND_TARGET_DIR}.next"
-  prev_target="${FRONTEND_TARGET_DIR}.prev"
+  [ -n "$target" ] || fail "Diretorio de publicacao frontend vazio"
+  [ "$target" != "/" ] || fail "Diretorio de publicacao frontend invalido: /"
+  tmp_target="${target}.next"
+  prev_target="${target}.prev"
 
-  mkdir -p "$(dirname "$FRONTEND_TARGET_DIR")"
+  mkdir -p "$(dirname "$target")"
   rm -rf "$tmp_target"
   mkdir -p "$tmp_target"
   cp -a frontend/dist/. "$tmp_target/"
   [ -f "$tmp_target/index.html" ] || fail "index.html ausente no build frontend"
 
   rm -rf "$prev_target"
-  if [ -e "$FRONTEND_TARGET_DIR" ] || [ -L "$FRONTEND_TARGET_DIR" ]; then
-    mv "$FRONTEND_TARGET_DIR" "$prev_target"
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    mv "$target" "$prev_target"
   fi
-  mv "$tmp_target" "$FRONTEND_TARGET_DIR"
-  log "Frontend publicado atomicamente em $FRONTEND_TARGET_DIR"
+  mv "$tmp_target" "$target"
+  log "Frontend publicado atomicamente em $target"
+}
+
+sync_frontend_to_nginx_roots() {
+  local roots root
+  roots="$(nginx -T 2>/dev/null | sed -n 's/^[[:space:]]*root[[:space:]]\+\([^;][^;]*\);/\1/p' | sed 's/[[:space:]]*$//' | sort -u || true)"
+  [ -n "$roots" ] || return 0
+
+  while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    case "$root" in
+      /*)
+        if [ "$root" != "$FRONTEND_TARGET_DIR" ] && [ "$root" != "/" ]; then
+          log "Sincronizando frontend tambem para root detectada do nginx: $root"
+          publish_frontend_atomic "$root"
+        fi
+        ;;
+    esac
+  done <<< "$roots"
 }
 
 install_backend_systemd_unit() {
@@ -275,8 +296,9 @@ require_cmd nginx
 
 if ! systemctl list-unit-files | grep -q "^${BACKEND_SERVICE}\.service"; then
   log "Unit ${BACKEND_SERVICE}.service nao encontrada; instalando unit de producao"
-  install_backend_systemd_unit
 fi
+
+install_backend_systemd_unit
 
 if ! systemctl list-unit-files | grep -q "^${BACKEND_SERVICE}\.service"; then
   fail "Falha ao instalar unit systemd obrigatoria: ${BACKEND_SERVICE}.service"
@@ -338,7 +360,8 @@ cat > frontend/dist/build-info.json <<EOF
 EOF
 
 if [ -n "${FRONTEND_TARGET_DIR}" ]; then
-  publish_frontend_atomic
+  publish_frontend_atomic "$FRONTEND_TARGET_DIR"
+  sync_frontend_to_nginx_roots
 fi
 
 log "Reiniciando backend via systemd (${BACKEND_SERVICE})"
