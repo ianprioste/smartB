@@ -13,33 +13,42 @@ Este projeto foi padronizado para deploy sem Docker.
 
 - Linux (Ubuntu 22.04+ recomendado)
 - Python 3.11+
-- Node.js 18+
-- Nginx
+- Python `venv`/`ensurepip` disponivel (`python3-venv`)
+- Node.js 20+
+- Nginx (opcional, recomendado para servir o frontend buildado)
 - Git
+- Usuario SSH com permissao para atualizar o checkout em `/opt/smartB`
+
+## Contrato de Producao
+
+- Branch de deploy: `production`
+- Pasta do projeto na VPS: `/opt/smartB`
+- Backend em producao: processo sem `reload`, iniciado por `scripts/run-backend-prod.sh`
+- Bootstrap de dependencias do sistema: `scripts/bootstrap-vps-deps.sh`
+- Deploy remoto idempotente: `scripts/deploy-vps.sh`
+- Gerenciamento preferencial do backend: `systemd`
+- Health-check esperado: `http://127.0.0.1:8000/health`
 
 ## Deploy Sem Docker (VPS)
 
-1. Atualizar codigo:
+1. Garantir checkout do projeto:
 
 ```bash
-git pull origin main
+git clone git@github.com:ianprioste/smartB.git /opt/smartB
 ```
 
-2. Preparar backend:
+2. Bootstrap de dependencias do sistema:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r backend/requirements.txt
+cd /opt/smartB
+bash scripts/bootstrap-vps-deps.sh
 ```
 
-3. Preparar frontend:
+3. Deploy da branch `production`:
 
 ```bash
-cd frontend
-npm install
-npm run build
-cd ..
+cd /opt/smartB
+APP_DIR=/opt/smartB BACKEND_SERVICE=smartbling-backend bash scripts/deploy-vps.sh
 ```
 
 4. Configurar ambiente:
@@ -51,13 +60,14 @@ cd ..
 5. Rodar backend:
 
 ```bash
-./.venv/bin/python backend/run.py
+bash scripts/run-backend-prod.sh
 ```
 
 ## Executar como servico (recomendado)
 
 - Use systemd para manter o backend no ar
 - Use Nginx como reverse proxy para o backend e para servir o frontend
+- Template de unit file: `deploy/systemd/smartbling-backend.service`
 
 ## Health Check
 
@@ -66,8 +76,12 @@ cd ..
 
 ## Troubleshooting
 
-- Porta ocupada: finalize processo e reinicie o servico
-- Modulo nao encontrado: confirme venv ativa e dependencias instaladas
+- Chave SSH invalida: confirme `VPS_SSH_KEY` com a chave privada completa ou base64 valida
+- `python3 -m venv` falha: confirme disponibilidade de `python3-venv`
+- `.venv` quebrada: o deploy recria automaticamente quando faltar `python` ou `pip`
+- Node.js antigo: o bootstrap instala/atualiza para Node.js 20+
+- Service inexistente: configure `systemd` com `deploy/systemd/smartbling-backend.service`
+- Health-check falhando: verifique logs do backend (`journalctl -u smartbling-backend` ou `/tmp/smartbling-backend.log`)
 - Redis indisponivel: backend pode subir sem Redis em desenvolvimento local
 
 ## Deploy Automatico via Branch production
@@ -78,7 +92,7 @@ Workflow:
 
 - Arquivo: `.github/workflows/deploy-main.yml`
 - Trigger: push em `production`
-- Acao: SSH na VPS, atualiza codigo, instala dependencias, builda frontend e reinicia servicos
+- Acao: SSH na VPS, sincroniza o checkout em `/opt/smartB`, executa `scripts/deploy-vps.sh`, builda frontend e valida o health-check
 
 ### Secrets necessarios no GitHub
 
@@ -88,8 +102,10 @@ Configure em Settings > Secrets and variables > Actions:
 - `VPS_USER` (usuario SSH)
 - `VPS_SSH_KEY` (chave privada)
 - `VPS_PORT` (opcional, default 22)
-- `VPS_APP_DIR` (caminho do projeto na VPS, exemplo `/opt/smartB`)
+- `VPS_APP_DIR` (caminho do projeto na VPS, recomendado `/opt/smartB`)
 - `VPS_BACKEND_SERVICE` (opcional, default `smartbling-backend`)
+- `VPS_FRONTEND_DIR` (opcional, default `/usr/share/nginx/html`)
+- `VPS_REPO_URL` (opcional, default `git@github.com:<owner>/<repo>.git`)
 
 ### Fluxo recomendado
 
@@ -100,5 +116,5 @@ Configure em Settings > Secrets and variables > Actions:
 ./publish.ps1
 ```
 
-3. O script faz merge `dev -> production` e push.
-4. O GitHub Actions inicia deploy automaticamente.
+3. Publicar `dev -> production`.
+4. O GitHub Actions inicia deploy automaticamente porque o gatilho oficial e sempre push em `production`.

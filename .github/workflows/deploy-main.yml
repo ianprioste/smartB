@@ -87,35 +87,22 @@ jobs:
           VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
           VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
           VPS_BACKEND_SERVICE: ${{ secrets.VPS_BACKEND_SERVICE || 'smartbling-backend' }}
+          VPS_FRONTEND_DIR: ${{ secrets.VPS_FRONTEND_DIR || '/usr/share/nginx/html' }}
           VPS_REPO_URL: ${{ secrets.VPS_REPO_URL }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -Eeuo pipefail
           ssh -i ~/.ssh/deploy_key -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-            "VPS_APP_DIR='$VPS_APP_DIR' VPS_BACKEND_SERVICE='$VPS_BACKEND_SERVICE' VPS_REPO_URL='$VPS_REPO_URL' GITHUB_REPOSITORY='$GITHUB_REPOSITORY' bash -se" <<'REMOTE_SCRIPT'
+            "VPS_APP_DIR='$VPS_APP_DIR' VPS_BACKEND_SERVICE='$VPS_BACKEND_SERVICE' VPS_FRONTEND_DIR='$VPS_FRONTEND_DIR' VPS_REPO_URL='$VPS_REPO_URL' GITHUB_REPOSITORY='$GITHUB_REPOSITORY' bash -se" <<'REMOTE_SCRIPT'
           set -Eeuo pipefail
-          APP_DIR="${VPS_APP_DIR:-}"
+          APP_DIR="${VPS_APP_DIR:-/opt/smartB}"
           BACKEND_SERVICE="${VPS_BACKEND_SERVICE:-smartbling-backend}"
+          FRONTEND_TARGET_DIR="${VPS_FRONTEND_DIR:-/usr/share/nginx/html}"
           DEPLOY_BRANCH="production"
+          REPO_URL="${VPS_REPO_URL:-git@github.com:${GITHUB_REPOSITORY}.git}"
 
           # Secrets can accidentally contain leading/trailing spaces.
           APP_DIR="$(printf '%s' "$APP_DIR" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-
-          # Fallback: if VPS_APP_DIR is missing/invalid, try to locate the repo dir automatically.
-          if [ -z "$APP_DIR" ] || [ ! -d "$APP_DIR" ]; then
-            APP_DIR="$(find /opt /var/www /srv /home -maxdepth 4 -type d \( -name 'smartB' -o -name 'smartbling' -o -name 'smartBling' \) 2>/dev/null | head -n 1 || true)"
-          fi
-
-          if [ -z "$APP_DIR" ] || [ ! -d "$APP_DIR" ]; then
-            echo "VPS_APP_DIR invalido e pasta do projeto nao encontrada automaticamente"
-            echo "Defina o secret VPS_APP_DIR com caminho absoluto, ex: /opt/smartB"
-            exit 1
-          fi
-
-          REPO_URL="${VPS_REPO_URL:-}"
-          if [ -z "$REPO_URL" ]; then
-            REPO_URL="git@github.com:${GITHUB_REPOSITORY}.git"
-          fi
 
           if [ ! -d "$APP_DIR/.git" ]; then
             echo "Diretorio nao encontrado. Clonando repositorio..."
@@ -132,52 +119,6 @@ jobs:
           git fetch origin "$DEPLOY_BRANCH"
           git checkout "$DEPLOY_BRANCH"
           git reset --hard "origin/$DEPLOY_BRANCH"
-
-          # Single place to provision system-level dependencies.
-          bash scripts/bootstrap-vps-deps.sh
-
-          if [ -d .venv ] && { [ ! -x ./.venv/bin/python ] || [ ! -x ./.venv/bin/pip ]; }; then
-            echo ".venv existente esta incompleta; recriando ambiente virtual..."
-            rm -rf .venv
-          fi
-
-          if [ ! -d .venv ]; then
-            if ! python3 -m venv .venv; then
-              echo "python3 -m venv falhou mesmo apos bootstrap de dependencias."
-              exit 1
-            fi
-          fi
-
-          ./.venv/bin/python -m pip install --upgrade pip
-          ./.venv/bin/python -m pip install -r backend/requirements.txt
-
-          if ! command -v npm >/dev/null 2>&1; then
-            echo "npm nao encontrado mesmo apos bootstrap de dependencias."
-            exit 1
-          fi
-
-          NODE_MAJOR="$(node -v | sed -E 's/^v([0-9]+).*/\1/' || echo 0)"
-          if [ "${NODE_MAJOR:-0}" -lt 20 ]; then
-            echo "Node.js ${NODE_MAJOR} detectado; Vite exige Node 20+."
-            exit 1
-          fi
-
-          cd frontend
-          npm ci
-          npm run build
-          cd ..
-
-          if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files | grep -q "^${BACKEND_SERVICE}\.service"; then
-            systemctl restart "$BACKEND_SERVICE"
-          else
-            echo "Service ${BACKEND_SERVICE} nao encontrado; iniciando backend em fallback (nohup)."
-            pkill -f "backend/run.py|app.main:app|uvicorn" >/dev/null 2>&1 || true
-            nohup ./.venv/bin/python backend/run.py > /tmp/smartbling-backend.log 2>&1 &
-          fi
-
-          if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet nginx; then
-            systemctl reload nginx
-          fi
-
-          curl --fail --retry 20 --retry-delay 3 http://127.0.0.1:8000/health
+          APP_DIR="$APP_DIR" BACKEND_SERVICE="$BACKEND_SERVICE" FRONTEND_TARGET_DIR="$FRONTEND_TARGET_DIR" \
+            bash scripts/deploy-vps.sh
           REMOTE_SCRIPT

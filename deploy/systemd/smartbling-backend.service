@@ -1,0 +1,17 @@
+[Unit]
+Description=smartBling FastAPI backend
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/smartB
+Environment=BACKEND_HOST=0.0.0.0
+Environment=BACKEND_PORT=8000
+Environment=BACKEND_LOG_LEVEL=info
+ExecStart=/usr/bin/env bash /opt/smartB/scripts/run-backend-prod.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
