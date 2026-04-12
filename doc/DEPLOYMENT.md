@@ -115,6 +115,10 @@ Configure em Settings > Secrets and variables > Actions:
 - `VPS_FRONTEND_DIR` (opcional, default `/usr/share/nginx/html`)
 - `VPS_REPO_URL` (opcional, default `https://github.com/<owner>/<repo>.git`)
 - `BACKEND_ENV_B64` (opcional, recomendado no primeiro deploy: conteudo do `backend/.env` em base64)
+- `BACKEND_SECRET_KEY` (ou `SECRET_KEY`) para preencher `backend/.env` automaticamente
+- `BACKEND_DATABASE_URL` (ou `DATABASE_URL`) para preencher `backend/.env` automaticamente
+- `BACKEND_CORS_ORIGINS` (ou `CORS_ORIGINS`) para preencher `backend/.env` automaticamente
+- `BACKEND_BLING_CLIENT_ID`/`BACKEND_BLING_CLIENT_SECRET` (ou variantes sem prefixo) para preencher `backend/.env`
 
 ### Fluxo recomendado
 

@@ -24,6 +24,12 @@ REQUIRE_NGINX="${REQUIRE_NGINX:-true}"
 AUTO_FIX_NGINX_PROXY="${AUTO_FIX_NGINX_PROXY:-true}"
 SYSTEMD_USER="${SYSTEMD_USER:-root}"
 BACKEND_ENV_B64="${BACKEND_ENV_B64:-}"
+DEPLOY_SECRET_KEY="${DEPLOY_SECRET_KEY:-}"
+DEPLOY_DATABASE_URL="${DEPLOY_DATABASE_URL:-}"
+DEPLOY_CORS_ORIGINS="${DEPLOY_CORS_ORIGINS:-}"
+DEPLOY_BLING_CLIENT_ID="${DEPLOY_BLING_CLIENT_ID:-}"
+DEPLOY_BLING_CLIENT_SECRET="${DEPLOY_BLING_CLIENT_SECRET:-}"
+DEPLOY_BLING_REDIRECT_URI="${DEPLOY_BLING_REDIRECT_URI:-}"
 
 cd "${REPO_ROOT}"
 
@@ -82,6 +88,15 @@ ensure_env_defaults() {
     log "CORS_ORIGINS ausente; definindo padrao seguro para ${PUBLIC_HOST}"
     upsert_env_key CORS_ORIGINS "http://${PUBLIC_HOST}"
   fi
+}
+
+hydrate_env_from_inputs() {
+  [ -n "$DEPLOY_SECRET_KEY" ] && upsert_env_key SECRET_KEY "$DEPLOY_SECRET_KEY"
+  [ -n "$DEPLOY_DATABASE_URL" ] && upsert_env_key DATABASE_URL "$DEPLOY_DATABASE_URL"
+  [ -n "$DEPLOY_CORS_ORIGINS" ] && upsert_env_key CORS_ORIGINS "$DEPLOY_CORS_ORIGINS"
+  [ -n "$DEPLOY_BLING_CLIENT_ID" ] && upsert_env_key BLING_CLIENT_ID "$DEPLOY_BLING_CLIENT_ID"
+  [ -n "$DEPLOY_BLING_CLIENT_SECRET" ] && upsert_env_key BLING_CLIENT_SECRET "$DEPLOY_BLING_CLIENT_SECRET"
+  [ -n "$DEPLOY_BLING_REDIRECT_URI" ] && upsert_env_key BLING_REDIRECT_URI "$DEPLOY_BLING_REDIRECT_URI"
 }
 
 upsert_env_key() {
@@ -216,6 +231,7 @@ if ! systemctl list-unit-files | grep -q "^${BACKEND_SERVICE}\.service"; then
 fi
 
 bootstrap_backend_env
+hydrate_env_from_inputs
 ensure_env_defaults
 validate_backend_env
 
