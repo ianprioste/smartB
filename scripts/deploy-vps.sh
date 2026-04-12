@@ -210,6 +210,62 @@ fix_nginx_backend_proxy() {
   fi
 }
 
+enforce_nginx_public_server() {
+  [ "$REQUIRE_NGINX" = "true" ] || return 0
+
+  local conf_path
+  conf_path="/etc/nginx/conf.d/smartbling-public.conf"
+
+  cat > "$conf_path" <<EOF
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml+rss text/javascript;
+    gzip_min_length 1000;
+
+    root ${FRONTEND_TARGET_DIR};
+    index index.html;
+
+    location = /index.html {
+        add_header Cache-Control "no-store, must-revalidate";
+    }
+
+    location = /build-info.json {
+        add_header Cache-Control "no-store, must-revalidate";
+        try_files /build-info.json =404;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000/;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Prefix /api;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_connect_timeout 10s;
+    }
+
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
+}
+EOF
+
+  if [ -f /etc/nginx/sites-enabled/default ]; then
+    rm -f /etc/nginx/sites-enabled/default
+  fi
+
+  nginx -t || fail "nginx invalido apos instalar smartbling-public.conf"
+  systemctl reload nginx || fail "Falha ao recarregar nginx apos instalar smartbling-public.conf"
+  log "Configuracao nginx publica reforcada em $conf_path"
+}
+
 publish_frontend_atomic() {
   local target="$1"
   local tmp_target prev_target
@@ -373,6 +429,8 @@ if [ -n "${FRONTEND_TARGET_DIR}" ]; then
   publish_frontend_atomic "$FRONTEND_TARGET_DIR"
   sync_frontend_to_nginx_roots
 fi
+
+enforce_nginx_public_server
 
 log "Reiniciando backend via systemd (${BACKEND_SERVICE})"
 systemctl daemon-reload || true
