@@ -133,6 +133,9 @@ jobs:
           git checkout "$DEPLOY_BRANCH"
           git reset --hard "origin/$DEPLOY_BRANCH"
 
+          # Single place to provision system-level dependencies.
+          bash scripts/bootstrap-vps-deps.sh
+
           if [ -d .venv ] && { [ ! -x ./.venv/bin/python ] || [ ! -x ./.venv/bin/pip ]; }; then
             echo ".venv existente esta incompleta; recriando ambiente virtual..."
             rm -rf .venv
@@ -140,17 +143,8 @@ jobs:
 
           if [ ! -d .venv ]; then
             if ! python3 -m venv .venv; then
-              echo "python3 -m venv falhou; tentando instalar pacote venv do sistema..."
-              if command -v apt-get >/dev/null 2>&1; then
-                export DEBIAN_FRONTEND=noninteractive
-                PY_MM="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-                apt-get update
-                apt-get install -y "python${PY_MM}-venv" python3-venv || apt-get install -y python3-venv
-                python3 -m venv .venv
-              else
-                echo "Nao foi possivel criar venv e apt-get nao esta disponivel para instalar dependencias do sistema."
-                exit 1
-              fi
+              echo "python3 -m venv falhou mesmo apos bootstrap de dependencias."
+              exit 1
             fi
           fi
 
@@ -158,15 +152,8 @@ jobs:
           ./.venv/bin/python -m pip install -r backend/requirements.txt
 
           if ! command -v npm >/dev/null 2>&1; then
-            echo "npm nao encontrado; tentando instalar Node.js/NPM no sistema..."
-            if command -v apt-get >/dev/null 2>&1; then
-              export DEBIAN_FRONTEND=noninteractive
-              apt-get update
-              apt-get install -y nodejs npm
-            else
-              echo "npm nao encontrado e apt-get nao esta disponivel para instalar dependencias do sistema."
-              exit 1
-            fi
+            echo "npm nao encontrado mesmo apos bootstrap de dependencias."
+            exit 1
           fi
 
           if ! command -v npm >/dev/null 2>&1; then
