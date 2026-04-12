@@ -474,6 +474,7 @@ async def search_products(
     q: str = Query(..., min_length=1, description="Search query (name or SKU)"),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(10, ge=1, le=100, description="Items per page"),
+    include_children: bool = Query(True, description="When false, hide child variations and return only parent items."),
     search_by: Optional[str] = Query(None, description="Search by 'name' or 'sku'. Auto-detect if not specified."),
     db: Session = Depends(get_db),
 ):
@@ -491,6 +492,7 @@ async def search_products(
         "query": q,
         "page": page,
         "limit": limit,
+        "include_children": include_children,
         "search_by": search_by,
     })
     
@@ -530,6 +532,22 @@ async def search_products(
             _write_cached_catalog(None, False, all_items)
 
         matched = _filter_items_by_partial_query(all_items, q)
+
+        if not include_children:
+            parents_by_id = {item.id: item for item in all_items if not item.pai}
+            parent_only: list[BlingProductSearchItem] = []
+            seen_parent_ids: set[int] = set()
+
+            for item in matched:
+                parent_id = item.pai or item.id
+                parent_item = parents_by_id.get(parent_id)
+                if not parent_item or parent_item.id in seen_parent_ids:
+                    continue
+
+                seen_parent_ids.add(parent_item.id)
+                parent_only.append(parent_item)
+
+            matched = _sort_catalog_items(parent_only)
 
         # Paginate flat list for search endpoint
         start = (page - 1) * limit
