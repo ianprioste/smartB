@@ -149,6 +149,7 @@ hydrate_env_from_inputs() {
   [ -n "$DEPLOY_BLING_CLIENT_ID" ] && upsert_env_key BLING_CLIENT_ID "$DEPLOY_BLING_CLIENT_ID"
   [ -n "$DEPLOY_BLING_CLIENT_SECRET" ] && upsert_env_key BLING_CLIENT_SECRET "$DEPLOY_BLING_CLIENT_SECRET"
   [ -n "$DEPLOY_BLING_REDIRECT_URI" ] && upsert_env_key BLING_REDIRECT_URI "$DEPLOY_BLING_REDIRECT_URI"
+  return 0
 }
 
 upsert_env_key() {
