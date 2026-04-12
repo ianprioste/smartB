@@ -513,7 +513,7 @@ class SalesEventListItemResponse(BaseModel):
     start_date: date
     end_date: date
     products_count: int
-        is_active: bool = True
+    is_active: bool = True
     created_at: datetime
 
 
