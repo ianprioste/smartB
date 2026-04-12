@@ -131,23 +131,51 @@ export function ProductionNotesInput({ initialValue, status, onChangeNotes, debo
   const [value, setValue] = useState(parsed.notes);
   const [impedimentReason, setImpedimentReason] = useState(parsed.impedimentReason);
   const timerRef = useRef(null);
+  const valueRef = useRef(parsed.notes);
+  const impedimentReasonRef = useRef(parsed.impedimentReason);
+  const lastSavedRef = useRef(composeStoredNotes(parsed.notes, parsed.impedimentReason, status));
 
   useEffect(() => {
     const nextParsed = splitStoredNotes(initialValue || '');
     setValue(nextParsed.notes);
     setImpedimentReason(nextParsed.impedimentReason);
+    valueRef.current = nextParsed.notes;
+    impedimentReasonRef.current = nextParsed.impedimentReason;
+    lastSavedRef.current = composeStoredNotes(nextParsed.notes, nextParsed.impedimentReason, status);
   }, [initialValue]);
 
   useEffect(() => {
     return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+        const nextPayload = composeStoredNotes(valueRef.current, impedimentReasonRef.current, status);
+        if (nextPayload !== lastSavedRef.current) {
+          onChangeNotes?.(nextPayload);
+          lastSavedRef.current = nextPayload;
+        }
+      }
     };
-  }, []);
+  }, [onChangeNotes, status]);
+
+  const commitNow = (nextValue, nextReason) => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    const nextPayload = composeStoredNotes(nextValue, nextReason, status);
+    if (nextPayload !== lastSavedRef.current) {
+      onChangeNotes?.(nextPayload);
+      lastSavedRef.current = nextPayload;
+    }
+  };
 
   const scheduleSave = (nextValue, nextReason) => {
+    valueRef.current = nextValue;
+    impedimentReasonRef.current = nextReason;
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
-      onChangeNotes?.(composeStoredNotes(nextValue, nextReason, status));
+      commitNow(nextValue, nextReason);
     }, debounceMs);
   };
 
@@ -160,6 +188,7 @@ export function ProductionNotesInput({ initialValue, status, onChangeNotes, debo
           setValue(text);
           scheduleSave(text, impedimentReason);
         }}
+        onBlur={() => commitNow(valueRef.current, impedimentReasonRef.current)}
         onClick={(e) => e.stopPropagation()}
         placeholder="Notas..."
         rows={1}
@@ -190,6 +219,7 @@ export function ProductionNotesInput({ initialValue, status, onChangeNotes, debo
               setImpedimentReason(text);
               scheduleSave(value, text);
             }}
+            onBlur={() => commitNow(valueRef.current, impedimentReasonRef.current)}
             placeholder="Descreva o motivo do impedimento..."
             rows={2}
             style={{
