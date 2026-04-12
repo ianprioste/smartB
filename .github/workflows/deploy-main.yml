@@ -134,6 +134,10 @@ jobs:
           git fetch origin "$DEPLOY_BRANCH"
           git checkout "$DEPLOY_BRANCH"
           git reset --hard "origin/$DEPLOY_BRANCH"
+          # Force LF endings for shell scripts to avoid /bin/bash runtime errors on Linux.
+          if command -v find >/dev/null 2>&1; then
+            find scripts -type f -name '*.sh' -exec sed -i 's/\r$//' {} +
+          fi
           APP_DIR="$APP_DIR" BACKEND_SERVICE="$BACKEND_SERVICE" FRONTEND_TARGET_DIR="$FRONTEND_TARGET_DIR" GIT_COMMIT="$GIT_COMMIT" BUILD_ID="$BUILD_ID" BUILD_TIMESTAMP="$BUILD_TIMESTAMP" PUBLIC_HOST="$PUBLIC_HOST" DEPLOY_SECRET_KEY="$DEPLOY_SECRET_KEY" DEPLOY_DATABASE_URL="$DEPLOY_DATABASE_URL" DEPLOY_CORS_ORIGINS="$DEPLOY_CORS_ORIGINS" DEPLOY_BLING_CLIENT_ID="$DEPLOY_BLING_CLIENT_ID" DEPLOY_BLING_CLIENT_SECRET="$DEPLOY_BLING_CLIENT_SECRET" DEPLOY_BLING_REDIRECT_URI="$DEPLOY_BLING_REDIRECT_URI" DISABLE_LEGACY_DOCKER="true" \
             bash scripts/deploy-vps.sh
           REMOTE_SCRIPT
