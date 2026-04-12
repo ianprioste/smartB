@@ -179,8 +179,10 @@ export function ProductionNotesInput({ initialValue, status, onChangeNotes, debo
     }, debounceMs);
   };
 
+  const isImpedimento = status === 'Impedimento';
+
   return (
-    <div style={{ display: 'grid', gap: 6 }}>
+    <div style={{ display: 'grid', gap: 8 }}>
       <textarea
         value={value}
         onChange={(e) => {
@@ -196,21 +198,32 @@ export function ProductionNotesInput({ initialValue, status, onChangeNotes, debo
           width: '100%',
           fontSize: 12,
           padding: '4px 8px',
-          border: '1px solid #e2e8f0',
+          border: `1px solid ${isImpedimento ? '#fecaca' : '#e2e8f0'}`,
           borderRadius: 6,
           resize: 'vertical',
           fontFamily: 'inherit',
           color: '#334155',
-          background: '#f8fafc',
+          background: isImpedimento ? '#fff1f2' : '#f8fafc',
           minHeight: 28,
           lineHeight: '18px',
+          transition: 'border-color 0.2s, background-color 0.2s',
         }}
       />
 
-      {status === 'Impedimento' && (
-        <div onClick={(e) => e.stopPropagation()}>
-          <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#7f1d1d', marginBottom: 4 }}>
-            {IMPEDIMENT_LABEL}
+      {isImpedimento && (
+        <div 
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            padding: 10,
+            background: '#fee2e2',
+            border: '2px solid #fca5a5',
+            borderRadius: 6,
+            display: 'grid',
+            gap: 8,
+          }}
+        >
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#991b1b', margin: 0 }}>
+            🚫 {IMPEDIMENT_LABEL}
           </label>
           <textarea
             value={impedimentReason}
@@ -221,19 +234,20 @@ export function ProductionNotesInput({ initialValue, status, onChangeNotes, debo
             }}
             onBlur={() => commitNow(valueRef.current, impedimentReasonRef.current)}
             placeholder="Descreva o motivo do impedimento..."
-            rows={2}
+            rows={3}
             style={{
               width: '100%',
               fontSize: 12,
-              padding: '6px 8px',
-              border: '1px solid #fecaca',
-              borderRadius: 6,
+              padding: '8px 10px',
+              border: '1px solid #fca5a5',
+              borderRadius: 4,
               resize: 'vertical',
               fontFamily: 'inherit',
               color: '#7f1d1d',
-              background: '#fff1f2',
-              minHeight: 48,
+              background: '#fef2f2',
+              minHeight: 60,
               lineHeight: '18px',
+              boxSizing: 'border-box',
             }}
           />
         </div>
