@@ -22,10 +22,23 @@ SQLITE_FALLBACK_URL="${SQLITE_FALLBACK_URL:-sqlite:///./smartbling.db}"
 
 cd "${REPO_ROOT}"
 
+normalize_db_url() {
+  local raw="$1"
+  raw="$(printf '%s' "$raw" | sed 's/\r$//;s/^[[:space:]]*//;s/[[:space:]]*$//')"
+  if [[ ${raw:0:1} == '"' && ${raw: -1} == '"' ]]; then
+    raw="${raw:1:${#raw}-2}"
+  fi
+  if [[ ${raw:0:1} == "'" && ${raw: -1} == "'" ]]; then
+    raw="${raw:1:${#raw}-2}"
+  fi
+  printf '%s' "$raw"
+}
+
 EFFECTIVE_DB_URL="${DATABASE_URL:-}"
 if [ -z "${EFFECTIVE_DB_URL}" ] && [ -f backend/.env ]; then
   EFFECTIVE_DB_URL="$(grep -E '^DATABASE_URL=' backend/.env | tail -n 1 | cut -d '=' -f 2- || true)"
 fi
+EFFECTIVE_DB_URL="$(normalize_db_url "${EFFECTIVE_DB_URL}")"
 
 pg_local_unreachable() {
   local db_url="$1"
