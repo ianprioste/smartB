@@ -449,6 +449,29 @@ backend_unit_exists() {
   systemctl cat "${BACKEND_SERVICE}" >/dev/null 2>&1
 }
 
+free_backend_port_conflicts() {
+  local service_pid listener_pid
+
+  service_pid="$(systemctl show -p MainPID --value "${BACKEND_SERVICE}" 2>/dev/null || echo 0)"
+  service_pid="${service_pid:-0}"
+
+  listener_pid=""
+  if command -v ss >/dev/null 2>&1; then
+    listener_pid="$(ss -ltnp 2>/dev/null | sed -n 's/.*:8000[[:space:]].*pid=\([0-9][0-9]*\).*/\1/p' | head -n 1)"
+  elif command -v lsof >/dev/null 2>&1; then
+    listener_pid="$(lsof -nP -iTCP:8000 -sTCP:LISTEN -t 2>/dev/null | head -n 1)"
+  fi
+
+  if [ -n "${listener_pid}" ] && [ "${listener_pid}" != "${service_pid}" ]; then
+    warn "Processo nao gerenciado ocupando porta 8000 (pid=${listener_pid}); encerrando para liberar backend"
+    kill "${listener_pid}" >/dev/null 2>&1 || true
+    sleep 1
+    if kill -0 "${listener_pid}" >/dev/null 2>&1; then
+      kill -9 "${listener_pid}" >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
 require_cmd git
 require_cmd python3
 require_cmd npm
@@ -539,6 +562,7 @@ stop_legacy_docker_ingress
 enforce_nginx_public_server
 
 log "Reiniciando backend via systemd (${BACKEND_SERVICE})"
+free_backend_port_conflicts
 systemctl daemon-reload || true
 systemctl restart "${BACKEND_SERVICE}" || {
   systemctl status "${BACKEND_SERVICE}" --no-pager || true
