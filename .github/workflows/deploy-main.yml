@@ -134,7 +134,19 @@ jobs:
           git reset --hard "origin/$DEPLOY_BRANCH"
 
           if [ ! -d .venv ]; then
-            python3 -m venv .venv
+            if ! python3 -m venv .venv; then
+              echo "python3 -m venv falhou; tentando instalar pacote venv do sistema..."
+              if command -v apt-get >/dev/null 2>&1; then
+                export DEBIAN_FRONTEND=noninteractive
+                PY_MM="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+                apt-get update
+                apt-get install -y "python${PY_MM}-venv" python3-venv || apt-get install -y python3-venv
+                python3 -m venv .venv
+              else
+                echo "Nao foi possivel criar venv e apt-get nao esta disponivel para instalar dependencias do sistema."
+                exit 1
+              fi
+            fi
           fi
 
           ./.venv/bin/pip install -r backend/requirements.txt
