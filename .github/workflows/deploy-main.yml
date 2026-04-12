@@ -149,8 +149,8 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          curl --fail --silent --show-error "http://${PUBLIC_HOST}/build-info.json?b=${BUILD_ID}" > /tmp/build-info.json
-          curl --fail --silent --show-error "http://${PUBLIC_HOST}/api/health?b=${BUILD_ID}" > /tmp/health.json
+          curl --fail --silent --show-error --dump-header /tmp/build.headers "http://${PUBLIC_HOST}/build-info.json?b=${BUILD_ID}" > /tmp/build-info.json
+          curl --fail --silent --show-error --dump-header /tmp/health.headers "http://${PUBLIC_HOST}/api/health?b=${BUILD_ID}" > /tmp/health.json
 
           python3 - <<'PY'
           import json
@@ -160,9 +160,19 @@ jobs:
           expected_short = expected[:12]
 
           with open('/tmp/build-info.json', 'r', encoding='utf-8') as f:
-              build = json.load(f)
+              build_raw = f.read()
           with open('/tmp/health.json', 'r', encoding='utf-8') as f:
-              health = json.load(f)
+              health_raw = f.read()
+
+          try:
+              build = json.loads(build_raw)
+          except json.JSONDecodeError as exc:
+              raise SystemExit(f"build-info.json invalido (esperado JSON). Erro: {exc}; inicio do corpo: {build_raw[:180]!r}")
+
+          try:
+              health = json.loads(health_raw)
+          except json.JSONDecodeError as exc:
+              raise SystemExit(f"/api/health invalido (esperado JSON). Erro: {exc}; inicio do corpo: {health_raw[:180]!r}")
 
           build_commit = str(build.get('git_commit', ''))
           health_commit = str(health.get('git_commit', ''))
@@ -235,6 +245,12 @@ jobs:
 
           echo "--- nginx roots ---"
           nginx -T 2>/dev/null | sed -n 's/^[[:space:]]*root[[:space:]]\+\([^;][^;]*\);/root: \1/p' | sort -u || true
+
+          echo "--- nginx active server blocks (listen/server_name/root/proxy_pass) ---"
+          nginx -T 2>/dev/null | grep -E 'listen|server_name|root|proxy_pass' | sed -n '1,200p' || true
+
+          echo "--- smartbling-public.conf ---"
+          cat /etc/nginx/conf.d/smartbling-public.conf 2>/dev/null || echo "smartbling-public.conf not found"
 
           echo "--- localhost nginx build-info ---"
           curl -i --max-time 8 "http://127.0.0.1/build-info.json" | sed -n '1,25p' || true
