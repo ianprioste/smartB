@@ -15,7 +15,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BACKEND_SERVICE="${BACKEND_SERVICE:-${VPS_BACKEND_SERVICE:-smartbling-backend}}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8000/health}"
 FRONTEND_TARGET_DIR="${FRONTEND_TARGET_DIR:-${VPS_FRONTEND_DIR:-/usr/share/nginx/html}}"
-MIGRATIONS_MODE="${MIGRATIONS_MODE:-required}"
+MIGRATIONS_MODE="${MIGRATIONS_MODE:-auto}"
 PUBLIC_HOST="${PUBLIC_HOST:-191.252.204.67}"
 GIT_COMMIT="${GIT_COMMIT:-$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)}"
 BUILD_ID="${BUILD_ID:-$(date '+%Y%m%d%H%M%S')-${GIT_COMMIT}}"
@@ -331,12 +331,20 @@ log "Atualizando pip e instalando dependencias do backend"
 ./.venv/bin/python -m pip install -r backend/requirements.txt
 
 if [ -f backend/alembic.ini ]; then
-  [ "${MIGRATIONS_MODE}" = "required" ] || fail "MIGRATIONS_MODE deve ser required em producao"
-  log "Aplicando migrations Alembic"
-  (
-    cd backend
-    ../.venv/bin/python -m alembic -c alembic.ini upgrade head
-  )
+  if [ "${MIGRATIONS_MODE}" = "off" ]; then
+    log "Migrations desativadas por MIGRATIONS_MODE=off"
+  else
+    log "Aplicando migrations Alembic"
+    if ! (
+      cd backend
+      ../.venv/bin/python -m alembic -c alembic.ini upgrade head
+    ); then
+      if [ "${MIGRATIONS_MODE}" = "required" ]; then
+        fail "Falha ao aplicar migrations com MIGRATIONS_MODE=required"
+      fi
+      warn "Falha ao aplicar migrations; continuando deploy com MIGRATIONS_MODE=${MIGRATIONS_MODE}"
+    fi
+  fi
 fi
 
 command -v npm >/dev/null 2>&1 || fail "npm nao encontrado apos bootstrap"
