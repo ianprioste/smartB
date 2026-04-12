@@ -137,8 +137,12 @@ export function EventSalesPage() {
   async function loadEvents() {
     try {
       setLoadingEvents(true);
+      setError(null);
       const resp = await fetch(`${API_BASE}/events`);
-      if (!resp.ok) throw new Error('Falha ao carregar campanhas');
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        throw new Error(errData.detail || 'Falha ao carregar campanhas');
+      }
       const data = await resp.json();
       const list = Array.isArray(data) ? data : [];
       const activeList = list.filter((event) => event.is_active !== false);
@@ -165,7 +169,8 @@ export function EventSalesPage() {
       const resp = await fetch(`${API_BASE}/events/${eventId}/sales`);
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
-        throw new Error(errData.detail || 'Falha ao carregar vendas da campanha');
+        const message = errData.detail || 'Falha ao carregar vendas da campanha';
+        throw new Error(message);
       }
       setSalesData(await resp.json());
       deltaCursorRef.current = new Date().toISOString();

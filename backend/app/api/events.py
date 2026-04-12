@@ -635,14 +635,18 @@ async def list_events(db: Session = Depends(get_db)):
 
     for event in events:
         products = SalesEventRepository.list_products(db, event.id)
+        # Defensive casting avoids response-model validation errors when legacy rows are inconsistent.
+        is_active = True if event.is_active is None else bool(event.is_active)
+        if event.is_active is None:
+            logger.warning("event_list_null_is_active event_id=%s defaulting_true", str(event.id))
         results.append(
             SalesEventListItemResponse(
                 id=event.id,
                 name=event.name,
                 start_date=event.start_date,
                 end_date=event.end_date,
-                products_count=len(products),
-                                is_active=event.is_active,
+                products_count=int(len(products)),
+                is_active=is_active,
                 created_at=event.created_at,
             )
         )
