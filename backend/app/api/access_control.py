@@ -131,8 +131,11 @@ async def request_password_reset(payload: PasswordResetRequest, db: Session = De
     _ensure_admin_bootstrap(db)
     email = payload.email.strip().lower()
     user = AccessRepository.get_user_by_email(db, DEFAULT_TENANT_ID, email)
+
+    # Avoid user enumeration: always return a generic success message.
     if user is None or not user.is_active:
-        raise HTTPException(status_code=404, detail="Nenhum usuário ativo encontrado com este e-mail")
+        logger.info("password_reset_requested_unknown_email email=%s", email)
+        return SimpleMessageResponse(message="Se o e-mail existir, enviaremos um código de recuperação")
 
     code = AccessRepository.generate_password_reset_code()
     AccessRepository.create_password_reset_code(
@@ -155,7 +158,7 @@ async def request_password_reset(payload: PasswordResetRequest, db: Session = De
         raise HTTPException(status_code=500, detail="Falha ao enviar o código de recuperação")
     db.commit()
     logger.info("password_reset_requested email=%s", email)
-    return SimpleMessageResponse(message="Código enviado para o e-mail informado")
+    return SimpleMessageResponse(message="Se o e-mail existir, enviaremos um código de recuperação")
 
 
 @router.post("/forgot-password/verify", response_model=SimpleMessageResponse)

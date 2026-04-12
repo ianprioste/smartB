@@ -9,14 +9,27 @@ from app.settings import settings
 
 class EmailService:
     @staticmethod
+    def _sender_email() -> str:
+        smtp_user = (settings.SMTP_USERNAME or "").strip()
+        from_email = (settings.SMTP_FROM_EMAIL or "").strip()
+
+        # Gmail commonly rejects non-verified envelope senders.
+        if "gmail.com" in (settings.SMTP_HOST or "").lower() and smtp_user:
+            return smtp_user
+
+        return from_email or smtp_user
+
+    @staticmethod
     def _build_sender() -> str:
-        if settings.SMTP_FROM_NAME and settings.SMTP_FROM_EMAIL:
-            return f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL}>"
-        return settings.SMTP_FROM_EMAIL or settings.SMTP_USERNAME
+        sender_email = EmailService._sender_email()
+        if settings.SMTP_FROM_NAME and sender_email:
+            return f"{settings.SMTP_FROM_NAME} <{sender_email}>"
+        return sender_email
 
     @staticmethod
     def send_password_reset_code(to_email: str, code: str, expires_minutes: int) -> None:
-        if not settings.SMTP_HOST or not (settings.SMTP_FROM_EMAIL or settings.SMTP_USERNAME):
+        sender_email = EmailService._sender_email()
+        if not settings.SMTP_HOST or not sender_email:
             raise RuntimeError("SMTP não configurado para envio de recuperação de senha")
 
         message = EmailMessage()
@@ -46,7 +59,7 @@ class EmailService:
             with smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as smtp:
                 if settings.SMTP_USERNAME:
                     smtp.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
-                smtp.send_message(message)
+                smtp.send_message(message, from_addr=sender_email, to_addrs=[to_email])
             return
 
         with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as smtp:
@@ -56,4 +69,4 @@ class EmailService:
                 smtp.ehlo()
             if settings.SMTP_USERNAME:
                 smtp.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
-            smtp.send_message(message)
+            smtp.send_message(message, from_addr=sender_email, to_addrs=[to_email])
