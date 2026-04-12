@@ -75,6 +75,15 @@ bootstrap_backend_env() {
   fail "backend/.env ausente e sem backend/.env.example para bootstrap"
 }
 
+ensure_env_defaults() {
+  local cors_origins
+  cors_origins="$(env_value CORS_ORIGINS)"
+  if [ -z "$cors_origins" ]; then
+    log "CORS_ORIGINS ausente; definindo padrao seguro para ${PUBLIC_HOST}"
+    upsert_env_key CORS_ORIGINS "http://${PUBLIC_HOST}"
+  fi
+}
+
 upsert_env_key() {
   local key="$1"
   local val="$2"
@@ -207,6 +216,7 @@ if ! systemctl list-unit-files | grep -q "^${BACKEND_SERVICE}\.service"; then
 fi
 
 bootstrap_backend_env
+ensure_env_defaults
 validate_backend_env
 
 upsert_env_key GIT_COMMIT "$GIT_COMMIT"
