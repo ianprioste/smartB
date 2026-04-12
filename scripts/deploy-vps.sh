@@ -52,6 +52,18 @@ pg_local_unreachable() {
   return 1
 }
 
+start_backend_fallback() {
+  local mode="$1"
+  if [ "$mode" = "sqlite" ]; then
+    log "Iniciando backend fallback com SQLite (${SQLITE_FALLBACK_URL})"
+    nohup env DATABASE_URL="${SQLITE_FALLBACK_URL}" bash scripts/run-backend-prod.sh > "${BACKEND_LOG_FILE}" 2>&1 &
+  else
+    log "Iniciando backend fallback com configuracao padrao"
+    nohup bash scripts/run-backend-prod.sh > "${BACKEND_LOG_FILE}" 2>&1 &
+  fi
+  echo $! > "${BACKEND_PID_FILE}"
+}
+
 bash scripts/bootstrap-vps-deps.sh
 
 if [ -d .venv ] && { [ ! -x ./.venv/bin/python ] || [ ! -x ./.venv/bin/pip ]; }; then
@@ -123,18 +135,16 @@ else
   log "Service ${BACKEND_SERVICE} nao encontrado; iniciando backend em fallback (nohup)"
   pkill -f "run-backend-prod.sh|backend/run.py|uvicorn app.main:app" >/dev/null 2>&1 || true
   if pg_local_unreachable "${EFFECTIVE_DB_URL}"; then
-    log "PostgreSQL local indisponivel para runtime; iniciando backend com fallback DATABASE_URL=${SQLITE_FALLBACK_URL}"
-    nohup env DATABASE_URL="${SQLITE_FALLBACK_URL}" bash scripts/run-backend-prod.sh > "${BACKEND_LOG_FILE}" 2>&1 &
+    log "PostgreSQL local indisponivel para runtime; usando fallback SQLite"
+    start_backend_fallback "sqlite"
   else
-    nohup bash scripts/run-backend-prod.sh > "${BACKEND_LOG_FILE}" 2>&1 &
+    start_backend_fallback "default"
   fi
-  echo $! > "${BACKEND_PID_FILE}"
   sleep 2
   if ! kill -0 "$(cat "${BACKEND_PID_FILE}")" >/dev/null 2>&1; then
     if grep -qiE "connection to server at .*localhost.* port 5432 failed|psycopg2\.OperationalError" "${BACKEND_LOG_FILE}" 2>/dev/null; then
       log "Backend caiu por PostgreSQL local indisponivel; reiniciando automaticamente com SQLite"
-      nohup env DATABASE_URL="${SQLITE_FALLBACK_URL}" bash scripts/run-backend-prod.sh > "${BACKEND_LOG_FILE}" 2>&1 &
-      echo $! > "${BACKEND_PID_FILE}"
+      start_backend_fallback "sqlite"
       sleep 2
     fi
   fi
@@ -157,6 +167,14 @@ if ! curl --fail --silent --show-error --retry 20 --retry-delay 3 --retry-connre
   else
     if [ -f "${BACKEND_PID_FILE}" ] && ! kill -0 "$(cat "${BACKEND_PID_FILE}")" >/dev/null 2>&1; then
       log "Processo backend nao esta em execucao"
+      log "Tentando ultima recuperacao com SQLite antes de falhar"
+      start_backend_fallback "sqlite"
+      sleep 3
+      if curl --fail --silent --show-error --retry 10 --retry-delay 2 --retry-connrefused --max-time 5 "${HEALTH_URL}"; then
+        log "Recuperacao com SQLite concluida"
+        log "Deploy concluido com sucesso"
+        exit 0
+      fi
     fi
     tail -n 100 "${BACKEND_LOG_FILE}" || true
   fi
