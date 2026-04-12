@@ -88,7 +88,7 @@ bash scripts/run-backend-prod.sh
 
 ## Politica de Falha
 
-- O deploy deve falhar se faltar unit systemd do backend.
+- O deploy instala automaticamente a unit systemd do backend (a partir de `deploy/systemd/smartbling-backend.service`) e falha apenas se nao conseguir instalar/ativar.
 - O deploy deve falhar se variaveis criticas estiverem ausentes/inseguras em `backend/.env`.
 - O deploy deve falhar se a validacao externa nao confirmar o commit novo no IP publico.
 

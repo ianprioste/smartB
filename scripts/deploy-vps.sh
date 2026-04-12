@@ -22,6 +22,7 @@ BUILD_ID="${BUILD_ID:-$(date '+%Y%m%d%H%M%S')-${GIT_COMMIT}}"
 BUILD_TIMESTAMP="${BUILD_TIMESTAMP:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
 REQUIRE_NGINX="${REQUIRE_NGINX:-true}"
 AUTO_FIX_NGINX_PROXY="${AUTO_FIX_NGINX_PROXY:-true}"
+SYSTEMD_USER="${SYSTEMD_USER:-root}"
 
 cd "${REPO_ROOT}"
 
@@ -128,6 +129,42 @@ publish_frontend_atomic() {
   log "Frontend publicado atomicamente em $FRONTEND_TARGET_DIR"
 }
 
+install_backend_systemd_unit() {
+  local unit_path template_path
+  unit_path="/etc/systemd/system/${BACKEND_SERVICE}.service"
+  template_path="${REPO_ROOT}/deploy/systemd/smartbling-backend.service"
+
+  if [ -f "$template_path" ]; then
+    cp "$template_path" "$unit_path"
+    sed -i "s#^User=.*#User=${SYSTEMD_USER}#" "$unit_path"
+    sed -i "s#^WorkingDirectory=.*#WorkingDirectory=${REPO_ROOT}#" "$unit_path"
+    sed -i "s#^ExecStart=.*#ExecStart=/usr/bin/env bash ${REPO_ROOT}/scripts/run-backend-prod.sh#" "$unit_path"
+  else
+    cat > "$unit_path" <<EOF
+[Unit]
+Description=smartBling FastAPI backend
+After=network.target
+
+[Service]
+Type=simple
+User=${SYSTEMD_USER}
+WorkingDirectory=${REPO_ROOT}
+Environment=BACKEND_HOST=0.0.0.0
+Environment=BACKEND_PORT=8000
+Environment=BACKEND_LOG_LEVEL=info
+ExecStart=/usr/bin/env bash ${REPO_ROOT}/scripts/run-backend-prod.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  fi
+
+  systemctl daemon-reload
+  systemctl enable "${BACKEND_SERVICE}" >/dev/null 2>&1 || true
+}
+
 require_cmd git
 require_cmd python3
 require_cmd npm
@@ -137,7 +174,12 @@ require_cmd curl
 require_cmd nginx
 
 if ! systemctl list-unit-files | grep -q "^${BACKEND_SERVICE}\.service"; then
-  fail "Unit systemd obrigatoria nao encontrada: ${BACKEND_SERVICE}.service"
+  log "Unit ${BACKEND_SERVICE}.service nao encontrada; instalando unit de producao"
+  install_backend_systemd_unit
+fi
+
+if ! systemctl list-unit-files | grep -q "^${BACKEND_SERVICE}\.service"; then
+  fail "Falha ao instalar unit systemd obrigatoria: ${BACKEND_SERVICE}.service"
 fi
 
 validate_backend_env
