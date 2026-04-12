@@ -2,7 +2,7 @@
 from typing import Any, Dict, List
 from uuid import UUID
 import re
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -50,6 +50,18 @@ _ATENDIDO_IDS = {9}
 _CANCELADO_IDS = {12, 15}
 
 STATUS_ID_NAME_MAP = {**{sid: "Atendido" for sid in _ATENDIDO_IDS}, **{sid: "Cancelado" for sid in _CANCELADO_IDS}}
+
+
+def _parse_since_cursor(since: str | None) -> datetime:
+    if not since:
+        return datetime.utcnow() - timedelta(seconds=30)
+    text = since.strip()
+    if not text:
+        return datetime.utcnow() - timedelta(seconds=30)
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Cursor 'since' inválido")
 
 
 def _has_frete(detail_payload: Dict[str, Any] | None, order_payload: Dict[str, Any] | None = None) -> bool:
@@ -912,6 +924,55 @@ async def get_event_sync_version(event_id: UUID, db: Session = Depends(get_db)):
         "scope": scope_key,
         "current_version": int(row.version) if row else 0,
         "last_updated_at": row.updated_at.isoformat() if row and row.updated_at else None,
+    }
+
+
+@router.get("/{event_id}/sync/updates")
+async def get_event_sync_updates(
+    event_id: UUID,
+    since: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Incremental updates for event sales page (notes/status only)."""
+    event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
+    if not event:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+
+    since_dt = _parse_since_cursor(since)
+    scope_key = scope_event_sales(event_id)
+    version_row = SyncScopeVersionRepository.get_scope_version(db, DEFAULT_TENANT_ID, scope_key)
+    status_rows = OrderSnapshotRepository.list_status_updates_since(db, DEFAULT_TENANT_ID, since_dt)
+    production_rows = ItemProductionNoteRepository.list_updated_since(
+        db,
+        DEFAULT_TENANT_ID,
+        since_dt,
+        event_id=event_id,
+    )
+
+    return {
+        "ok": True,
+        "scope": scope_key,
+        "current_version": int(version_row.version) if version_row else 0,
+        "last_updated_at": version_row.updated_at.isoformat() if version_row and version_row.updated_at else None,
+        "server_time": datetime.utcnow().isoformat(),
+        "order_status_updates": [
+            {
+                "order_id": int(row.bling_order_id),
+                "situacao": row.status_name,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+            for row in status_rows
+        ],
+        "production_updates": [
+            {
+                "sku": row.sku,
+                "bling_order_id": int(row.bling_order_id) if row.bling_order_id is not None else None,
+                "production_status": row.production_status,
+                "notes": row.notes,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+            for row in production_rows
+        ],
     }
 
 

@@ -184,7 +184,13 @@ export function OrdersPage() {
   const pollRef = useRef(null);
   const prevSyncStatusRef = useRef(null);
   const pollAttemptsRef = useRef(0);
+  const deltaCursorRef = useRef(null);
+  const suppressDeltaUntilRef = useRef(0);
   const isSyncRunningFlag = syncRunning || syncStatus?.sync?.last_sync_status === 'running';
+
+  const markLocalMutation = useCallback(() => {
+    suppressDeltaUntilRef.current = Date.now() + 4000;
+  }, []);
 
   const handleProductionSaved = useCallback((sku, newStatus, newNotes) => {
     setOrders((prev) =>
@@ -211,11 +217,12 @@ export function OrdersPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ production_status: nextStatus }),
       });
+      markLocalMutation();
       handleProductionSaved(sku, nextStatus, undefined);
     } catch (err) {
       console.error('Failed to save production status', err);
     }
-  }, [handleProductionSaved]);
+  }, [handleProductionSaved, markLocalMutation]);
 
   const handleProductionNotesChange = useCallback((sku, productionStatus, notes) => {
     fetch(`${API_BASE}/orders/items/${encodeURIComponent(sku)}/production`, {
@@ -223,8 +230,9 @@ export function OrdersPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ production_status: productionStatus || 'Pendente', notes }),
     }).catch(() => {});
+    markLocalMutation();
     handleProductionSaved(sku, undefined, notes);
-  }, [handleProductionSaved]);
+  }, [handleProductionSaved, markLocalMutation]);
 
   const handleOrderStatusChange = useCallback(async (orderId, newStatus) => {
     try {
@@ -234,13 +242,14 @@ export function OrdersPage() {
         body: JSON.stringify({ situacao: newStatus }),
       });
       if (!resp.ok) throw new Error('Falha ao atualizar status');
+      markLocalMutation();
       setOrders((prev) =>
         prev.map((o) => o.id === orderId ? { ...o, situacao: newStatus } : o),
       );
     } catch (err) {
       alert(`Erro: ${err.message}`);
     }
-  }, []);
+  }, [markLocalMutation]);
 
   const fetchOrders = useCallback(async (searchTerm, statuses, pageNum) => {
     try {
@@ -257,6 +266,7 @@ export function OrdersPage() {
       setOrders(data.data ?? []);
       setTotal(data.total ?? 0);
       setTotalPages(data.pages ?? 0);
+      deltaCursorRef.current = new Date().toISOString();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -280,12 +290,63 @@ export function OrdersPage() {
     const resp = await fetch(`${API_BASE}/orders/sync/version`);
     if (!resp.ok) return null;
     const data = await resp.json();
+    if (data.last_updated_at) {
+      deltaCursorRef.current = data.last_updated_at;
+    }
     return data.current_version;
   }, []);
 
-  const handleRemoteVersionChange = useCallback(() => {
-    fetchOrders(search, selectedStatuses, page);
-    fetchSyncStatus();
+  const handleRemoteVersionChange = useCallback(async () => {
+    if (Date.now() < suppressDeltaUntilRef.current) {
+      return;
+    }
+    try {
+      const params = new URLSearchParams();
+      if (deltaCursorRef.current) {
+        params.set('since', deltaCursorRef.current);
+      }
+      const resp = await fetch(`${API_BASE}/orders/sync/updates?${params.toString()}`);
+      if (!resp.ok) {
+        fetchOrders(search, selectedStatuses, page);
+        return;
+      }
+      const delta = await resp.json();
+      if (delta.server_time) {
+        deltaCursorRef.current = delta.server_time;
+      }
+
+      const statusMap = new Map((delta.order_status_updates || []).map((u) => [Number(u.order_id), u.situacao]));
+      const notesUpdates = delta.production_updates || [];
+
+      setOrders((prev) => prev.map((order) => {
+        const orderId = Number(order.id);
+        const nextStatus = statusMap.get(orderId);
+        const itens = (order.itens || []).map((item) => {
+          const sku = (item.sku || '').toUpperCase();
+          const match = notesUpdates.find((u) => {
+            if ((u.sku || '').toUpperCase() !== sku) return false;
+            if (u.bling_order_id == null) return true;
+            return Number(u.bling_order_id) === orderId;
+          });
+          if (!match) return item;
+          return {
+            ...item,
+            production_status: match.production_status,
+            notes: match.notes,
+          };
+        });
+        const embalado = itens.filter((i) => i.production_status === 'Embalado').length;
+        return {
+          ...order,
+          ...(nextStatus ? { situacao: nextStatus } : {}),
+          itens,
+          production_summary: `${embalado}/${itens.length} Embalado`,
+        };
+      }));
+      fetchSyncStatus();
+    } catch {
+      fetchOrders(search, selectedStatuses, page);
+    }
   }, [fetchOrders, fetchSyncStatus, page, search, selectedStatuses]);
 
   const stopPolling = useCallback(() => {

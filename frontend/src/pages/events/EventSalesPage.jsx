@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { Layout } from '../../components/Layout';
 import { ProductionStatusBadge, ProductionNotesInput } from '../../components/ProductionControls';
 import useIsMobile from '../../hooks/useIsMobile';
@@ -62,6 +62,12 @@ export function EventSalesPage() {
   const [selectedStatuses, setSelectedStatuses] = useState(null);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
   const [groupBy, setGroupBy] = useState('pedido');
+  const deltaCursorRef = useRef(null);
+  const suppressDeltaUntilRef = useRef(0);
+
+  const markLocalMutation = useCallback(() => {
+    suppressDeltaUntilRef.current = Date.now() + 4000;
+  }, []);
 
   const handleProductionSaved = useCallback((sku, newStatus, newNotes, orderId) => {
     setSalesData((prev) => {
@@ -92,11 +98,12 @@ export function EventSalesPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ production_status: nextStatus, bling_order_id: orderId || null }),
       });
+      markLocalMutation();
       handleProductionSaved(sku, nextStatus, undefined, orderId);
     } catch (err) {
       console.error('Failed to save production status', err);
     }
-  }, [selectedEventId, handleProductionSaved]);
+  }, [selectedEventId, handleProductionSaved, markLocalMutation]);
 
   const handleProductionNotesChange = useCallback((sku, orderId, productionStatus, notes) => {
     fetch(`${API_BASE}/events/${selectedEventId}/items/${encodeURIComponent(sku)}/production`, {
@@ -104,8 +111,9 @@ export function EventSalesPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ production_status: productionStatus || 'Pendente', notes, bling_order_id: orderId || null }),
     }).catch(() => {});
+    markLocalMutation();
     handleProductionSaved(sku, undefined, notes, orderId);
-  }, [selectedEventId, handleProductionSaved]);
+  }, [selectedEventId, handleProductionSaved, markLocalMutation]);
 
   const handleOrderStatusChange = useCallback(async (orderId, newStatus) => {
     try {
@@ -115,6 +123,7 @@ export function EventSalesPage() {
         body: JSON.stringify({ situacao: newStatus }),
       });
       if (!resp.ok) throw new Error('Falha ao atualizar status');
+      markLocalMutation();
       setSalesData((prev) => {
         if (!prev) return prev;
         const orders = prev.orders.map((o) => o.id === orderId ? { ...o, situacao: newStatus } : o);
@@ -123,7 +132,7 @@ export function EventSalesPage() {
     } catch (err) {
       alert(`Erro: ${err.message}`);
     }
-  }, [selectedEventId]);
+  }, [markLocalMutation, selectedEventId]);
 
   async function loadEvents() {
     try {
@@ -158,6 +167,7 @@ export function EventSalesPage() {
         throw new Error(errData.detail || 'Falha ao carregar vendas da campanha');
       }
       setSalesData(await resp.json());
+      deltaCursorRef.current = new Date().toISOString();
     } catch (err) {
       setError(err.message);
       setSalesData(null);
@@ -171,12 +181,67 @@ export function EventSalesPage() {
     const resp = await fetch(`${API_BASE}/events/${selectedEventId}/sync/version`);
     if (!resp.ok) return null;
     const data = await resp.json();
+    if (data.last_updated_at) {
+      deltaCursorRef.current = data.last_updated_at;
+    }
     return data.current_version;
   }, [selectedEventId]);
 
-  const handleEventVersionChange = useCallback(() => {
+  const handleEventVersionChange = useCallback(async () => {
+    if (Date.now() < suppressDeltaUntilRef.current) {
+      return;
+    }
     if (!selectedEventId) return;
-    loadSales(selectedEventId);
+    try {
+      const params = new URLSearchParams();
+      if (deltaCursorRef.current) {
+        params.set('since', deltaCursorRef.current);
+      }
+      const resp = await fetch(`${API_BASE}/events/${selectedEventId}/sync/updates?${params.toString()}`);
+      if (!resp.ok) {
+        loadSales(selectedEventId);
+        return;
+      }
+      const delta = await resp.json();
+      if (delta.server_time) {
+        deltaCursorRef.current = delta.server_time;
+      }
+
+      const statusMap = new Map((delta.order_status_updates || []).map((u) => [Number(u.order_id), u.situacao]));
+      const productionUpdates = delta.production_updates || [];
+
+      setSalesData((prev) => {
+        if (!prev) return prev;
+        const orders = (prev.orders || []).map((order) => {
+          const orderId = Number(order.id);
+          const nextStatus = statusMap.get(orderId);
+          const matchedItems = (order.matched_items || []).map((item) => {
+            const sku = (item.sku || '').toUpperCase();
+            const match = productionUpdates.find((u) => {
+              if ((u.sku || '').toUpperCase() !== sku) return false;
+              if (u.bling_order_id == null) return true;
+              return Number(u.bling_order_id) === orderId;
+            });
+            if (!match) return item;
+            return {
+              ...item,
+              production_status: match.production_status,
+              notes: match.notes,
+            };
+          });
+          const embalado = matchedItems.filter((i) => i.production_status === 'Embalado').length;
+          return {
+            ...order,
+            ...(nextStatus ? { situacao: nextStatus } : {}),
+            matched_items: matchedItems,
+            production_summary: `${embalado}/${matchedItems.length} Embalado`,
+          };
+        });
+        return { ...prev, orders };
+      });
+    } catch {
+      loadSales(selectedEventId);
+    }
   }, [loadSales, selectedEventId]);
 
   useEffect(() => {

@@ -1,4 +1,5 @@
 """Repository for item production notes (persistent across Bling syncs)."""
+from datetime import datetime
 from typing import Dict, List, Optional
 from uuid import UUID
 from sqlalchemy.orm import Session
@@ -81,3 +82,22 @@ class ItemProductionNoteRepository:
         db.commit()
         db.refresh(row)
         return row
+
+    @staticmethod
+    def list_updated_since(
+        db: Session,
+        tenant_id: UUID,
+        since: datetime,
+        event_id: Optional[UUID] = None,
+    ) -> List[ItemProductionNoteModel]:
+        query = (
+            db.query(ItemProductionNoteModel)
+            .filter(
+                ItemProductionNoteModel.tenant_id == tenant_id,
+                ItemProductionNoteModel.updated_at > since,
+            )
+            .order_by(ItemProductionNoteModel.updated_at.asc())
+        )
+        if event_id is not None:
+            query = query.filter(ItemProductionNoteModel.event_id == event_id)
+        return query.all()

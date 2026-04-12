@@ -57,6 +57,18 @@ def _normalize_status_name(name: str | None) -> str | None:
     return name
 
 
+def _parse_since_cursor(since: str | None) -> datetime:
+    if not since:
+        return now_local() - timedelta(seconds=30)
+    text = since.strip()
+    if not text:
+        return now_local() - timedelta(seconds=30)
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Cursor 'since' inválido")
+
+
 def _run_sync_in_local_background(mode: str) -> None:
     """Run order sync in a daemon thread (Windows-safe fallback when Celery is unavailable)."""
     def _worker():
@@ -703,6 +715,41 @@ async def sync_orders_version(db: Session = Depends(get_db)):
         "scope": SCOPE_ORDERS_GLOBAL,
         "current_version": int(row.version) if row else 0,
         "last_updated_at": row.updated_at.isoformat() if row and row.updated_at else None,
+    }
+
+
+@router.get("/sync/updates")
+async def sync_orders_updates(since: str | None = Query(default=None), db: Session = Depends(get_db)):
+    """Incremental updates for orders page (notes/status only, no full payload reload)."""
+    since_dt = _parse_since_cursor(since)
+    status_rows = OrderSnapshotRepository.list_status_updates_since(db, DEFAULT_TENANT_ID, since_dt)
+    production_rows = ItemProductionNoteRepository.list_updated_since(db, DEFAULT_TENANT_ID, since_dt)
+    version_row = SyncScopeVersionRepository.get_scope_version(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
+
+    return {
+        "ok": True,
+        "scope": SCOPE_ORDERS_GLOBAL,
+        "current_version": int(version_row.version) if version_row else 0,
+        "last_updated_at": version_row.updated_at.isoformat() if version_row and version_row.updated_at else None,
+        "server_time": now_local().isoformat(),
+        "order_status_updates": [
+            {
+                "order_id": int(row.bling_order_id),
+                "situacao": row.status_name,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+            for row in status_rows
+        ],
+        "production_updates": [
+            {
+                "sku": row.sku,
+                "bling_order_id": int(row.bling_order_id) if row.bling_order_id is not None else None,
+                "production_status": row.production_status,
+                "notes": row.notes,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+            for row in production_rows
+        ],
     }
 
 
