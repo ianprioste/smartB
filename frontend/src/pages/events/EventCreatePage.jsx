@@ -145,19 +145,19 @@ export function EventCreatePage() {
 
       setSuccess('Campanha excluída com sucesso');
       await loadEvents();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
 
-      async function handleToggleStatus(eventId) {
-        try {
-          setError(null);
-          const resp = await fetch(`${API_BASE}/events/${eventId}/toggle-status`, { method: 'PATCH' });
-          if (!resp.ok) throw new Error('Falha ao alternar status da campanha');
+  async function handleToggleStatus(eventId) {
+    try {
+      setError(null);
+      const resp = await fetch(`${API_BASE}/events/${eventId}/toggle-status`, { method: 'PATCH' });
+      if (!resp.ok) throw new Error('Falha ao alternar status da campanha');
 
-          setSuccess('Status da campanha alterado com sucesso');
-          await loadEvents();
-        } catch (err) {
-          setError(err.message);
-        }
-      }
+      setSuccess('Status da campanha alterado com sucesso');
+      await loadEvents();
     } catch (err) {
       setError(err.message);
     }
