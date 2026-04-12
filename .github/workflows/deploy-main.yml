@@ -208,7 +208,7 @@ jobs:
 
           echo "=== VPS DIAGNOSTICS ==="
           ssh -i ~/.ssh/deploy_key -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-            "VPS_APP_DIR='$VPS_APP_DIR' VPS_BACKEND_SERVICE='$VPS_BACKEND_SERVICE' VPS_FRONTEND_DIR='$VPS_FRONTEND_DIR' bash -se" <<'REMOTE_DIAG'
+            "VPS_APP_DIR='$VPS_APP_DIR' VPS_BACKEND_SERVICE='$VPS_BACKEND_SERVICE' VPS_FRONTEND_DIR='$VPS_FRONTEND_DIR' PUBLIC_HOST='$PUBLIC_HOST' bash -se" <<'REMOTE_DIAG'
           set +e
           APP_DIR="${VPS_APP_DIR:-/opt/smartB}"
           BACKEND_SERVICE="${VPS_BACKEND_SERVICE:-smartbling-backend}"
@@ -216,6 +216,13 @@ jobs:
 
           echo "APP_DIR=$APP_DIR"
           echo "FRONTEND_TARGET_DIR=$FRONTEND_TARGET_DIR"
+          echo "PUBLIC_HOST=${PUBLIC_HOST:-unset}"
+
+          echo "--- server identity ---"
+          hostname || true
+          hostname -I || true
+          curl -s --max-time 8 https://api.ipify.org || true
+          echo
 
           echo "--- systemd status ---"
           systemctl status "$BACKEND_SERVICE" --no-pager -n 40 || true
@@ -254,4 +261,10 @@ jobs:
 
           echo "--- localhost nginx build-info ---"
           curl -i --max-time 8 "http://127.0.0.1/build-info.json" | sed -n '1,25p' || true
+
+          echo "--- public host from VPS ---"
+          if [ -n "${PUBLIC_HOST:-}" ]; then
+            curl -i --max-time 8 "http://${PUBLIC_HOST}/build-info.json" | sed -n '1,25p' || true
+            curl -i --max-time 8 "http://${PUBLIC_HOST}/api/health" | sed -n '1,25p' || true
+          fi
           REMOTE_DIAG

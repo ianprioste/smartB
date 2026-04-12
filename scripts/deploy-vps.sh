@@ -160,6 +160,47 @@ upsert_env_key() {
   fi
 }
 
+validate_local_public_rollout() {
+  local expected_short
+  expected_short="${GIT_COMMIT:0:12}"
+
+  curl --fail --silent --show-error --max-time 8 "http://127.0.0.1/build-info.json" > /tmp/local-build-info.json || fail "Nginx local nao serviu /build-info.json"
+  curl --fail --silent --show-error --max-time 8 "http://127.0.0.1/api/health" > /tmp/local-health.json || fail "Nginx local nao serviu /api/health"
+
+  python3 - <<'PY'
+import json
+import os
+
+expected = os.environ.get("GIT_COMMIT", "")
+expected_short = expected[:12]
+
+with open('/tmp/local-build-info.json', 'r', encoding='utf-8') as f:
+    build_raw = f.read()
+with open('/tmp/local-health.json', 'r', encoding='utf-8') as f:
+    health_raw = f.read()
+
+try:
+    build = json.loads(build_raw)
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"Local /build-info.json nao e JSON valido: {exc}; inicio={build_raw[:180]!r}")
+
+try:
+    health = json.loads(health_raw)
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"Local /api/health nao e JSON valido: {exc}; inicio={health_raw[:180]!r}")
+
+build_commit = str(build.get('git_commit', ''))
+health_commit = str(health.get('git_commit', ''))
+
+if expected_short not in build_commit and expected not in build_commit:
+    raise SystemExit(f"Local /build-info.json desatualizado. Esperado {expected_short} ou {expected}, recebido {build_commit}")
+if expected_short not in health_commit and expected not in health_commit:
+    raise SystemExit(f"Local /api/health desatualizado. Esperado {expected_short} ou {expected}, recebido {health_commit}")
+
+print("Local public rollout verified")
+PY
+}
+
 validate_backend_env() {
   [ -f backend/.env ] || fail "Arquivo backend/.env nao encontrado na VPS"
 
@@ -456,6 +497,9 @@ if ! curl --fail --silent --show-error --retry 20 --retry-delay 3 --retry-connre
   journalctl -u "${BACKEND_SERVICE}" -n 150 --no-pager || true
   fail "Health-check falhou"
 fi
+
+log "Validando rollout local via nginx (build-info + api/health)"
+validate_local_public_rollout
 
 health_payload="$(curl --fail --silent --show-error "${HEALTH_URL}")"
 if ! printf '%s' "$health_payload" | grep -q "\"git_commit\""; then
