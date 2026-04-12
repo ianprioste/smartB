@@ -19,8 +19,6 @@ APT_PACKAGES=(
   python3
   python3-pip
   python3-venv
-  nodejs
-  npm
 )
 
 if command -v python3 >/dev/null 2>&1; then
@@ -34,7 +32,7 @@ log "Atualizando indice de pacotes"
 apt-get update
 
 log "Instalando dependencias base: ${APT_PACKAGES[*]}"
-apt-get install -y "${APT_PACKAGES[@]}" || apt-get install -y ca-certificates curl git python3 python3-pip python3-venv nodejs npm
+apt-get install -y "${APT_PACKAGES[@]}" || apt-get install -y ca-certificates curl git python3 python3-pip python3-venv
 
 if command -v node >/dev/null 2>&1; then
   NODE_MAJOR="$(node -v | sed -E 's/^v([0-9]+).*/\1/')"
@@ -50,6 +48,16 @@ if [ "${NODE_MAJOR:-0}" -lt 20 ]; then
     apt-get update
   fi
   apt-get install -y nodejs
+fi
+
+if ! command -v npm >/dev/null 2>&1; then
+  log "npm nao encontrado; reinstalando pacote nodejs do NodeSource para garantir o bundle do npm"
+  apt-get install -y --reinstall nodejs
+fi
+
+if ! command -v npm >/dev/null 2>&1; then
+  log "Falha ao disponibilizar npm apos instalacao do Node.js"
+  exit 1
 fi
 
 log "Bootstrap de dependencias concluido"
