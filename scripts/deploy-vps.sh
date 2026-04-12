@@ -398,10 +398,9 @@ if ! curl --fail --silent --show-error --retry 20 --retry-delay 3 --retry-connre
 fi
 
 health_payload="$(curl --fail --silent --show-error "${HEALTH_URL}")"
-printf '%s' "$health_payload" | grep -q "\"git_commit\"" || fail "Health sem metadado git_commit"
-printf '%s' "$health_payload" | grep -q "${GIT_COMMIT}" || fail "Health nao corresponde ao commit esperado ${GIT_COMMIT}"
+if ! printf '%s' "$health_payload" | grep -q "\"git_commit\""; then
+  warn "Health sem metadado git_commit; validacao estrita sera feita no step externo do workflow"
+fi
 
-log "Validando artefato publico de build"
-curl --fail --silent --show-error "http://${PUBLIC_HOST}/build-info.json?b=${BUILD_ID}" | grep -q "${GIT_COMMIT}" || fail "build-info publico nao corresponde ao commit esperado"
-
+log "Deploy remoto concluido; verificacao de commit publico segue no workflow"
 log "Deploy concluido com sucesso"

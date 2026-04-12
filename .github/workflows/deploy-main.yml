@@ -83,6 +83,8 @@ jobs:
           ssh-keyscan -p "$VPS_PORT" "$VPS_HOST" >> ~/.ssh/known_hosts
 
       - name: Deploy via SSH
+        id: deploy_ssh
+        continue-on-error: true
         shell: bash
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -138,6 +140,7 @@ jobs:
           REMOTE_SCRIPT
 
       - name: Verify Public Rollout
+        if: always()
         shell: bash
         env:
           EXPECTED_COMMIT: ${{ github.sha }}
