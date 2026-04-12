@@ -17,6 +17,7 @@ HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8000/health}"
 FRONTEND_TARGET_DIR="${FRONTEND_TARGET_DIR:-${VPS_FRONTEND_DIR:-/usr/share/nginx/html}}"
 BACKEND_PID_FILE="${BACKEND_PID_FILE:-/tmp/smartbling-backend.pid}"
 BACKEND_LOG_FILE="${BACKEND_LOG_FILE:-/tmp/smartbling-backend.log}"
+MIGRATIONS_MODE="${MIGRATIONS_MODE:-auto}"
 
 cd "${REPO_ROOT}"
 
@@ -37,11 +38,36 @@ log "Atualizando pip e instalando dependencias do backend"
 ./.venv/bin/python -m pip install -r backend/requirements.txt
 
 if [ -f backend/alembic.ini ]; then
-  log "Aplicando migrations Alembic"
-  (
-    cd backend
-    ../.venv/bin/python -m alembic -c alembic.ini upgrade head
-  )
+  EFFECTIVE_DB_URL="${DATABASE_URL:-}"
+  if [ -z "${EFFECTIVE_DB_URL}" ] && [ -f backend/.env ]; then
+    EFFECTIVE_DB_URL="$(grep -E '^DATABASE_URL=' backend/.env | tail -n 1 | cut -d '=' -f 2- || true)"
+  fi
+
+  SKIP_MIGRATIONS=0
+  if [ "${MIGRATIONS_MODE}" = "off" ]; then
+    SKIP_MIGRATIONS=1
+    log "Migrations desativadas por MIGRATIONS_MODE=off"
+  elif [ "${MIGRATIONS_MODE}" = "auto" ] && [[ "${EFFECTIVE_DB_URL}" =~ ^postgresql:// ]]; then
+    if [[ "${EFFECTIVE_DB_URL}" == *"@localhost:"* || "${EFFECTIVE_DB_URL}" == *"@127.0.0.1:"* || "${EFFECTIVE_DB_URL}" == *"@localhost/"* || "${EFFECTIVE_DB_URL}" == *"@127.0.0.1/"* ]]; then
+      if ! timeout 2 bash -c '</dev/tcp/127.0.0.1/5432' 2>/dev/null; then
+        SKIP_MIGRATIONS=1
+        log "PostgreSQL local indisponivel em 127.0.0.1:5432; pulando Alembic nesta execucao"
+      fi
+    fi
+  fi
+
+  if [ "${SKIP_MIGRATIONS}" -eq 0 ]; then
+    log "Aplicando migrations Alembic"
+    if ! (
+      cd backend
+      ../.venv/bin/python -m alembic -c alembic.ini upgrade head
+    ); then
+      if [ "${MIGRATIONS_MODE}" = "required" ]; then
+        fail "Falha ao aplicar migrations com MIGRATIONS_MODE=required"
+      fi
+      log "Falha ao aplicar migrations; continuando deploy (defina MIGRATIONS_MODE=required para bloquear)"
+    fi
+  fi
 fi
 
 command -v npm >/dev/null 2>&1 || fail "npm nao encontrado apos bootstrap"

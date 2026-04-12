@@ -83,6 +83,7 @@ bash scripts/run-backend-prod.sh
 - Service inexistente: configure `systemd` com `deploy/systemd/smartbling-backend.service`
 - Health-check falhando: verifique logs do backend (`journalctl -u smartbling-backend` ou `/tmp/smartbling-backend.log`)
 - Redis indisponivel: backend pode subir sem Redis em desenvolvimento local
+- PostgreSQL local indisponivel: o deploy pula Alembic em modo `auto`; para exigir falha em migrations, use `MIGRATIONS_MODE=required`
 
 ## Deploy Automatico via Branch production
 
