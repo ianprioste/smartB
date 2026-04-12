@@ -16,6 +16,11 @@ from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.order_snapshot_repo import OrderSnapshotRepository
 from app.repositories.sales_event_repo import SalesEventRepository
 from app.repositories.item_production_note_repo import ItemProductionNoteRepository
+from app.repositories.sync_scope_version_repo import (
+    SyncScopeVersionRepository,
+    SCOPE_ORDERS_GLOBAL,
+    scope_event_sales,
+)
 from app.models.schemas import (
     SalesEventCreateRequest,
     SalesEventUpdateRequest,
@@ -893,6 +898,23 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Erro ao buscar vendas do evento: {exc}")
 
 
+@router.get("/{event_id}/sync/version")
+async def get_event_sync_version(event_id: UUID, db: Session = Depends(get_db)):
+    """Lightweight version token for event sales delta polling."""
+    event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
+    if not event:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+
+    scope_key = scope_event_sales(event_id)
+    row = SyncScopeVersionRepository.get_scope_version(db, DEFAULT_TENANT_ID, scope_key)
+    return {
+        "ok": True,
+        "scope": scope_key,
+        "current_version": int(row.version) if row else 0,
+        "last_updated_at": row.updated_at.isoformat() if row and row.updated_at else None,
+    }
+
+
 @router.put("/{event_id}/items/{sku}/production", response_model=ItemProductionNoteResponse)
 async def update_item_production(
     event_id: UUID,
@@ -918,6 +940,10 @@ async def update_item_production(
     # Auto-update Bling when all items of an order become "Embalado".
     if body.production_status == "Embalado":
         await _check_and_update_bling_orders(db, event, event_id)
+
+    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, scope_event_sales(event_id))
+    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
+    db.commit()
 
     return ItemProductionNoteResponse(
         sku=row.sku, production_status=row.production_status, notes=row.notes,
@@ -1048,6 +1074,9 @@ async def update_order_status(
     if snapshot:
         snapshot.status_id = target_id
         snapshot.status_name = body.situacao
-        db.commit()
+
+    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, scope_event_sales(event_id))
+    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
+    db.commit()
 
     return {"ok": True, "order_id": order_id, "new_status": body.situacao}

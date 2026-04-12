@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.infra.logging import get_logger
 from app.repositories.order_snapshot_repo import OrderSnapshotRepository
+from app.repositories.sync_scope_version_repo import SyncScopeVersionRepository, SCOPE_ORDERS_GLOBAL
 from app.utils.datetime_utils import now_local
 
 logger = get_logger(__name__)
@@ -95,6 +96,9 @@ async def sync_orders(
         OrderSnapshotRepository.mark_sync_failure(db, tenant_id, msg)
     else:
         OrderSnapshotRepository.mark_sync_success(db, tenant_id, mode, msg)
+
+    if upserted > 0:
+        SyncScopeVersionRepository.bump_scope(db, tenant_id, SCOPE_ORDERS_GLOBAL)
 
     db.commit()
     logger.info("orders_sync_done tenant_id=%s mode=%s listed=%s upserted=%s failed=%s", str(tenant_id), mode, total, upserted, failed)

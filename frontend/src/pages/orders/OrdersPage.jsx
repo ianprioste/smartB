@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Layout } from '../../components/Layout';
 import { ProductionStatusBadge, ProductionNotesInput } from '../../components/ProductionControls';
 import useIsMobile from '../../hooks/useIsMobile';
+import { useVersionPolling } from '../../hooks/useVersionPolling';
 
 const API_BASE = '/api';
 
@@ -183,6 +184,7 @@ export function OrdersPage() {
   const pollRef = useRef(null);
   const prevSyncStatusRef = useRef(null);
   const pollAttemptsRef = useRef(0);
+  const isSyncRunningFlag = syncRunning || syncStatus?.sync?.last_sync_status === 'running';
 
   const handleProductionSaved = useCallback((sku, newStatus, newNotes) => {
     setOrders((prev) =>
@@ -274,6 +276,18 @@ export function OrdersPage() {
     }
   }, []);
 
+  const fetchOrdersVersion = useCallback(async () => {
+    const resp = await fetch(`${API_BASE}/orders/sync/version`);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data.current_version;
+  }, []);
+
+  const handleRemoteVersionChange = useCallback(() => {
+    fetchOrders(search, selectedStatuses, page);
+    fetchSyncStatus();
+  }, [fetchOrders, fetchSyncStatus, page, search, selectedStatuses]);
+
   const stopPolling = useCallback(() => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     pollAttemptsRef.current = 0;
@@ -332,6 +346,15 @@ export function OrdersPage() {
   useEffect(() => { fetchOrders(search, selectedStatuses, page); }, [page, selectedStatuses]); // eslint-disable-line
   useEffect(() => { fetchSyncStatus(); }, []); // eslint-disable-line
 
+  useVersionPolling({
+    enabled: hasBling && !isSyncRunningFlag,
+    pollKey: 'orders_global',
+    fetchVersion: fetchOrdersVersion,
+    onVersionChange: handleRemoteVersionChange,
+    intervalMsActive: 7000,
+    intervalMsHidden: 15000,
+  });
+
   const handleSearchChange = (e) => {
     const val = e.target.value;
     setSearch(val);
@@ -346,7 +369,6 @@ export function OrdersPage() {
 
   const isEmptyDb = sourceMode === 'empty-db';
   const syncOk = syncStatus?.sync?.last_sync_status === 'ok';
-  const isSyncRunningFlag = syncRunning || syncStatus?.sync?.last_sync_status === 'running';
   const localCount = syncStatus?.snapshot?.total_orders ?? 0;
 
   return (

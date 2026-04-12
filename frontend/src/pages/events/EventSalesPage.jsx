@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { Layout } from '../../components/Layout';
 import { ProductionStatusBadge, ProductionNotesInput } from '../../components/ProductionControls';
 import useIsMobile from '../../hooks/useIsMobile';
+import { useVersionPolling } from '../../hooks/useVersionPolling';
 
 const API_BASE = '/api';
 
@@ -142,7 +143,7 @@ export function EventSalesPage() {
     }
   }
 
-  async function loadSales(eventId) {
+  const loadSales = useCallback(async (eventId) => {
     if (!eventId) {
       setSalesData(null);
       return;
@@ -163,7 +164,20 @@ export function EventSalesPage() {
     } finally {
       setLoadingSales(false);
     }
-  }
+  }, []);
+
+  const fetchEventVersion = useCallback(async () => {
+    if (!selectedEventId) return null;
+    const resp = await fetch(`${API_BASE}/events/${selectedEventId}/sync/version`);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data.current_version;
+  }, [selectedEventId]);
+
+  const handleEventVersionChange = useCallback(() => {
+    if (!selectedEventId) return;
+    loadSales(selectedEventId);
+  }, [loadSales, selectedEventId]);
 
   useEffect(() => {
     loadEvents();
@@ -174,7 +188,16 @@ export function EventSalesPage() {
       setSelectedStatuses(null);
       loadSales(selectedEventId);
     }
-  }, [selectedEventId]);
+  }, [loadSales, selectedEventId]);
+
+  useVersionPolling({
+    enabled: Boolean(selectedEventId) && !loadingSales,
+    pollKey: selectedEventId ? `event_sales:${selectedEventId}` : 'event_sales:none',
+    fetchVersion: fetchEventVersion,
+    onVersionChange: handleEventVersionChange,
+    intervalMsActive: 7000,
+    intervalMsHidden: 15000,
+  });
 
   const availableStatuses = useMemo(() => {
     const allOrders = Array.isArray(salesData?.orders) ? salesData.orders : [];

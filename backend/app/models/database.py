@@ -275,6 +275,21 @@ class BlingOrdersSyncStateModel(Base):
     )
 
 
+class SyncScopeVersionModel(Base):
+    """Monotonic version token per tenant+scope for lightweight cross-device sync."""
+    __tablename__ = "sync_scope_versions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    scope_key = Column(String(255), nullable=False)
+    version = Column(BigInteger, nullable=False, default=0)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "scope_key", name="uq_sync_scope_versions_tenant_scope"),
+    )
+
+
 class AccessProfileModel(Base):
     """Access profile (role) used by allowed emails."""
     __tablename__ = "access_profiles"

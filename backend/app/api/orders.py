@@ -16,6 +16,7 @@ from app.domain.bling_situacoes import get_bling_status_ids
 from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.order_snapshot_repo import OrderSnapshotRepository, parse_progress_from_sync_message
 from app.repositories.item_production_note_repo import ItemProductionNoteRepository
+from app.repositories.sync_scope_version_repo import SyncScopeVersionRepository, SCOPE_ORDERS_GLOBAL
 from app.models.database import BlingOrderSnapshotModel
 from app.models.schemas import ItemProductionNoteUpdateRequest, ItemProductionNoteResponse, OrderStatusUpdateRequest
 from app.utils.datetime_utils import now_local
@@ -693,6 +694,18 @@ async def sync_orders_status(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/sync/version")
+async def sync_orders_version(db: Session = Depends(get_db)):
+    """Lightweight version token for client-side delta polling."""
+    row = SyncScopeVersionRepository.get_scope_version(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
+    return {
+        "ok": True,
+        "scope": SCOPE_ORDERS_GLOBAL,
+        "current_version": int(row.version) if row else 0,
+        "last_updated_at": row.updated_at.isoformat() if row and row.updated_at else None,
+    }
+
+
 @router.get("/diagnose/{order_numero}")
 async def diagnose_order(order_numero: str, db: Session = Depends(get_db)):
     """Diagnose a specific order by numero, showing stored status and Bling status."""
@@ -785,6 +798,8 @@ async def update_order_item_production(
         db, DEFAULT_TENANT_ID, event_id, norm_sku, body.production_status, body.notes,
         bling_order_id=body.bling_order_id,
     )
+    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
+    db.commit()
     return ItemProductionNoteResponse(
         sku=row.sku, production_status=row.production_status, notes=row.notes,
         bling_order_id=row.bling_order_id,
@@ -829,6 +844,8 @@ async def update_order_bling_status(
     if snapshot:
         snapshot.status_id = target_id
         snapshot.status_name = body.situacao
-        db.commit()
+
+    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
+    db.commit()
 
     return {"ok": True, "order_id": order_id, "new_status": body.situacao}
