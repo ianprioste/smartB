@@ -121,6 +121,15 @@ function normalizeStatusLabel(value) {
   return 'Em aberto';
 }
 
+function normalizeProductionStatusKey(value) {
+  const status = (value || 'Pendente').toString().trim().toLowerCase();
+  if (status.includes('imped')) return 'blocked';
+  if (status.includes('embalad')) return 'packed';
+  if (status.includes('produz')) return 'produced';
+  if (status.includes('produ') || status.includes('andamento')) return 'inProduction';
+  return 'pending';
+}
+
 export function EventSalesPage() {
   const savedUiState = readSavedUiState();
   const isMobile = useIsMobile(1024);
@@ -129,11 +138,13 @@ export function EventSalesPage() {
   const [salesData, setSalesData] = useState(null);
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [loadingSales, setLoadingSales] = useState(false);
+  const [eventOrdersCount, setEventOrdersCount] = useState({});
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState(savedUiState?.searchTerm || '');
   const [selectedStatuses, setSelectedStatuses] = useState(() => savedUiState?.selectedStatuses ?? null);
   const [expandedOrderId, setExpandedOrderId] = useState(savedUiState?.expandedOrderId || null);
   const [groupBy, setGroupBy] = useState(savedUiState?.groupBy || 'pedido');
+  const [selectedItemStatusFilter, setSelectedItemStatusFilter] = useState(null);
   const deltaCursorRef = useRef(null);
   const suppressDeltaUntilRef = useRef(0);
   const initialScrollYRef = useRef(savedUiState?.scrollY || 0);
@@ -208,6 +219,29 @@ export function EventSalesPage() {
     }
   }, [markLocalMutation, selectedEventId]);
 
+  const loadEventOrdersCount = useCallback(async (eventList) => {
+    const entries = await Promise.all(
+      eventList.map(async (event) => {
+        try {
+          const resp = await fetch(`${API_BASE}/events/${event.id}/sales`);
+          if (!resp.ok) return [String(event.id), null];
+          const data = await resp.json();
+          return [String(event.id), Number(data?.summary?.orders_count || 0)];
+        } catch {
+          return [String(event.id), null];
+        }
+      }),
+    );
+
+    const next = {};
+    entries.forEach(([eventId, count]) => {
+      if (Number.isFinite(count)) {
+        next[eventId] = count;
+      }
+    });
+    setEventOrdersCount(next);
+  }, []);
+
   async function loadEvents() {
     try {
       setLoadingEvents(true);
@@ -221,6 +255,7 @@ export function EventSalesPage() {
       const list = Array.isArray(data) ? data : [];
       const activeList = list.filter((event) => event.is_active !== false);
       setEvents(activeList);
+      void loadEventOrdersCount(activeList);
       if (!selectedEventId && activeList.length > 0) {
         setSelectedEventId(String(activeList[0].id));
       }
@@ -439,14 +474,82 @@ export function EventSalesPage() {
     });
   }, [salesData, searchTerm, selectedStatuses]);
 
+  const filteredOrdersByItemStatus = useMemo(() => {
+    if (!selectedItemStatusFilter) return visibleOrders;
+
+    return visibleOrders
+      .map((order) => {
+        const items = Array.isArray(order.matched_items) ? order.matched_items : [];
+        const filteredItems = items.filter(
+          (item) => normalizeProductionStatusKey(item.production_status) === selectedItemStatusFilter,
+        );
+        if (filteredItems.length === 0) return null;
+        const totalMatched = filteredItems.reduce((acc, item) => acc + Number(item.paid_total || 0), 0);
+        const packedCount = filteredItems.filter((i) => normalizeProductionStatusKey(i.production_status) === 'packed').length;
+        return {
+          ...order,
+          matched_items: filteredItems,
+          total_matched: totalMatched,
+          production_summary: `${packedCount}/${filteredItems.length} Embalado`,
+        };
+      })
+      .filter(Boolean);
+  }, [visibleOrders, selectedItemStatusFilter]);
+
   const filteredSummary = useMemo(() => {
-    const matchedItemsCount = visibleOrders.reduce((acc, order) => acc + (order.matched_items?.length || 0), 0);
-    const totalMatched = visibleOrders.reduce((acc, order) => acc + (order.total_matched || 0), 0);
+    const matchedItemsCount = filteredOrdersByItemStatus.reduce((acc, order) => acc + (order.matched_items?.length || 0), 0);
+    const totalMatched = filteredOrdersByItemStatus.reduce((acc, order) => acc + (order.total_matched || 0), 0);
     return {
-      orders_count: visibleOrders.length,
+      orders_count: filteredOrdersByItemStatus.length,
       matched_items_count: matchedItemsCount,
       total_matched: totalMatched,
     };
+  }, [filteredOrdersByItemStatus]);
+
+  const productionProgressPct = useMemo(() => {
+    const totalItems = filteredSummary.matched_items_count || 0;
+    if (!totalItems) return 0;
+
+    const producedOrPackedCount = filteredOrdersByItemStatus.reduce((acc, order) => {
+      const items = Array.isArray(order.matched_items) ? order.matched_items : [];
+      const count = items.filter((item) => {
+        const key = normalizeProductionStatusKey(item.production_status);
+        return key === 'produced' || key === 'packed';
+      }).length;
+      return acc + count;
+    }, 0);
+
+    return Math.round((producedOrPackedCount / totalItems) * 100);
+  }, [filteredSummary.matched_items_count, filteredOrdersByItemStatus]);
+
+  const itemStatusSummary = useMemo(() => {
+    const summary = {
+      pending: 0,
+      inProduction: 0,
+      produced: 0,
+      packed: 0,
+      blocked: 0,
+    };
+
+    visibleOrders.forEach((order) => {
+      const items = Array.isArray(order.matched_items) ? order.matched_items : [];
+      items.forEach((item) => {
+        const key = normalizeProductionStatusKey(item.production_status);
+        if (key === 'blocked') {
+          summary.blocked += 1;
+        } else if (key === 'packed') {
+          summary.packed += 1;
+        } else if (key === 'produced') {
+          summary.produced += 1;
+        } else if (key === 'inProduction') {
+          summary.inProduction += 1;
+        } else {
+          summary.pending += 1;
+        }
+      });
+    });
+
+    return summary;
   }, [visibleOrders]);
 
   const toggleStatus = (label) => {
@@ -494,7 +597,7 @@ export function EventSalesPage() {
     }
 
     const itemMap = {};
-    visibleOrders.forEach((order) => {
+    filteredOrdersByItemStatus.forEach((order) => {
       const items = Array.isArray(order.matched_items) ? order.matched_items : [];
       items.forEach((item) => {
         const key = item.sku || item.product_name;
@@ -532,14 +635,22 @@ export function EventSalesPage() {
       const bi = SIZE_ORDER.indexOf(b._size);
       return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
     });
-  }, [visibleOrders, groupBy]);
+  }, [filteredOrdersByItemStatus, groupBy]);
+
+  const itemFilterCards = [
+    { key: 'pending', label: 'Itens Pendentes', value: itemStatusSummary.pending },
+    { key: 'inProduction', label: 'Itens em Produção', value: itemStatusSummary.inProduction },
+    { key: 'produced', label: 'Itens Produzidos', value: itemStatusSummary.produced },
+    { key: 'packed', label: 'Itens Embalados', value: itemStatusSummary.packed },
+    { key: 'blocked', label: 'Itens com Impedimentos', value: itemStatusSummary.blocked },
+  ];
 
   return (
     <Layout>
       <div className="page-inner">
         <div className="page-header">
           <div>
-            <h2>Vendas por Campanha</h2>
+            <h2>Pedidos por Campanha</h2>
             <p className="page-subtitle">Pedidos de venda filtrados pelos produtos selecionados na campanha</p>
           </div>
           <button className="btn-secondary" disabled={!selectedEventId || loadingSales} onClick={() => loadSales(selectedEventId)}>
@@ -565,6 +676,7 @@ export function EventSalesPage() {
               <div style={{ display: 'grid', gap: 10 }}>
                 {events.map((event) => {
                   const selected = String(selectedEventId) === String(event.id);
+                  const ordersCount = eventOrdersCount[String(event.id)];
                   return (
                     <button
                       key={event.id}
@@ -585,7 +697,9 @@ export function EventSalesPage() {
                       <div style={{ fontSize: 12, color: '#475569' }}>
                         {formatDate(event.start_date)} - {formatDate(event.end_date)}
                       </div>
-                      <div style={{ fontSize: 12, color: '#64748b' }}>{event.products_count} produto(s)</div>
+                      <div style={{ fontSize: 12, color: '#64748b' }}>
+                        {Number.isFinite(ordersCount) ? ordersCount : '...'} pedido(s)
+                      </div>
                     </button>
                   );
                 })}
@@ -638,21 +752,52 @@ export function EventSalesPage() {
               <div className="stat-card stat-card--blue">
                 <div className="stat-body">
                   <div className="stat-value">{filteredSummary.orders_count}</div>
-                  <div className="stat-label">Pedidos com Itens do Evento</div>
+                  <div className="stat-label">Pedidos</div>
                 </div>
               </div>
               <div className="stat-card stat-card--green">
                 <div className="stat-body">
                   <div className="stat-value">{filteredSummary.matched_items_count}</div>
-                  <div className="stat-label">Itens Relacionados</div>
+                  <div className="stat-label">Itens Pedidos</div>
+                </div>
+              </div>
+              <div className="stat-card stat-card--purple">
+                <div className="stat-body">
+                  <div className="stat-value">{productionProgressPct}%</div>
+                  <div className="stat-label">Progresso de Produção (%)</div>
                 </div>
               </div>
               <div className="stat-card stat-card--yellow">
                 <div className="stat-body">
                   <div className="stat-value">{formatBRL(filteredSummary.total_matched)}</div>
-                  <div className="stat-label">Total dos Itens do Evento</div>
+                  <div className="stat-label">Total Faturado</div>
                 </div>
               </div>
+            </div>
+
+            <div className="stats-grid" style={{ marginBottom: 16 }}>
+              {itemFilterCards.map((card) => {
+                const active = selectedItemStatusFilter === card.key;
+                return (
+                  <button
+                    key={card.key}
+                    type="button"
+                    className="stat-card"
+                    onClick={() => setSelectedItemStatusFilter((prev) => (prev === card.key ? null : card.key))}
+                    style={{
+                      cursor: 'pointer',
+                      border: active ? '2px solid #2563eb' : '1px solid #e2e8f0',
+                      background: active ? '#eff6ff' : '#fff',
+                      textAlign: 'left',
+                    }}
+                  >
+                    <div className="stat-body">
+                      <div className="stat-value">{card.value}</div>
+                      <div className="stat-label">{card.label}</div>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
 
             <div className="card">
@@ -833,14 +978,14 @@ export function EventSalesPage() {
                       </tbody>
                     </table>
                   )
-                ) : visibleOrders.length === 0 ? (
+                ) : filteredOrdersByItemStatus.length === 0 ? (
                 <div className="empty-state">
                   <span className="empty-state-icon">📭</span>
                   <p>Nenhuma venda encontrada para os produtos deste evento no período selecionado.</p>
                 </div>
               ) : isMobile ? (
                 <div style={{ display: 'grid', gap: 12, padding: 12 }}>
-                  {visibleOrders.map((order) => {
+                  {filteredOrdersByItemStatus.map((order) => {
                     const orderKey = order.id || order.numero;
                     const isExpanded = isExpandedMatch(expandedOrderId, orderKey);
                     const matchedItems = Array.isArray(order.matched_items) ? order.matched_items : [];
@@ -925,7 +1070,7 @@ export function EventSalesPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleOrders.map((order) => {
+                    {filteredOrdersByItemStatus.map((order) => {
                       const orderKey = order.id || order.numero;
                       const isExpanded = isExpandedMatch(expandedOrderId, orderKey);
                       const matchedItems = Array.isArray(order.matched_items) ? order.matched_items : [];

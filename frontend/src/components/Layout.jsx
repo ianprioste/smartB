@@ -191,7 +191,7 @@ export function Layout({ children }) {
                 onClick={() => go('/events/sales')}
               >
                 <span className="nav-icon">💵</span>
-                <span className="nav-label">Vendas por Campanha</span>
+                <span className="nav-label">Pedidos por Campanha</span>
               </button>
             </div>
           </div>
