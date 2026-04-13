@@ -9,11 +9,15 @@ import sqlalchemy as sa
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
+from app.infra.logging import get_logger
 from app.models.database import OrderTagLinkModel, OrderTagModel
 
 
 class OrderTagSchemaError(RuntimeError):
     """Raised when order tag tables are unavailable and cannot be created."""
+
+
+logger = get_logger(__name__)
 
 
 class OrderTagRepository:
@@ -101,9 +105,12 @@ class OrderTagRepository:
                 f"ALTER TABLE order_tag_links ADD COLUMN updated_at {dt_sql}",
             )
         except Exception as exc:
-            raise OrderTagSchemaError(
-                "Schema de tags incompleto (colunas ausentes). Rode alembic upgrade head para corrigir."
-            ) from exc
+            # Keep operating in compatibility mode even if DDL cannot be applied now.
+            logger.warning(
+                "order_tags_schema_heal_failed error=%s",
+                str(exc),
+                exc_info=True,
+            )
 
     @staticmethod
     def list_tags(db: Session, tenant_id: UUID, scope_key: str, event_id: Optional[UUID]) -> List[OrderTagModel]:
@@ -245,7 +252,7 @@ class OrderTagRepository:
         )
 
         existing = (
-            db.query(OrderTagLinkModel)
+            db.query(OrderTagLinkModel.id)
             .filter(
                 OrderTagLinkModel.tenant_id == tenant_id,
                 OrderTagLinkModel.scope_key == scope_key,
@@ -293,8 +300,8 @@ class OrderTagRepository:
         if not tag:
             return OrderTagRepository._tags_for_order(db, tenant_id, scope_key, event_id, bling_order_id)
 
-        link = (
-            db.query(OrderTagLinkModel)
+        link_row = (
+            db.query(OrderTagLinkModel.id)
             .filter(
                 OrderTagLinkModel.tenant_id == tenant_id,
                 OrderTagLinkModel.scope_key == scope_key,
@@ -304,8 +311,8 @@ class OrderTagRepository:
             )
             .first()
         )
-        if link:
-            db.delete(link)
+        if link_row:
+            db.query(OrderTagLinkModel).filter(OrderTagLinkModel.id == link_row[0]).delete(synchronize_session=False)
             db.flush()
 
         OrderTagRepository._cleanup_orphan_tags(db, tenant_id, scope_key, event_id)
@@ -338,7 +345,7 @@ class OrderTagRepository:
     ) -> Dict[int, List[str]]:
         """Return map of bling_order_id -> list of tag names."""
         links = (
-            db.query(OrderTagLinkModel)
+            db.query(OrderTagLinkModel.bling_order_id, OrderTagLinkModel.tag_id)
             .filter(
                 OrderTagLinkModel.tenant_id == tenant_id,
                 OrderTagLinkModel.scope_key == scope_key,
@@ -348,10 +355,20 @@ class OrderTagRepository:
             .all()
         )
 
+        tag_ids = {tag_id for (_, tag_id) in links if tag_id is not None}
+        tags = (
+            db.query(OrderTagModel.id, OrderTagModel.name)
+            .filter(OrderTagModel.id.in_(tag_ids))
+            .all()
+            if tag_ids
+            else []
+        )
+        tag_name_by_id = {tag_id: name for (tag_id, name) in tags if name}
+
         tag_map = defaultdict(list)
-        for link in links:
-            tag = db.query(OrderTagModel).filter(OrderTagModel.id == link.tag_id).first()
-            if tag:
-                tag_map[link.bling_order_id].append(tag.name)
+        for bling_order_id, tag_id in links:
+            name = tag_name_by_id.get(tag_id)
+            if name:
+                tag_map[bling_order_id].append(name)
 
         return dict(tag_map)
