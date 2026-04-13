@@ -9,7 +9,7 @@ from sqlalchemy import and_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.database import OrderTagAssignmentModel, OrderTagLinkModel, OrderTagModel
+from app.models.database import OrderTagLinkModel, OrderTagModel
 
 
 class OrderTagRepository:
@@ -24,16 +24,7 @@ class OrderTagRepository:
         return OrderTagRepository._clean_name(name).lower()
 
     @staticmethod
-    def _ensure_schema(db: Session) -> None:
-        """Create tag tables on demand when schema is behind deployment code."""
-        bind = db.get_bind()
-        OrderTagModel.__table__.create(bind=bind, checkfirst=True)
-        OrderTagAssignmentModel.__table__.create(bind=bind, checkfirst=True)
-        OrderTagLinkModel.__table__.create(bind=bind, checkfirst=True)
-
-    @staticmethod
     def list_tags(db: Session, tenant_id: UUID, scope_key: str, event_id: Optional[UUID]) -> List[OrderTagModel]:
-        OrderTagRepository._ensure_schema(db)
         # Only list tags that are currently assigned to at least one order in the same scope.
         return (
             db.query(OrderTagModel)
@@ -149,26 +140,31 @@ class OrderTagRepository:
             name=clean_name,
             name_key=name_key,
         )
+        create_error = None
         try:
-            db.add(row)
-            db.flush()
-            return row
-        except IntegrityError:
+            with db.begin_nested():
+                db.add(row)
+                db.flush()
+                return row
+        except IntegrityError as exc:
             # Concurrent requests may create the same tag at the same time.
-            db.rollback()
-            existing = (
-                db.query(OrderTagModel)
-                .filter(
-                    OrderTagModel.tenant_id == tenant_id,
-                    OrderTagModel.scope_key == scope_key,
-                    OrderTagModel.event_id == event_id,
-                    OrderTagModel.name_key == name_key,
-                )
-                .first()
+            create_error = exc
+
+        existing = (
+            db.query(OrderTagModel)
+            .filter(
+                OrderTagModel.tenant_id == tenant_id,
+                OrderTagModel.scope_key == scope_key,
+                OrderTagModel.event_id == event_id,
+                OrderTagModel.name_key == name_key,
             )
-            if existing:
-                return existing
-            raise
+            .first()
+        )
+        if existing:
+            return existing
+        if create_error:
+            raise create_error
+        raise ValueError("Unable to create tag")
 
     @staticmethod
     def add_tag_by_name(
@@ -179,7 +175,6 @@ class OrderTagRepository:
         bling_order_id: int,
         tag_name: str,
     ) -> List[str]:
-        OrderTagRepository._ensure_schema(db)
         tag = OrderTagRepository.get_or_create_tag(
             db=db,
             tenant_id=tenant_id,
@@ -208,11 +203,12 @@ class OrderTagRepository:
                 tag_id=tag.id,
             )
             try:
-                db.add(link)
-                db.flush()
+                with db.begin_nested():
+                    db.add(link)
+                    db.flush()
             except IntegrityError:
                 # Idempotent behavior when duplicate link is inserted concurrently.
-                db.rollback()
+                pass
 
         return OrderTagRepository._tags_for_order(db, tenant_id, scope_key, event_id, bling_order_id)
 
@@ -225,7 +221,6 @@ class OrderTagRepository:
         bling_order_id: int,
         tag_name: str,
     ) -> List[str]:
-        OrderTagRepository._ensure_schema(db)
         clean_name = OrderTagRepository._clean_name(tag_name)
         name_key = OrderTagRepository._key(clean_name)
 
@@ -268,7 +263,6 @@ class OrderTagRepository:
         event_id: Optional[UUID],
         bling_order_id: int,
     ) -> None:
-        OrderTagRepository._ensure_schema(db)
         db.query(OrderTagLinkModel).filter(
             OrderTagLinkModel.tenant_id == tenant_id,
             OrderTagLinkModel.scope_key == scope_key,
@@ -287,7 +281,6 @@ class OrderTagRepository:
         bling_order_ids: Iterable[int],
     ) -> Dict[int, List[str]]:
         """Return map of bling_order_id -> list of tag names."""
-        OrderTagRepository._ensure_schema(db)
         links = (
             db.query(OrderTagLinkModel)
             .filter(
