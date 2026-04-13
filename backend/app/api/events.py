@@ -1015,12 +1015,16 @@ async def list_event_order_tags(event_id: UUID, db: Session = Depends(get_db)):
     if not event:
         raise HTTPException(status_code=404, detail="Campanha não encontrada")
 
-    rows = OrderTagRepository.list_tags(
-        db=db,
-        tenant_id=DEFAULT_TENANT_ID,
-        scope_key="event",
-        event_id=event_id,
-    )
+    try:
+        rows = OrderTagRepository.list_tags(
+            db=db,
+            tenant_id=DEFAULT_TENANT_ID,
+            scope_key="event",
+            event_id=event_id,
+        )
+    except Exception as exc:
+        logger.warning("event_list_tags_failed event_id=%s error=%s", str(event_id), str(exc))
+        rows = []
     return {
         "tags": [
             {
@@ -1049,6 +1053,15 @@ async def set_event_order_tag(event_id: UUID, order_id: int, payload: OrderTagAs
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        db.rollback()
+        logger.warning(
+            "event_set_order_tag_failed event_id=%s order_id=%s error=%s",
+            str(event_id),
+            str(order_id),
+            str(exc),
+        )
+        raise HTTPException(status_code=500, detail="Falha ao salvar tag")
 
     db.commit()
     return {"ok": True, "event_id": str(event_id), "order_id": int(order_id), "tag": tags[0] if tags else None, "tags": tags}
@@ -1066,23 +1079,44 @@ async def clear_event_order_tag(
         raise HTTPException(status_code=404, detail="Campanha não encontrada")
 
     if (tag_name or "").strip():
-        tags = OrderTagRepository.remove_tag_by_name(
-            db=db,
-            tenant_id=DEFAULT_TENANT_ID,
-            scope_key="event",
-            event_id=event_id,
-            bling_order_id=order_id,
-            tag_name=tag_name,
-        )
+        try:
+            tags = OrderTagRepository.remove_tag_by_name(
+                db=db,
+                tenant_id=DEFAULT_TENANT_ID,
+                scope_key="event",
+                event_id=event_id,
+                bling_order_id=order_id,
+                tag_name=tag_name,
+            )
+        except Exception as exc:
+            db.rollback()
+            logger.warning(
+                "event_clear_specific_order_tag_failed event_id=%s order_id=%s tag=%s error=%s",
+                str(event_id),
+                str(order_id),
+                tag_name,
+                str(exc),
+            )
+            raise HTTPException(status_code=500, detail="Falha ao remover tag")
     else:
-        OrderTagRepository.clear_assignment(
-            db=db,
-            tenant_id=DEFAULT_TENANT_ID,
-            scope_key="event",
-            event_id=event_id,
-            bling_order_id=order_id,
-        )
-        tags = []
+        try:
+            OrderTagRepository.clear_assignment(
+                db=db,
+                tenant_id=DEFAULT_TENANT_ID,
+                scope_key="event",
+                event_id=event_id,
+                bling_order_id=order_id,
+            )
+            tags = []
+        except Exception as exc:
+            db.rollback()
+            logger.warning(
+                "event_clear_all_order_tags_failed event_id=%s order_id=%s error=%s",
+                str(event_id),
+                str(order_id),
+                str(exc),
+            )
+            raise HTTPException(status_code=500, detail="Falha ao remover tag")
     db.commit()
     return {"ok": True, "event_id": str(event_id), "order_id": int(order_id), "tag": tags[0] if tags else None, "tags": tags}
 
