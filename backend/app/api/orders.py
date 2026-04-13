@@ -17,7 +17,7 @@ from app.domain.bling_situacoes import get_bling_status_ids
 from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.order_snapshot_repo import OrderSnapshotRepository, parse_progress_from_sync_message
 from app.repositories.item_production_note_repo import ItemProductionNoteRepository
-from app.repositories.order_tag_repo import OrderTagRepository
+from app.repositories.order_tag_repo import OrderTagRepository, OrderTagSchemaError
 from app.repositories.sales_event_repo import SalesEventRepository
 from app.repositories.sync_scope_version_repo import SyncScopeVersionRepository, SCOPE_ORDERS_GLOBAL, scope_event_sales
 from app.models.database import BlingOrderSnapshotModel
@@ -732,8 +732,16 @@ async def set_global_order_tag(order_id: int, payload: OrderTagAssignRequest, db
             bling_order_id=order_id,
             tag_name=payload.tag_name,
         )
+    except OrderTagSchemaError as exc:
+        db.rollback()
+        logger.error("orders_set_tag_schema_error order_id=%s error=%s", str(order_id), str(exc), exc_info=True)
+        raise HTTPException(status_code=503, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        db.rollback()
+        logger.error("orders_set_tag_failed order_id=%s error=%s", str(order_id), str(exc), exc_info=True)
+        raise HTTPException(status_code=500, detail="Falha ao salvar tag")
 
     db.commit()
     return {"ok": True, "order_id": int(order_id), "tag": tags[0] if tags else None, "tags": tags}
@@ -745,24 +753,34 @@ async def clear_global_order_tag(
     tag_name: str | None = Query(default=None, description="Optional specific tag name to remove"),
     db: Session = Depends(get_db),
 ):
-    if (tag_name or "").strip():
-        tags = OrderTagRepository.remove_tag_by_name(
-            db=db,
-            tenant_id=DEFAULT_TENANT_ID,
-            scope_key="global",
-            event_id=None,
-            bling_order_id=order_id,
-            tag_name=tag_name,
-        )
-    else:
-        OrderTagRepository.clear_assignment(
-            db=db,
-            tenant_id=DEFAULT_TENANT_ID,
-            scope_key="global",
-            event_id=None,
-            bling_order_id=order_id,
-        )
-        tags = []
+    try:
+        if (tag_name or "").strip():
+            tags = OrderTagRepository.remove_tag_by_name(
+                db=db,
+                tenant_id=DEFAULT_TENANT_ID,
+                scope_key="global",
+                event_id=None,
+                bling_order_id=order_id,
+                tag_name=tag_name,
+            )
+        else:
+            OrderTagRepository.clear_assignment(
+                db=db,
+                tenant_id=DEFAULT_TENANT_ID,
+                scope_key="global",
+                event_id=None,
+                bling_order_id=order_id,
+            )
+            tags = []
+    except OrderTagSchemaError as exc:
+        db.rollback()
+        logger.error("orders_clear_tag_schema_error order_id=%s error=%s", str(order_id), str(exc), exc_info=True)
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        db.rollback()
+        logger.error("orders_clear_tag_failed order_id=%s error=%s", str(order_id), str(exc), exc_info=True)
+        raise HTTPException(status_code=500, detail="Falha ao remover tag")
+
     db.commit()
     return {"ok": True, "order_id": int(order_id), "tag": tags[0] if tags else None, "tags": tags}
 

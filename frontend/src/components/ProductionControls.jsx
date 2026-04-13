@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 const PRODUCTION_STATUSES = ['Pendente', 'Em produção', 'Produzido', 'Embalado', 'Impedimento'];
@@ -192,6 +192,9 @@ function composeStoredNotes(notes, impedimentReason, status) {
 }
 
 export function ProductionNotesInput({ initialValue, status, onChangeNotes, debounceMs = 800 }) {
+  const inputId = useId();
+  const notesId = `production-notes-${inputId}`;
+  const impedimentId = `production-impediment-${inputId}`;
   const parsed = splitStoredNotes(initialValue || '');
   const [value, setValue] = useState(parsed.notes);
   const [impedimentReason, setImpedimentReason] = useState(parsed.impedimentReason);
@@ -249,6 +252,8 @@ export function ProductionNotesInput({ initialValue, status, onChangeNotes, debo
   return (
     <div style={{ display: 'grid', gap: 8 }}>
       <textarea
+        id={notesId}
+        name="productionNotes"
         value={value}
         onChange={(e) => {
           const text = e.target.value;
@@ -287,10 +292,12 @@ export function ProductionNotesInput({ initialValue, status, onChangeNotes, debo
             gap: 8,
           }}
         >
-          <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#991b1b', margin: 0 }}>
+          <label htmlFor={impedimentId} style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#991b1b', margin: 0 }}>
             🚫 {IMPEDIMENT_LABEL}
           </label>
           <textarea
+            id={impedimentId}
+            name="productionImpedimentReason"
             value={impedimentReason}
             onChange={(e) => {
               const text = e.target.value;

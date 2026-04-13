@@ -150,6 +150,8 @@ function EventOrderTagEditor({
     <div onClick={(e) => e.stopPropagation()} style={{ display: 'grid', gap: 4 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
         <input
+          id={`event-order-tag-input-${key || 'unknown'}`}
+          name="eventOrderTagInput"
           list={datalistId}
           value={value}
           onChange={(e) => {
@@ -908,6 +910,8 @@ export function EventSalesPage() {
               <div style={{ padding: '16px 20px' }}>
                 <div className="search-box" style={{ marginBottom: 12 }}>
                   <input
+                    id="event-sales-search"
+                    name="eventSalesSearch"
                     type="text"
                     placeholder="Buscar por nº do pedido ou nome do cliente..."
                     value={searchTerm}
@@ -939,6 +943,8 @@ export function EventSalesPage() {
                     );
                   })}
                   <select
+                    id="event-sales-tag-filter"
+                    name="eventSalesTagFilter"
                     value={selectedTagFilter}
                     onChange={(e) => setSelectedTagFilter(e.target.value)}
                     style={{ marginLeft: 8, padding: '6px 10px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: 12, background: '#fff', color: '#334155' }}

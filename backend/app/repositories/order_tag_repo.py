@@ -5,10 +5,15 @@ from collections import defaultdict
 from typing import Dict, Iterable, List, Optional
 from uuid import UUID
 
+import sqlalchemy as sa
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from app.models.database import OrderTagLinkModel, OrderTagModel
+
+
+class OrderTagSchemaError(RuntimeError):
+    """Raised when order tag tables are unavailable and cannot be created."""
 
 
 class OrderTagRepository:
@@ -24,14 +29,28 @@ class OrderTagRepository:
 
     @staticmethod
     def _try_ensure_schema(db: Session) -> None:
-        """Best-effort table creation in case migration 011 was skipped.
-        Silently ignores errors (e.g. table already exists or restricted permissions)."""
+        """Ensure order tag tables exist, otherwise raise a clear schema error."""
+        bind = db.get_bind()
+        inspector = sa.inspect(bind)
+        missing = [table for table in ("order_tags", "order_tag_links") if not inspector.has_table(table)]
+        if not missing:
+            return
+
         try:
-            bind = db.get_bind()
             OrderTagModel.__table__.create(bind=bind, checkfirst=True)
             OrderTagLinkModel.__table__.create(bind=bind, checkfirst=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            raise OrderTagSchemaError(
+                "Schema de tags indisponivel. Rode a migration 011 (alembic upgrade head)."
+            ) from exc
+
+        # Validate again so permission-restricted environments fail explicitly.
+        inspector = sa.inspect(bind)
+        still_missing = [table for table in ("order_tags", "order_tag_links") if not inspector.has_table(table)]
+        if still_missing:
+            raise OrderTagSchemaError(
+                "Schema de tags ausente apos tentativa de criacao. Rode alembic upgrade head com usuario de banco com DDL."
+            )
 
     @staticmethod
     def list_tags(db: Session, tenant_id: UUID, scope_key: str, event_id: Optional[UUID]) -> List[OrderTagModel]:

@@ -250,6 +250,8 @@ function OrderTagEditor({
     <div onClick={(e) => e.stopPropagation()} style={{ display: 'grid', gap: 4 }}>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
         <input
+          id={`order-tag-input-${key || 'unknown'}`}
+          name="orderTagInput"
           list={datalistId}
           value={value}
           onChange={(e) => {
@@ -764,10 +766,12 @@ export function OrdersPage() {
         {/* ── Filters ── */}
         <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
           <div style={{ flex: 1, minWidth: 220 }}>
-            <input type="text" placeholder="Buscar por nº pedido, cliente ou Nuvemshop…" value={search} onChange={handleSearchChange}
+            <input id="orders-search" name="ordersSearch" type="text" placeholder="Buscar por nº pedido, cliente ou Nuvemshop…" value={search} onChange={handleSearchChange}
               style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #e2e8f0', fontSize: 14, outline: 'none', background: '#fff', color: '#0f172a', boxSizing: 'border-box' }} />
           </div>
           <select
+            id="orders-tag-filter"
+            name="ordersTagFilter"
             value={selectedTagFilter}
             onChange={(e) => { setSelectedTagFilter(e.target.value); setPage(1); }}
             style={{ padding: '10px 12px', borderRadius: 10, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff', color: '#334155', minWidth: 160 }}

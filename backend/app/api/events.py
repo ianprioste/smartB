@@ -14,7 +14,7 @@ from app.domain.order_local_cache import get_cached_order_detail, warm_order_det
 from app.domain.bling_situacoes import get_bling_status_ids
 from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.order_snapshot_repo import OrderSnapshotRepository
-from app.repositories.order_tag_repo import OrderTagRepository
+from app.repositories.order_tag_repo import OrderTagRepository, OrderTagSchemaError
 from app.repositories.sales_event_repo import SalesEventRepository
 from app.repositories.item_production_note_repo import ItemProductionNoteRepository
 from app.repositories.sync_scope_version_repo import (
@@ -1056,6 +1056,13 @@ async def set_event_order_tag(event_id: UUID, order_id: int, payload: OrderTagAs
 
     try:
         tags = _do_add_tag()
+    except OrderTagSchemaError as exc:
+        db.rollback()
+        logger.error(
+            "event_set_order_tag_schema_error event_id=%s order_id=%s error=%s",
+            str(event_id), str(order_id), str(exc), exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except _IntegrityError:
