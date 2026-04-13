@@ -1,10 +1,12 @@
 """Authentication endpoints for Bling OAuth2."""
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 import httpx
 import uuid
+from email.utils import parsedate_to_datetime
 from urllib.parse import urlencode
 import base64
 from typing import Dict, Any
@@ -20,6 +22,42 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 # Store state for CSRF protection (in production, use secure session storage)
 _oauth_states = {}
+
+
+def _get_retry_delay_seconds(response: httpx.Response, attempt: int) -> float:
+    """Resolve retry delay from Retry-After or fallback short backoff."""
+    retry_after = response.headers.get("Retry-After")
+    if retry_after:
+        retry_after = retry_after.strip()
+        try:
+            delay = float(retry_after)
+            if delay > 0:
+                return min(delay, 8.0)
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(retry_after)
+                if retry_at.tzinfo is None:
+                    from datetime import timezone
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                now_utc = datetime.utcnow().replace(tzinfo=retry_at.tzinfo)
+                delay = (retry_at - now_utc).total_seconds()
+                if delay > 0:
+                    return min(delay, 8.0)
+            except Exception:
+                pass
+
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            payload_retry = payload.get("retry_after") or payload.get("retryAfter")
+            if payload_retry is not None:
+                delay = float(payload_retry)
+                if delay > 0:
+                    return min(delay, 8.0)
+    except Exception:
+        pass
+
+    return min(1.5 * (attempt + 1), 5.0)
 
 
 def _resolve_redirect_uri(request: Request) -> str:
@@ -154,27 +192,45 @@ async def bling_callback(
             redirect_uri,
         )
 
-        token_response = httpx.post(
-            settings.BLING_TOKEN_URL,
-            headers={
-                "Authorization": f"Basic {encoded_credentials}",
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Accept": "application/json",
-            },
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": redirect_uri,
-            },
-            timeout=30.0,
-        )
+        max_attempts = 3
+        token_response: httpx.Response | None = None
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for attempt in range(max_attempts):
+                token_response = await client.post(
+                    settings.BLING_TOKEN_URL,
+                    headers={
+                        "Authorization": f"Basic {encoded_credentials}",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Accept": "application/json",
+                    },
+                    data={
+                        "grant_type": "authorization_code",
+                        "code": code,
+                        "redirect_uri": redirect_uri,
+                    },
+                )
 
-        logger.info(
-            "oauth_token_response status_code=%s body=%s",
-            token_response.status_code,
-            token_response.text[:500],
-        )
-        
+                logger.info(
+                    "oauth_token_response status_code=%s attempt=%s body=%s",
+                    token_response.status_code,
+                    attempt + 1,
+                    token_response.text[:500],
+                )
+
+                if token_response.status_code != 429 or attempt >= (max_attempts - 1):
+                    break
+
+                retry_delay = _get_retry_delay_seconds(token_response, attempt)
+                logger.warning(
+                    "oauth_token_rate_limited status=429 attempt=%s retry_in=%ss",
+                    attempt + 1,
+                    round(retry_delay, 2),
+                )
+                await asyncio.sleep(retry_delay)
+
+        if token_response is None:
+            raise HTTPException(status_code=502, detail="No response from Bling token endpoint")
+
         token_response.raise_for_status()
         token_data = token_response.json()
 

@@ -162,22 +162,46 @@ class BlingClient:
         )
 
         try:
+            max_attempts = 3
+            response: httpx.Response | None = None
             async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    settings.BLING_TOKEN_URL,
-                    headers={
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "Accept": "application/json",
-                    },
-                    data={
-                        "grant_type": "refresh_token",
-                        "refresh_token": self.refresh_token,
-                        "client_id": settings.BLING_CLIENT_ID,
-                        "client_secret": settings.BLING_CLIENT_SECRET,
-                    },
-                    timeout=30.0,
-                )
-                response.raise_for_status()
+                for attempt in range(max_attempts):
+                    response = await client.post(
+                        settings.BLING_TOKEN_URL,
+                        headers={
+                            "Content-Type": "application/x-www-form-urlencoded",
+                            "Accept": "application/json",
+                        },
+                        data={
+                            "grant_type": "refresh_token",
+                            "refresh_token": self.refresh_token,
+                            "client_id": settings.BLING_CLIENT_ID,
+                            "client_secret": settings.BLING_CLIENT_SECRET,
+                        },
+                        timeout=30.0,
+                    )
+
+                    if response.status_code != 429 or attempt >= (max_attempts - 1):
+                        break
+
+                    delay_seconds = self._get_retry_delay_seconds(
+                        response,
+                        attempt,
+                        Limits.BLING_RETRY_INITIAL_DELAY_SECS,
+                    )
+                    logger.warning(
+                        "token_refresh_rate_limited - request_id=%s, attempt=%s, retry_in=%ss",
+                        self.request_id,
+                        attempt + 1,
+                        round(delay_seconds, 2),
+                    )
+                    await self._rate_limiter.backoff(delay_seconds)
+                    await asyncio.sleep(delay_seconds)
+
+            if response is None:
+                raise BlingAuthError("Token refresh failed: no response from token endpoint")
+
+            response.raise_for_status()
 
             token_data = response.json()
             self.access_token = token_data["access_token"]
