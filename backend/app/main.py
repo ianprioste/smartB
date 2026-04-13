@@ -23,6 +23,9 @@ PUBLIC_PATHS = {
     "/openapi.json",
     "/auth/access/login",
     "/auth/access/bootstrap-status",
+    "/auth/access/forgot-password/request",
+    "/auth/access/forgot-password/verify",
+    "/auth/access/forgot-password/reset",
 }
 
 

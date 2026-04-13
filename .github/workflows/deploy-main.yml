@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      PUBLIC_HOST: 191.252.204.67
+      PUBLIC_HOST: app.useruach.com.br
       BUILD_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
@@ -84,7 +84,6 @@ jobs:
 
       - name: Deploy via SSH
         id: deploy_ssh
-        continue-on-error: true
         shell: bash
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -101,6 +100,12 @@ jobs:
           DEPLOY_BLING_CLIENT_ID: ${{ secrets.BACKEND_BLING_CLIENT_ID || secrets.BLING_CLIENT_ID }}
           DEPLOY_BLING_CLIENT_SECRET: ${{ secrets.BACKEND_BLING_CLIENT_SECRET || secrets.BLING_CLIENT_SECRET }}
           DEPLOY_BLING_REDIRECT_URI: ${{ secrets.BACKEND_BLING_REDIRECT_URI || secrets.BLING_REDIRECT_URI }}
+          DEPLOY_SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          DEPLOY_SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          DEPLOY_SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          DEPLOY_SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          DEPLOY_SMTP_FROM_EMAIL: ${{ secrets.SMTP_FROM_EMAIL }}
+          DEPLOY_SMTP_FROM_NAME: ${{ secrets.SMTP_FROM_NAME }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_SHA: ${{ github.sha }}
           BUILD_ID: ${{ env.BUILD_ID }}
@@ -108,7 +113,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           ssh -i ~/.ssh/deploy_key -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-            "VPS_APP_DIR='$VPS_APP_DIR' VPS_BACKEND_SERVICE='$VPS_BACKEND_SERVICE' VPS_FRONTEND_DIR='$VPS_FRONTEND_DIR' VPS_REPO_URL='$VPS_REPO_URL' BACKEND_ENV_B64='$BACKEND_ENV_B64' GITHUB_REPOSITORY='$GITHUB_REPOSITORY' GIT_COMMIT='$GITHUB_SHA' BUILD_ID='$BUILD_ID' BUILD_TIMESTAMP='$(date -u '+%Y-%m-%dT%H:%M:%SZ')' PUBLIC_HOST='$PUBLIC_HOST' bash -se" <<'REMOTE_SCRIPT'
+            "VPS_APP_DIR='$VPS_APP_DIR' VPS_BACKEND_SERVICE='$VPS_BACKEND_SERVICE' VPS_FRONTEND_DIR='$VPS_FRONTEND_DIR' VPS_REPO_URL='$VPS_REPO_URL' BACKEND_ENV_B64='$BACKEND_ENV_B64' GITHUB_REPOSITORY='$GITHUB_REPOSITORY' GIT_COMMIT='$GITHUB_SHA' BUILD_ID='$BUILD_ID' BUILD_TIMESTAMP='$(date -u '+%Y-%m-%dT%H:%M:%SZ')' PUBLIC_HOST='$PUBLIC_HOST' DEPLOY_SECRET_KEY='$DEPLOY_SECRET_KEY' DEPLOY_DATABASE_URL='$DEPLOY_DATABASE_URL' DEPLOY_CORS_ORIGINS='$DEPLOY_CORS_ORIGINS' DEPLOY_BLING_CLIENT_ID='$DEPLOY_BLING_CLIENT_ID' DEPLOY_BLING_CLIENT_SECRET='$DEPLOY_BLING_CLIENT_SECRET' DEPLOY_BLING_REDIRECT_URI='$DEPLOY_BLING_REDIRECT_URI' DEPLOY_SMTP_HOST='$DEPLOY_SMTP_HOST' DEPLOY_SMTP_PORT='$DEPLOY_SMTP_PORT' DEPLOY_SMTP_USERNAME='$DEPLOY_SMTP_USERNAME' DEPLOY_SMTP_PASSWORD='$DEPLOY_SMTP_PASSWORD' DEPLOY_SMTP_FROM_EMAIL='$DEPLOY_SMTP_FROM_EMAIL' DEPLOY_SMTP_FROM_NAME='$DEPLOY_SMTP_FROM_NAME' bash -se" <<'REMOTE_SCRIPT'
           set -Eeuo pipefail
           APP_DIR="${VPS_APP_DIR:-/opt/smartB}"
           BACKEND_SERVICE="${VPS_BACKEND_SERVICE:-smartbling-backend}"
@@ -135,7 +140,11 @@ jobs:
           git fetch origin "$DEPLOY_BRANCH"
           git checkout "$DEPLOY_BRANCH"
           git reset --hard "origin/$DEPLOY_BRANCH"
-          APP_DIR="$APP_DIR" BACKEND_SERVICE="$BACKEND_SERVICE" FRONTEND_TARGET_DIR="$FRONTEND_TARGET_DIR" GIT_COMMIT="$GIT_COMMIT" BUILD_ID="$BUILD_ID" BUILD_TIMESTAMP="$BUILD_TIMESTAMP" PUBLIC_HOST="$PUBLIC_HOST" \
+          # Force LF endings for shell scripts to avoid /bin/bash runtime errors on Linux.
+          if command -v find >/dev/null 2>&1; then
+            find scripts -type f -name '*.sh' -exec sed -i 's/\r$//' {} +
+          fi
+          APP_DIR="$APP_DIR" BACKEND_SERVICE="$BACKEND_SERVICE" FRONTEND_TARGET_DIR="$FRONTEND_TARGET_DIR" GIT_COMMIT="$GIT_COMMIT" BUILD_ID="$BUILD_ID" BUILD_TIMESTAMP="$BUILD_TIMESTAMP" PUBLIC_HOST="$PUBLIC_HOST" DEPLOY_SECRET_KEY="$DEPLOY_SECRET_KEY" DEPLOY_DATABASE_URL="$DEPLOY_DATABASE_URL" DEPLOY_CORS_ORIGINS="$DEPLOY_CORS_ORIGINS" DEPLOY_BLING_CLIENT_ID="$DEPLOY_BLING_CLIENT_ID" DEPLOY_BLING_CLIENT_SECRET="$DEPLOY_BLING_CLIENT_SECRET" DEPLOY_BLING_REDIRECT_URI="$DEPLOY_BLING_REDIRECT_URI" DEPLOY_SMTP_HOST="$DEPLOY_SMTP_HOST" DEPLOY_SMTP_PORT="$DEPLOY_SMTP_PORT" DEPLOY_SMTP_USERNAME="$DEPLOY_SMTP_USERNAME" DEPLOY_SMTP_PASSWORD="$DEPLOY_SMTP_PASSWORD" DEPLOY_SMTP_FROM_EMAIL="$DEPLOY_SMTP_FROM_EMAIL" DEPLOY_SMTP_FROM_NAME="$DEPLOY_SMTP_FROM_NAME" DISABLE_LEGACY_DOCKER="true" \
             bash scripts/deploy-vps.sh
           REMOTE_SCRIPT
 
@@ -149,8 +158,17 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          curl --fail --silent --show-error --dump-header /tmp/build.headers "http://${PUBLIC_HOST}/build-info.json?b=${BUILD_ID}" > /tmp/build-info.json
-          curl --fail --silent --show-error --dump-header /tmp/health.headers "http://${PUBLIC_HOST}/api/health?b=${BUILD_ID}" > /tmp/health.json
+          curl --fail --silent --show-error --dump-header /tmp/build.headers "https://${PUBLIC_HOST}/build-info.json?b=${BUILD_ID}" > /tmp/build-info.json
+          curl --fail --silent --show-error --dump-header /tmp/health.headers "https://${PUBLIC_HOST}/api/health?b=${BUILD_ID}" > /tmp/health.json
+
+          echo "--- verify headers: build-info ---"
+          sed -n '1,20p' /tmp/build.headers || true
+          echo "--- verify headers: api/health ---"
+          sed -n '1,20p' /tmp/health.headers || true
+          echo "--- verify body preview: build-info ---"
+          head -c 220 /tmp/build-info.json; echo
+          echo "--- verify body preview: api/health ---"
+          head -c 220 /tmp/health.json; echo
 
           python3 - <<'PY'
           import json
@@ -201,14 +219,14 @@ jobs:
           set +e
 
           echo "=== PUBLIC ENDPOINTS ==="
-          curl -i --max-time 12 "http://${PUBLIC_HOST}/build-info.json" | sed -n '1,25p'
+          curl -iL --max-time 12 "https://${PUBLIC_HOST}/build-info.json" | sed -n '1,25p'
           echo
-          curl -i --max-time 12 "http://${PUBLIC_HOST}/api/health" | sed -n '1,30p'
+          curl -iL --max-time 12 "https://${PUBLIC_HOST}/api/health" | sed -n '1,30p'
           echo
 
           echo "=== VPS DIAGNOSTICS ==="
           ssh -i ~/.ssh/deploy_key -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-            "VPS_APP_DIR='$VPS_APP_DIR' VPS_BACKEND_SERVICE='$VPS_BACKEND_SERVICE' VPS_FRONTEND_DIR='$VPS_FRONTEND_DIR' bash -se" <<'REMOTE_DIAG'
+            "VPS_APP_DIR='$VPS_APP_DIR' VPS_BACKEND_SERVICE='$VPS_BACKEND_SERVICE' VPS_FRONTEND_DIR='$VPS_FRONTEND_DIR' PUBLIC_HOST='$PUBLIC_HOST' bash -se" <<'REMOTE_DIAG'
           set +e
           APP_DIR="${VPS_APP_DIR:-/opt/smartB}"
           BACKEND_SERVICE="${VPS_BACKEND_SERVICE:-smartbling-backend}"
@@ -216,6 +234,14 @@ jobs:
 
           echo "APP_DIR=$APP_DIR"
           echo "FRONTEND_TARGET_DIR=$FRONTEND_TARGET_DIR"
+          echo "PUBLIC_HOST=${PUBLIC_HOST:-unset}"
+
+          echo "--- server identity ---"
+          hostname || true
+          hostname -I || true
+          curl -s --max-time 8 https://api.ipify.org || true
+          echo
+          getent hosts "${PUBLIC_HOST:-}" || true
 
           echo "--- systemd status ---"
           systemctl status "$BACKEND_SERVICE" --no-pager -n 40 || true
@@ -254,4 +280,10 @@ jobs:
 
           echo "--- localhost nginx build-info ---"
           curl -i --max-time 8 "http://127.0.0.1/build-info.json" | sed -n '1,25p' || true
+
+          echo "--- public host from VPS ---"
+          if [ -n "${PUBLIC_HOST:-}" ]; then
+            curl -iL --max-time 8 "https://${PUBLIC_HOST}/build-info.json" | sed -n '1,25p' || true
+            curl -iL --max-time 8 "https://${PUBLIC_HOST}/api/health" | sed -n '1,25p' || true
+          fi
           REMOTE_DIAG

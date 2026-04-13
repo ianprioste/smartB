@@ -19,6 +19,8 @@ APT_PACKAGES=(
   python3
   python3-pip
   python3-venv
+  certbot
+  python3-certbot-nginx
 )
 
 if command -v python3 >/dev/null 2>&1; then

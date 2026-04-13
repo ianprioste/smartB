@@ -22,6 +22,7 @@ export function EventCreatePage() {
   const [productQuery, setProductQuery] = useState('');
   const [searchingProducts, setSearchingProducts] = useState(false);
   const [productResults, setProductResults] = useState([]);
+  const [includeChildren, setIncludeChildren] = useState(false);
   const [selectedProducts, setSelectedProducts] = useState([]);
   const [editingEventId, setEditingEventId] = useState(null);
 
@@ -43,6 +44,12 @@ export function EventCreatePage() {
     loadEvents();
   }, []);
 
+  useEffect(() => {
+    if (productQuery.trim()) {
+      searchProducts();
+    }
+  }, [includeChildren]);
+
   async function searchProducts() {
     const q = productQuery.trim();
     if (!q) {
@@ -52,7 +59,9 @@ export function EventCreatePage() {
 
     try {
       setSearchingProducts(true);
-      const resp = await fetch(`${API_BASE}/bling/products/search?q=${encodeURIComponent(q)}&page=1&limit=20`);
+      const resp = await fetch(
+        `${API_BASE}/bling/products/search?q=${encodeURIComponent(q)}&page=1&limit=20&include_children=${includeChildren}`
+      );
       if (!resp.ok) throw new Error('Falha ao buscar produtos');
       const data = await resp.json();
       setProductResults(data.items || []);
@@ -135,6 +144,19 @@ export function EventCreatePage() {
       }
 
       setSuccess('Campanha excluída com sucesso');
+      await loadEvents();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleToggleStatus(eventId) {
+    try {
+      setError(null);
+      const resp = await fetch(`${API_BASE}/events/${eventId}/toggle-status`, { method: 'PATCH' });
+      if (!resp.ok) throw new Error('Falha ao alternar status da campanha');
+
+      setSuccess('Status da campanha alterado com sucesso');
       await loadEvents();
     } catch (err) {
       setError(err.message);
@@ -231,11 +253,31 @@ export function EventCreatePage() {
             <div className="form-group">
               <label>Produtos da Campanha</label>
               <p className="helper-text">Ao selecionar um produto pai, todas as variações filhas são incluídas automaticamente na campanha.</p>
+              <div className="campaign-toggle-row">
+                <span className="campaign-toggle-title">Exibir itens filhos na busca</span>
+                <label className="campaign-toggle" aria-label="Exibir itens filhos na busca">
+                  <input
+                    type="checkbox"
+                    checked={includeChildren}
+                    onChange={(e) => setIncludeChildren(e.target.checked)}
+                  />
+                  <span className="campaign-toggle-slider" />
+                </label>
+                <span className={`campaign-toggle-state ${includeChildren ? 'on' : 'off'}`}>
+                  {includeChildren ? 'Ativo' : 'Inativo'}
+                </span>
+              </div>
+              <p className="helper-text">
+                {includeChildren
+                  ? 'Ativo: busca retorna produtos pai e filhos.'
+                  : 'Inativo: busca retorna apenas produtos pai.'}
+              </p>
               <div className="search-box">
                 <input
                   type="text"
                   value={productQuery}
                   onChange={(e) => setProductQuery(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); searchProducts(); } }}
                   placeholder="Buscar por nome ou SKU"
                 />
                 <button type="button" className="btn-secondary" onClick={searchProducts} disabled={searchingProducts}>
@@ -307,6 +349,7 @@ export function EventCreatePage() {
                   <th>Período</th>
                   <th>Produtos</th>
                   <th>Criado em</th>
+                                    <th>Status</th>
                   <th>Ações</th>
                 </tr>
               </thead>
@@ -317,9 +360,26 @@ export function EventCreatePage() {
                     <td>{formatDate(event.start_date)} até {formatDate(event.end_date)}</td>
                     <td>{event.products_count}</td>
                     <td>{formatDate(event.created_at)}</td>
+                                        <td>
+                                          <span style={{
+                                            display: 'inline-block',
+                                            padding: '4px 10px',
+                                            borderRadius: 4,
+                                            fontSize: 12,
+                                            fontWeight: 600,
+                                            background: event.is_active ? '#dcfce7' : '#f1f5f9',
+                                            color: event.is_active ? '#166534' : '#64748b',
+                                            border: `1px solid ${event.is_active ? '#86efac' : '#cbd5e1'}`
+                                          }}>
+                                            {event.is_active ? '✓ Ativo' : '○ Inativo'}
+                                          </span>
+                                        </td>
                     <td style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                       <button type="button" className="btn-secondary" onClick={() => handleEdit(event.id)}>Editar</button>
                       <button type="button" onClick={() => handleDelete(event.id)}>Excluir</button>
+                                          <button type="button" className="btn-secondary" onClick={() => handleToggleStatus(event.id)}>
+                                            {event.is_active ? 'Desativar' : 'Ativar'}
+                                          </button>
                     </td>
                   </tr>
                 ))}

@@ -33,6 +33,56 @@ class TokenAuthResponse(BaseModel):
     access_token: Optional[str] = None
 
 
+class PasswordResetRequest(BaseModel):
+    email: str
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        email = (v or "").strip().lower()
+        if "@" not in email or "." not in email.split("@")[-1]:
+            raise ValueError("E-mail inválido")
+        return email
+
+
+class PasswordResetCodeVerifyRequest(BaseModel):
+    email: str
+    code: str
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        email = (v or "").strip().lower()
+        if "@" not in email or "." not in email.split("@")[-1]:
+            raise ValueError("E-mail inválido")
+        return email
+
+    @field_validator("code")
+    @classmethod
+    def validate_code(cls, v: str) -> str:
+        code = (v or "").strip()
+        if len(code) != 6 or not code.isdigit():
+            raise ValueError("Código inválido")
+        return code
+
+
+class PasswordResetConfirmRequest(PasswordResetCodeVerifyRequest):
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, v: str) -> str:
+        password = (v or "").strip()
+        if len(password) < 6:
+            raise ValueError("Senha deve ter pelo menos 6 caracteres")
+        return password
+
+
+class SimpleMessageResponse(BaseModel):
+    ok: bool = True
+    message: str
+
+
 # ============ Job Schemas ============
 
 class JobItemRequest(BaseModel):
@@ -513,6 +563,7 @@ class SalesEventListItemResponse(BaseModel):
     start_date: date
     end_date: date
     products_count: int
+    is_active: bool = True
     created_at: datetime
 
 

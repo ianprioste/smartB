@@ -1,9 +1,81 @@
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { Layout } from '../../components/Layout';
 import { ProductionStatusBadge, ProductionNotesInput } from '../../components/ProductionControls';
 import useIsMobile from '../../hooks/useIsMobile';
+import { useVersionPolling } from '../../hooks/useVersionPolling';
 
 const API_BASE = '/api';
+const EVENT_SALES_UI_STATE_KEY = 'smartbling:event-sales:ui-state:v2';
+
+function normalizeExpandedKey(value) {
+  if (value == null || value === '') return null;
+  return String(value);
+}
+
+function isExpandedMatch(current, next) {
+  if (current == null || next == null) return false;
+  return String(current) === String(next);
+}
+
+function getScrollContainer() {
+  if (typeof document === 'undefined') return null;
+  return document.querySelector('.page-content');
+}
+
+function getCurrentScrollY() {
+  if (typeof window === 'undefined') return 0;
+  const container = getScrollContainer();
+  if (container) return container.scrollTop;
+  return window.scrollY;
+}
+
+function restoreScrollY(value) {
+  if (typeof window === 'undefined') return;
+  const targetY = Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
+  const container = getScrollContainer();
+  if (container) {
+    container.scrollTop = targetY;
+    return;
+  }
+  window.scrollTo(0, targetY);
+}
+
+function readSavedUiState() {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(EVENT_SALES_UI_STATE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return {
+      selectedEventId: parsed?.selectedEventId ? String(parsed.selectedEventId) : '',
+      groupBy: parsed?.groupBy === 'item' ? 'item' : 'pedido',
+      expandedOrderId: normalizeExpandedKey(parsed?.expandedOrderId),
+      searchTerm: typeof parsed?.searchTerm === 'string' ? parsed.searchTerm : '',
+      selectedStatuses: Array.isArray(parsed?.selectedStatuses)
+        ? new Set(parsed.selectedStatuses.filter((value) => typeof value === 'string' && value.trim()))
+        : null,
+      scrollY: Number.isFinite(Number(parsed?.scrollY)) ? Math.max(0, Number(parsed.scrollY)) : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistUiState(state) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(EVENT_SALES_UI_STATE_KEY, JSON.stringify({
+      selectedEventId: state.selectedEventId || '',
+      groupBy: state.groupBy === 'item' ? 'item' : 'pedido',
+      expandedOrderId: state.expandedOrderId ?? null,
+      searchTerm: state.searchTerm || '',
+      selectedStatuses: state.selectedStatuses ? Array.from(state.selectedStatuses) : null,
+      scrollY: Number.isFinite(Number(state.scrollY)) ? Math.max(0, Number(state.scrollY)) : 0,
+    }));
+  } catch {
+    // Ignore persistence failures (private mode/quota).
+  }
+}
 
 function formatBRL(value) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value ?? 0);
@@ -50,17 +122,26 @@ function normalizeStatusLabel(value) {
 }
 
 export function EventSalesPage() {
-  const isMobile = useIsMobile(768);
+  const savedUiState = readSavedUiState();
+  const isMobile = useIsMobile(1024);
   const [events, setEvents] = useState([]);
-  const [selectedEventId, setSelectedEventId] = useState('');
+  const [selectedEventId, setSelectedEventId] = useState(savedUiState?.selectedEventId || '');
   const [salesData, setSalesData] = useState(null);
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [loadingSales, setLoadingSales] = useState(false);
   const [error, setError] = useState(null);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [selectedStatuses, setSelectedStatuses] = useState(null);
-  const [expandedOrderId, setExpandedOrderId] = useState(null);
-  const [groupBy, setGroupBy] = useState('pedido');
+  const [searchTerm, setSearchTerm] = useState(savedUiState?.searchTerm || '');
+  const [selectedStatuses, setSelectedStatuses] = useState(() => savedUiState?.selectedStatuses ?? null);
+  const [expandedOrderId, setExpandedOrderId] = useState(savedUiState?.expandedOrderId || null);
+  const [groupBy, setGroupBy] = useState(savedUiState?.groupBy || 'pedido');
+  const deltaCursorRef = useRef(null);
+  const suppressDeltaUntilRef = useRef(0);
+  const initialScrollYRef = useRef(savedUiState?.scrollY || 0);
+  const hasRestoredScrollRef = useRef(false);
+
+  const markLocalMutation = useCallback(() => {
+    suppressDeltaUntilRef.current = Date.now() + 4000;
+  }, []);
 
   const handleProductionSaved = useCallback((sku, newStatus, newNotes, orderId) => {
     setSalesData((prev) => {
@@ -91,11 +172,12 @@ export function EventSalesPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ production_status: nextStatus, bling_order_id: orderId || null }),
       });
+      markLocalMutation();
       handleProductionSaved(sku, nextStatus, undefined, orderId);
     } catch (err) {
       console.error('Failed to save production status', err);
     }
-  }, [selectedEventId, handleProductionSaved]);
+  }, [selectedEventId, handleProductionSaved, markLocalMutation]);
 
   const handleProductionNotesChange = useCallback((sku, orderId, productionStatus, notes) => {
     fetch(`${API_BASE}/events/${selectedEventId}/items/${encodeURIComponent(sku)}/production`, {
@@ -103,8 +185,9 @@ export function EventSalesPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ production_status: productionStatus || 'Pendente', notes, bling_order_id: orderId || null }),
     }).catch(() => {});
+    markLocalMutation();
     handleProductionSaved(sku, undefined, notes, orderId);
-  }, [selectedEventId, handleProductionSaved]);
+  }, [selectedEventId, handleProductionSaved, markLocalMutation]);
 
   const handleOrderStatusChange = useCallback(async (orderId, newStatus) => {
     try {
@@ -114,6 +197,7 @@ export function EventSalesPage() {
         body: JSON.stringify({ situacao: newStatus }),
       });
       if (!resp.ok) throw new Error('Falha ao atualizar status');
+      markLocalMutation();
       setSalesData((prev) => {
         if (!prev) return prev;
         const orders = prev.orders.map((o) => o.id === orderId ? { ...o, situacao: newStatus } : o);
@@ -122,18 +206,23 @@ export function EventSalesPage() {
     } catch (err) {
       alert(`Erro: ${err.message}`);
     }
-  }, [selectedEventId]);
+  }, [markLocalMutation, selectedEventId]);
 
   async function loadEvents() {
     try {
       setLoadingEvents(true);
+      setError(null);
       const resp = await fetch(`${API_BASE}/events`);
-      if (!resp.ok) throw new Error('Falha ao carregar campanhas');
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        throw new Error(errData.detail || 'Falha ao carregar campanhas');
+      }
       const data = await resp.json();
       const list = Array.isArray(data) ? data : [];
-      setEvents(list);
-      if (!selectedEventId && list.length > 0) {
-        setSelectedEventId(list[0].id);
+      const activeList = list.filter((event) => event.is_active !== false);
+      setEvents(activeList);
+      if (!selectedEventId && activeList.length > 0) {
+        setSelectedEventId(String(activeList[0].id));
       }
     } catch (err) {
       setError(err.message);
@@ -142,7 +231,7 @@ export function EventSalesPage() {
     }
   }
 
-  async function loadSales(eventId) {
+  const loadSales = useCallback(async (eventId) => {
     if (!eventId) {
       setSalesData(null);
       return;
@@ -154,27 +243,155 @@ export function EventSalesPage() {
       const resp = await fetch(`${API_BASE}/events/${eventId}/sales`);
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
-        throw new Error(errData.detail || 'Falha ao carregar vendas da campanha');
+        const message = errData.detail || 'Falha ao carregar vendas da campanha';
+        throw new Error(message);
       }
       setSalesData(await resp.json());
+      deltaCursorRef.current = new Date().toISOString();
     } catch (err) {
       setError(err.message);
       setSalesData(null);
     } finally {
       setLoadingSales(false);
     }
-  }
+  }, []);
+
+  const fetchEventVersion = useCallback(async () => {
+    if (!selectedEventId) return null;
+    const resp = await fetch(`${API_BASE}/events/${selectedEventId}/sync/version`);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    if (data.last_updated_at) {
+      deltaCursorRef.current = data.last_updated_at;
+    }
+    return data.current_version;
+  }, [selectedEventId]);
+
+  const handleEventVersionChange = useCallback(async () => {
+    if (Date.now() < suppressDeltaUntilRef.current) {
+      return;
+    }
+    if (!selectedEventId) return;
+    try {
+      const params = new URLSearchParams();
+      if (deltaCursorRef.current) {
+        params.set('since', deltaCursorRef.current);
+      }
+      const resp = await fetch(`${API_BASE}/events/${selectedEventId}/sync/updates?${params.toString()}`);
+      if (!resp.ok) {
+        return;
+      }
+      const delta = await resp.json();
+      if (delta.server_time) {
+        deltaCursorRef.current = delta.server_time;
+      }
+
+      const statusMap = new Map((delta.order_status_updates || []).map((u) => [Number(u.order_id), u.situacao]));
+      const productionUpdates = delta.production_updates || [];
+      const productionByExactKey = new Map();
+      const productionBySku = new Map();
+      productionUpdates.forEach((u) => {
+        const sku = (u.sku || '').toUpperCase();
+        if (!sku) return;
+        if (u.bling_order_id == null) {
+          // Keep only latest update per SKU (last write wins).
+          productionBySku.set(sku, u);
+          return;
+        }
+        const exactKey = `${sku}::${Number(u.bling_order_id)}`;
+        // Keep only latest update per SKU+order (last write wins).
+        productionByExactKey.set(exactKey, u);
+      });
+
+      setSalesData((prev) => {
+        if (!prev) return prev;
+        const orders = (prev.orders || []).map((order) => {
+          const orderId = Number(order.id);
+          const nextStatus = statusMap.get(orderId);
+          const matchedItems = (order.matched_items || []).map((item) => {
+            const sku = (item.sku || '').toUpperCase();
+            const exactKey = `${sku}::${orderId}`;
+            // Prefer strict SKU+order match, fallback to SKU-only update.
+            const match = productionByExactKey.get(exactKey) || productionBySku.get(sku);
+            if (!match) return item;
+            return {
+              ...item,
+              production_status: match.production_status,
+              notes: match.notes,
+            };
+          });
+          const embalado = matchedItems.filter((i) => i.production_status === 'Embalado').length;
+          return {
+            ...order,
+            ...(nextStatus ? { situacao: nextStatus } : {}),
+            matched_items: matchedItems,
+            production_summary: `${embalado}/${matchedItems.length} Embalado`,
+          };
+        });
+        return { ...prev, orders };
+      });
+    } catch {
+      // Keep current list stable; retry on next polling cycle.
+    }
+  }, [selectedEventId]);
 
   useEffect(() => {
     loadEvents();
   }, []);
 
   useEffect(() => {
+    if (loadingEvents) return;
+    if (events.length === 0) {
+      setSalesData(null);
+      return;
+    }
+    const hasSelected = events.some((event) => String(event.id) === String(selectedEventId));
+    if (!hasSelected) {
+      setSelectedEventId(String(events[0].id));
+    }
+  }, [events, loadingEvents, selectedEventId]);
+
+  useEffect(() => {
+    persistUiState({
+      selectedEventId,
+      groupBy,
+      expandedOrderId,
+      searchTerm,
+      selectedStatuses,
+      scrollY: getCurrentScrollY(),
+    });
+  }, [selectedEventId, groupBy, expandedOrderId, searchTerm, selectedStatuses]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const persistOnUnload = () => {
+      persistUiState({
+        selectedEventId,
+        groupBy,
+        expandedOrderId,
+        searchTerm,
+        selectedStatuses,
+        scrollY: getCurrentScrollY(),
+      });
+    };
+    window.addEventListener('beforeunload', persistOnUnload);
+    return () => window.removeEventListener('beforeunload', persistOnUnload);
+  }, [selectedEventId, groupBy, expandedOrderId, searchTerm, selectedStatuses]);
+
+  useEffect(() => {
     if (selectedEventId) {
-      setSelectedStatuses(null);
       loadSales(selectedEventId);
     }
-  }, [selectedEventId]);
+  }, [loadSales, selectedEventId]);
+
+  useVersionPolling({
+    enabled: Boolean(selectedEventId) && !loadingSales,
+    pollKey: selectedEventId ? `event_sales:${selectedEventId}` : 'event_sales:none',
+    fetchVersion: fetchEventVersion,
+    onVersionChange: handleEventVersionChange,
+    intervalMsActive: 7000,
+    intervalMsHidden: 15000,
+  });
 
   const availableStatuses = useMemo(() => {
     const allOrders = Array.isArray(salesData?.orders) ? salesData.orders : [];
@@ -187,10 +404,22 @@ export function EventSalesPage() {
     if (availableStatuses.length > 0) {
       setSelectedStatuses((prev) => {
         if (prev === null) return new Set(availableStatuses);
-        return prev;
+        const allowed = new Set(availableStatuses);
+        const filtered = new Set(Array.from(prev).filter((status) => allowed.has(status)));
+        return filtered;
       });
     }
   }, [availableStatuses]);
+
+  useEffect(() => {
+    if (loadingSales || hasRestoredScrollRef.current || typeof window === 'undefined') return;
+    hasRestoredScrollRef.current = true;
+    if (initialScrollYRef.current > 0) {
+      window.requestAnimationFrame(() => {
+        restoreScrollY(initialScrollYRef.current);
+      });
+    }
+  }, [loadingSales]);
 
   const visibleOrders = useMemo(() => {
     const allOrders = Array.isArray(salesData?.orders) ? salesData.orders : [];
@@ -230,7 +459,8 @@ export function EventSalesPage() {
   };
 
   const toggleOrder = (orderId) => {
-    setExpandedOrderId((prev) => (prev === orderId ? null : orderId));
+    const normalizedId = normalizeExpandedKey(orderId);
+    setExpandedOrderId((prev) => (isExpandedMatch(prev, normalizedId) ? null : normalizedId));
   };
 
   const groupedByItem = useMemo(() => {
@@ -326,17 +556,39 @@ export function EventSalesPage() {
           <div style={{ padding: 20 }}>
             {loadingEvents ? (
               <p className="loading">Carregando campanhas...</p>
+            ) : events.length === 0 ? (
+              <div className="empty-state" style={{ padding: '24px 8px' }}>
+                <span className="empty-state-icon">🗂️</span>
+                <p>Nenhuma campanha ativa disponível.</p>
+              </div>
             ) : (
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label>Campanha</label>
-                <select value={selectedEventId} onChange={(e) => setSelectedEventId(e.target.value)}>
-                  <option value="">Selecione uma campanha</option>
-                  {events.map((event) => (
-                    <option value={event.id} key={event.id}>
-                      {event.name} ({formatDate(event.start_date)} - {formatDate(event.end_date)})
-                    </option>
-                  ))}
-                </select>
+              <div style={{ display: 'grid', gap: 10 }}>
+                {events.map((event) => {
+                  const selected = String(selectedEventId) === String(event.id);
+                  return (
+                    <button
+                      key={event.id}
+                      type="button"
+                      onClick={() => setSelectedEventId(String(event.id))}
+                      style={{
+                        border: selected ? '2px solid #2563eb' : '1px solid #e2e8f0',
+                        borderRadius: 10,
+                        background: selected ? '#eff6ff' : '#ffffff',
+                        padding: '12px 14px',
+                        textAlign: 'left',
+                        cursor: 'pointer',
+                        display: 'grid',
+                        gap: 4,
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, color: selected ? '#1d4ed8' : '#0f172a' }}>{event.name}</div>
+                      <div style={{ fontSize: 12, color: '#475569' }}>
+                        {formatDate(event.start_date)} - {formatDate(event.end_date)}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#64748b' }}>{event.products_count} produto(s)</div>
+                    </button>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -443,7 +695,7 @@ export function EventSalesPage() {
                     <div style={{ display: 'grid', gap: 12, padding: 12 }}>
                       {groupedByItem.map((group) => {
                         const gKey = group.sku || group.product_name;
-                        const isExpanded = expandedOrderId === gKey;
+                        const isExpanded = isExpandedMatch(expandedOrderId, gKey);
                         return (
                           <div key={gKey} style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
                             <button
@@ -485,6 +737,7 @@ export function EventSalesPage() {
                                     </div>
                                     <ProductionNotesInput
                                       initialValue={o.notes}
+                                      status={o.production_status}
                                       onChangeNotes={(notes) => handleProductionNotesChange(group.sku, o.order_id, o.production_status, notes)}
                                     />
                                   </div>
@@ -510,7 +763,7 @@ export function EventSalesPage() {
                       <tbody>
                         {groupedByItem.map((group) => {
                           const gKey = group.sku || group.product_name;
-                          const isExpanded = expandedOrderId === gKey;
+                          const isExpanded = isExpandedMatch(expandedOrderId, gKey);
                           return (
                             <React.Fragment key={gKey}>
                               <tr
@@ -563,6 +816,7 @@ export function EventSalesPage() {
                                             <td style={{ padding: '8px', minWidth: 150 }}>
                                               <ProductionNotesInput
                                                 initialValue={o.notes}
+                                                status={o.production_status}
                                                 onChangeNotes={(notes) => handleProductionNotesChange(group.sku, o.order_id, o.production_status, notes)}
                                               />
                                             </td>
@@ -588,7 +842,7 @@ export function EventSalesPage() {
                 <div style={{ display: 'grid', gap: 12, padding: 12 }}>
                   {visibleOrders.map((order) => {
                     const orderKey = order.id || order.numero;
-                    const isExpanded = expandedOrderId === orderKey;
+                    const isExpanded = isExpandedMatch(expandedOrderId, orderKey);
                     const matchedItems = Array.isArray(order.matched_items) ? order.matched_items : [];
                     const allEmbalado = matchedItems.length > 0 && matchedItems.every((i) => i.production_status === 'Embalado');
 
@@ -643,6 +897,7 @@ export function EventSalesPage() {
                                   </div>
                                   <ProductionNotesInput
                                     initialValue={item.notes}
+                                    status={item.production_status}
                                     onChangeNotes={(notes) => handleProductionNotesChange(item.sku, order.id, item.production_status, notes)}
                                   />
                                 </div>
@@ -672,7 +927,7 @@ export function EventSalesPage() {
                   <tbody>
                     {visibleOrders.map((order) => {
                       const orderKey = order.id || order.numero;
-                      const isExpanded = expandedOrderId === orderKey;
+                      const isExpanded = isExpandedMatch(expandedOrderId, orderKey);
                       const matchedItems = Array.isArray(order.matched_items) ? order.matched_items : [];
                       const allEmbalado = matchedItems.length > 0 && matchedItems.every((i) => i.production_status === 'Embalado');
 
@@ -738,6 +993,7 @@ export function EventSalesPage() {
                                           <td style={{ padding: '8px', minWidth: 150 }}>
                                             <ProductionNotesInput
                                               initialValue={item.notes}
+                                              status={item.production_status}
                                               onChangeNotes={(notes) => handleProductionNotesChange(item.sku, order.id, item.production_status, notes)}
                                             />
                                           </td>

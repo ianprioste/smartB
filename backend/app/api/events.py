@@ -2,7 +2,7 @@
 from typing import Any, Dict, List
 from uuid import UUID
 import re
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -16,6 +16,11 @@ from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.order_snapshot_repo import OrderSnapshotRepository
 from app.repositories.sales_event_repo import SalesEventRepository
 from app.repositories.item_production_note_repo import ItemProductionNoteRepository
+from app.repositories.sync_scope_version_repo import (
+    SyncScopeVersionRepository,
+    SCOPE_ORDERS_GLOBAL,
+    scope_event_sales,
+)
 from app.models.schemas import (
     SalesEventCreateRequest,
     SalesEventUpdateRequest,
@@ -47,6 +52,25 @@ _CANCELADO_IDS = {12, 15}
 STATUS_ID_NAME_MAP = {**{sid: "Atendido" for sid in _ATENDIDO_IDS}, **{sid: "Cancelado" for sid in _CANCELADO_IDS}}
 
 
+def _field_was_provided(model, field_name: str) -> bool:
+    fields_set = getattr(model, "model_fields_set", None)
+    if fields_set is None:
+        fields_set = getattr(model, "__fields_set__", set())
+    return field_name in fields_set
+
+
+def _parse_since_cursor(since: str | None) -> datetime:
+    if not since:
+        return datetime.utcnow() - timedelta(seconds=30)
+    text = since.strip()
+    if not text:
+        return datetime.utcnow() - timedelta(seconds=30)
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Cursor 'since' inválido")
+
+
 def _has_frete(detail_payload: Dict[str, Any] | None, order_payload: Dict[str, Any] | None = None) -> bool:
     """Return True if the order has shipping cost (frete), meaning it's a delivery."""
     for payload in (detail_payload, order_payload):
@@ -72,16 +96,19 @@ def _inject_production_data(db: Session, event_id: UUID, filtered_orders: list) 
     """Populate production_status, notes, and production_summary on order items."""
     notes = ItemProductionNoteRepository.get_all_for_event(db, DEFAULT_TENANT_ID, event_id)
     note_map = {}
+    sku_fallback_map = {}
     for n in notes:
         sku_key = n.sku.strip().upper()
         note_map[(sku_key, n.bling_order_id)] = n
+        if n.bling_order_id is None:
+            sku_fallback_map[sku_key] = n
     for order in filtered_orders:
         embalado_count = 0
         total_items = len(order.matched_items)
         order_bling_id = order.id  # bling_order_id stored as order.id
         for item in order.matched_items:
             sku_key = (item.sku or "").strip().upper()
-            note = note_map.get((sku_key, order_bling_id))
+            note = note_map.get((sku_key, order_bling_id)) or sku_fallback_map.get(sku_key)
             if note:
                 item.production_status = note.production_status
                 item.notes = note.notes
@@ -592,24 +619,93 @@ async def delete_event(event_id: UUID, db: Session = Depends(get_db)):
     return None
 
 
+@router.patch("/{event_id}/toggle-status")
+async def toggle_event_status(event_id: UUID, db: Session = Depends(get_db)):
+    """Toggle event active status between active and inactive."""
+    event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
+    if not event:
+        raise HTTPException(status_code=404, detail="Evento não encontrado")
+
+    event.is_active = not event.is_active
+    db.commit()
+    db.refresh(event)
+
+    return {
+        "ok": True,
+        "id": event.id,
+        "name": event.name,
+        "is_active": event.is_active,
+    }
+
+
 @router.get("", response_model=List[SalesEventListItemResponse])
 async def list_events(db: Session = Depends(get_db)):
-    events = SalesEventRepository.list_by_tenant(db, DEFAULT_TENANT_ID)
+    from sqlalchemy.exc import OperationalError
+    from sqlalchemy import text
+
+    # Primary path: full ORM query including is_active column.
+    try:
+        events = SalesEventRepository.list_by_tenant(db, DEFAULT_TENANT_ID)
+    except OperationalError as exc:
+        # Fallback: is_active column may not exist yet (pending migration).
+        # Query without that column and default to True so the page loads normally.
+        logger.warning("list_events_is_active_missing – running fallback query. error=%s", str(exc)[:200])
+        db.rollback()
+        try:
+            rows = db.execute(
+                text(
+                    "SELECT id, name, start_date, end_date, created_at "
+                    "FROM sales_events WHERE tenant_id = :tid ORDER BY created_at DESC"
+                ),
+                {"tid": str(DEFAULT_TENANT_ID).replace("-", "")},
+            ).fetchall()
+        except Exception:
+            rows = db.execute(
+                text(
+                    "SELECT id, name, start_date, end_date, created_at "
+                    "FROM sales_events WHERE tenant_id = :tid ORDER BY created_at DESC"
+                ),
+                {"tid": str(DEFAULT_TENANT_ID)},
+            ).fetchall()
+
+        class _PlainEvent:
+            __slots__ = ("id", "name", "start_date", "end_date", "created_at", "is_active")
+
+            def __init__(self, row):
+                self.id = row[0]
+                self.name = row[1]
+                self.start_date = row[2]
+                self.end_date = row[3]
+                self.created_at = row[4]
+                self.is_active = True
+
+        events = [_PlainEvent(r) for r in rows]
+
     results: List[SalesEventListItemResponse] = []
 
     for event in events:
-        products = SalesEventRepository.list_products(db, event.id)
+        try:
+            products = SalesEventRepository.list_products(db, event.id)
+        except Exception:
+            products = []
+        # Defensive casting: guard against NULL is_active from legacy rows.
+        is_active = True if event.is_active is None else bool(event.is_active)
+        if event.is_active is None:
+            logger.warning("event_list_null_is_active event_id=%s defaulting_true", str(event.id))
         results.append(
             SalesEventListItemResponse(
                 id=event.id,
                 name=event.name,
                 start_date=event.start_date,
                 end_date=event.end_date,
-                products_count=len(products),
+                products_count=int(len(products)),
+                is_active=is_active,
                 created_at=event.created_at,
             )
         )
 
+    # Sort by end_date DESC, then start_date DESC
+    results.sort(key=lambda x: (x.end_date, x.start_date), reverse=True)
     return results
 
 
@@ -893,6 +989,72 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Erro ao buscar vendas do evento: {exc}")
 
 
+@router.get("/{event_id}/sync/version")
+async def get_event_sync_version(event_id: UUID, db: Session = Depends(get_db)):
+    """Lightweight version token for event sales delta polling."""
+    event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
+    if not event:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+
+    scope_key = scope_event_sales(event_id)
+    row = SyncScopeVersionRepository.get_scope_version(db, DEFAULT_TENANT_ID, scope_key)
+    return {
+        "ok": True,
+        "scope": scope_key,
+        "current_version": int(row.version) if row else 0,
+        "last_updated_at": row.updated_at.isoformat() if row and row.updated_at else None,
+    }
+
+
+@router.get("/{event_id}/sync/updates")
+async def get_event_sync_updates(
+    event_id: UUID,
+    since: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Incremental updates for event sales page (notes/status only)."""
+    event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
+    if not event:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+
+    since_dt = _parse_since_cursor(since)
+    scope_key = scope_event_sales(event_id)
+    version_row = SyncScopeVersionRepository.get_scope_version(db, DEFAULT_TENANT_ID, scope_key)
+    status_rows = OrderSnapshotRepository.list_status_updates_since(db, DEFAULT_TENANT_ID, since_dt)
+    production_rows = ItemProductionNoteRepository.list_updated_since(
+        db,
+        DEFAULT_TENANT_ID,
+        since_dt,
+        event_id=event_id,
+    )
+
+    return {
+        "ok": True,
+        "scope": scope_key,
+        "current_version": int(version_row.version) if version_row else 0,
+        "last_updated_at": version_row.updated_at.isoformat() if version_row and version_row.updated_at else None,
+        "server_time": datetime.utcnow().isoformat(),
+        "order_status_updates": [
+            {
+                "order_id": int(row.bling_order_id),
+                "situacao": row.status_name,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+            for row in status_rows
+        ],
+        "production_updates": [
+            {
+                "sku": row.sku,
+                "bling_order_id": int(row.bling_order_id) if row.bling_order_id is not None else None,
+                "production_status": row.production_status,
+                "notes": row.notes,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+            for row in production_rows
+        ],
+    }
+
+
 @router.put("/{event_id}/items/{sku}/production", response_model=ItemProductionNoteResponse)
 async def update_item_production(
     event_id: UUID,
@@ -911,13 +1073,23 @@ async def update_item_production(
 
     norm_sku = sku.strip().upper()
     row = ItemProductionNoteRepository.upsert(
-        db, DEFAULT_TENANT_ID, event_id, norm_sku, body.production_status, body.notes,
+        db,
+        DEFAULT_TENANT_ID,
+        event_id,
+        norm_sku,
+        body.production_status,
+        body.notes,
         bling_order_id=body.bling_order_id,
+        preserve_existing_notes=not _field_was_provided(body, "notes"),
     )
 
     # Auto-update Bling when all items of an order become "Embalado".
     if body.production_status == "Embalado":
         await _check_and_update_bling_orders(db, event, event_id)
+
+    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, scope_event_sales(event_id))
+    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
+    db.commit()
 
     return ItemProductionNoteResponse(
         sku=row.sku, production_status=row.production_status, notes=row.notes,
@@ -1048,6 +1220,9 @@ async def update_order_status(
     if snapshot:
         snapshot.status_id = target_id
         snapshot.status_name = body.situacao
-        db.commit()
+
+    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, scope_event_sales(event_id))
+    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
+    db.commit()
 
     return {"ok": True, "order_id": order_id, "new_status": body.situacao}

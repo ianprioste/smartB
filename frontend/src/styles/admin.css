@@ -552,6 +552,82 @@ button:active:not(:disabled) {
   font-style: italic;
 }
 
+.campaign-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.campaign-toggle-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.campaign-toggle {
+  position: relative;
+  display: inline-block;
+  width: 46px;
+  height: 26px;
+}
+
+.campaign-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.campaign-toggle-slider {
+  position: absolute;
+  inset: 0;
+  cursor: pointer;
+  background-color: #cbd5e1;
+  border-radius: 999px;
+  transition: background-color 0.2s ease;
+}
+
+.campaign-toggle-slider::before {
+  content: "";
+  position: absolute;
+  height: 20px;
+  width: 20px;
+  left: 3px;
+  top: 3px;
+  background-color: #ffffff;
+  border-radius: 50%;
+  transition: transform 0.2s ease;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.25);
+}
+
+.campaign-toggle input:checked + .campaign-toggle-slider {
+  background-color: #2563eb;
+}
+
+.campaign-toggle input:checked + .campaign-toggle-slider::before {
+  transform: translateX(20px);
+}
+
+.campaign-toggle-state {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  padding: 4px 8px;
+  border-radius: 999px;
+}
+
+.campaign-toggle-state.off {
+  color: #475569;
+  background: #e2e8f0;
+}
+
+.campaign-toggle-state.on {
+  color: #1e3a8a;
+  background: #dbeafe;
+}
+
 p {
   color: #64748b;
   line-height: 1.6;

@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 const API_BASE = '/api';
 
 export function LoginPage({ onLoginSuccess }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(false);
@@ -12,6 +13,18 @@ export function LoginPage({ onLoginSuccess }) {
   const [checkingBootstrap, setCheckingBootstrap] = useState(true);
   const [bootstrapHint, setBootstrapHint] = useState('');
   const [error, setError] = useState('');
+  const [infoMessage, setInfoMessage] = useState('');
+
+  useEffect(() => {
+    const nextEmail = location.state?.email;
+    const resetSuccess = location.state?.resetSuccess;
+    if (typeof nextEmail === 'string') {
+      setEmail(nextEmail);
+    }
+    if (typeof resetSuccess === 'string' && resetSuccess) {
+      setInfoMessage(resetSuccess);
+    }
+  }, [location.state]);
 
   useEffect(() => {
     let mounted = true;
@@ -38,6 +51,7 @@ export function LoginPage({ onLoginSuccess }) {
   async function handleSubmit(e) {
     e.preventDefault();
     setError('');
+    setInfoMessage('');
     setLoading(true);
 
     try {
@@ -120,6 +134,20 @@ export function LoginPage({ onLoginSuccess }) {
           {error && (
             <div className="error" style={{ marginBottom: 12 }}>{error}</div>
           )}
+
+          {infoMessage && (
+            <div className="info-box" style={{ marginBottom: 12 }}><p>{infoMessage}</p></div>
+          )}
+
+          <div style={{ marginBottom: 16, textAlign: 'right' }}>
+            <button
+              type="button"
+              onClick={() => navigate('/forgot-password', { state: { email } })}
+              style={{ background: 'none', border: 'none', color: '#0369a1', cursor: 'pointer', textDecoration: 'underline', fontSize: 13, padding: 0 }}
+            >
+              Esqueci minha senha
+            </button>
+          </div>
 
           <button type="submit" className="btn-primary" disabled={loading} style={{ width: '100%' }}>
             {loading ? 'Entrando...' : 'Entrar'}

@@ -193,6 +193,22 @@ class OrderSnapshotRepository:
         )
 
     @staticmethod
+    def list_status_updates_since(
+        db: Session,
+        tenant_id: UUID,
+        since: datetime,
+    ) -> List[BlingOrderSnapshotModel]:
+        return (
+            db.query(BlingOrderSnapshotModel)
+            .filter(
+                BlingOrderSnapshotModel.tenant_id == tenant_id,
+                BlingOrderSnapshotModel.updated_at > since,
+            )
+            .order_by(BlingOrderSnapshotModel.updated_at.asc())
+            .all()
+        )
+
+    @staticmethod
     def get_sync_state(db: Session, tenant_id: UUID) -> Optional[BlingOrdersSyncStateModel]:
         return (
             db.query(BlingOrdersSyncStateModel)

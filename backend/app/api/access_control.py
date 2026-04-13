@@ -8,10 +8,14 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from app.infra.db import get_db
+from app.infra.logging import get_logger
+from app.models.schemas import PasswordResetRequest, PasswordResetCodeVerifyRequest, PasswordResetConfirmRequest, SimpleMessageResponse
 from app.repositories.access_repo import AccessRepository
+from app.services.email_service import EmailService
 from app.settings import settings
 
 router = APIRouter(prefix="/auth/access", tags=["access-control"])
+logger = get_logger(__name__)
 
 DEFAULT_TENANT_ID = UUID("00000000-0000-0000-0000-000000000001")
 SESSION_COOKIE = "smartb_session"
@@ -113,6 +117,82 @@ async def bootstrap_status(db: Session = Depends(get_db)):
         "needs_bootstrap": total_users == 0,
         "master_admin_email": settings.MASTER_ADMIN_EMAIL,
     }
+
+
+def _get_active_reset_for_email(db: Session, email: str):
+    user = AccessRepository.get_user_by_email(db, DEFAULT_TENANT_ID, email)
+    if not user or not user.is_active:
+        return None, None
+    return user, AccessRepository.get_active_password_reset_code(db, user.id)
+
+
+@router.post("/forgot-password/request", response_model=SimpleMessageResponse)
+async def request_password_reset(payload: PasswordResetRequest, db: Session = Depends(get_db)):
+    _ensure_admin_bootstrap(db)
+    email = payload.email.strip().lower()
+    user = AccessRepository.get_user_by_email(db, DEFAULT_TENANT_ID, email)
+
+    # Avoid user enumeration: always return a generic success message.
+    if user is None or not user.is_active:
+        logger.info("password_reset_requested_unknown_email email=%s", email)
+        return SimpleMessageResponse(message="Se o e-mail existir, enviaremos um código de recuperação")
+
+    code = AccessRepository.generate_password_reset_code()
+    AccessRepository.create_password_reset_code(
+        db=db,
+        tenant_id=DEFAULT_TENANT_ID,
+        user_id=user.id,
+        email=email,
+        code=code,
+        expires_minutes=settings.PASSWORD_RESET_CODE_EXPIRE_MINUTES,
+    )
+    try:
+        EmailService.send_password_reset_code(
+            to_email=email,
+            code=code,
+            expires_minutes=settings.PASSWORD_RESET_CODE_EXPIRE_MINUTES,
+        )
+    except Exception as exc:
+        db.rollback()
+        logger.error("password_reset_email_failed email=%s error=%r", email, exc)
+        raise HTTPException(status_code=500, detail="Falha ao enviar o código de recuperação")
+    db.commit()
+    logger.info("password_reset_requested email=%s", email)
+    return SimpleMessageResponse(message="Se o e-mail existir, enviaremos um código de recuperação")
+
+
+@router.post("/forgot-password/verify", response_model=SimpleMessageResponse)
+async def verify_password_reset_code(payload: PasswordResetCodeVerifyRequest, db: Session = Depends(get_db)):
+    user, reset_code = _get_active_reset_for_email(db, payload.email)
+    if not user or not reset_code:
+        raise HTTPException(status_code=400, detail="Código inválido ou expirado")
+
+    is_valid = AccessRepository.verify_password_reset_code(db, reset_code, payload.email, payload.code)
+    db.commit()
+    if not is_valid:
+        raise HTTPException(status_code=400, detail="Código inválido ou expirado")
+
+    return SimpleMessageResponse(message="Código validado com sucesso")
+
+
+@router.post("/forgot-password/reset", response_model=SimpleMessageResponse)
+async def reset_password_with_code(payload: PasswordResetConfirmRequest, db: Session = Depends(get_db)):
+    user, reset_code = _get_active_reset_for_email(db, payload.email)
+    if not user or not reset_code:
+        raise HTTPException(status_code=400, detail="Código inválido ou expirado")
+
+    is_valid = AccessRepository.verify_password_reset_code(db, reset_code, payload.email, payload.code)
+    if not is_valid:
+        db.commit()
+        raise HTTPException(status_code=400, detail="Código inválido ou expirado")
+
+    AccessRepository.set_password(db, user, payload.new_password)
+    AccessRepository.mark_password_reset_code_used(reset_code)
+    AccessRepository.invalidate_password_reset_codes(db, user.id)
+    AccessRepository.revoke_user_sessions(db, user.id)
+    db.commit()
+    logger.info("password_reset_completed email=%s", payload.email)
+    return SimpleMessageResponse(message="Senha alterada com sucesso")
 
 
 @router.post("/login")

@@ -28,14 +28,16 @@ def upgrade():
         sa.Column('id', postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column('tenant_id', postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column('access_token', sa.Text(), nullable=False),
-        sa.Column('refresh_token', sa.Text(), nullable=False),
+            sa.Column('name', sa.String(255), nullable=False),
+            sa.Column('created_at', sa.DateTime(), nullable=False),
+            sa.PrimaryKeyConstraint('id')
         sa.Column('expires_at', sa.DateTime(), nullable=False),
         sa.Column('token_type', sa.String(50), nullable=True),
         sa.Column('scope', sa.String(500), nullable=True),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('updated_at', sa.DateTime(), nullable=False),
         sa.ForeignKeyConstraint(['tenant_id'], ['tenants.id'], ),
-        sa.PrimaryKeyConstraint('id')
+            sa.Column('tenant_id', sa.String(36), nullable=False),
     )
     
     op.create_index('ix_bling_tokens_tenant_id', 'bling_tokens', ['tenant_id'])
@@ -53,7 +55,7 @@ def upgrade():
         sa.Column('started_at', sa.DateTime(), nullable=True),
         sa.Column('finished_at', sa.DateTime(), nullable=True),
         sa.ForeignKeyConstraint(['tenant_id'], ['tenants.id'], ),
-        sa.PrimaryKeyConstraint('id')
+            sa.Column('tenant_id', sa.String(36), nullable=False),
     )
     
     op.create_index('ix_jobs_tenant_id', 'jobs', ['tenant_id'])
@@ -72,7 +74,7 @@ def upgrade():
         sa.Column('started_at', sa.DateTime(), nullable=True),
         sa.Column('finished_at', sa.DateTime(), nullable=True),
         sa.ForeignKeyConstraint(['job_id'], ['jobs.id'], ),
-        sa.PrimaryKeyConstraint('id')
+            sa.Column('job_id', sa.String(36), nullable=False),
     )
     
     op.create_index('ix_job_items_job_id', 'job_items', ['job_id'])

@@ -13,15 +13,18 @@ fail() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BACKEND_SERVICE="${BACKEND_SERVICE:-${VPS_BACKEND_SERVICE:-smartbling-backend}}"
+# Normalize optional ".service" suffix from secrets/inputs to avoid double suffixes.
+BACKEND_SERVICE="${BACKEND_SERVICE%.service}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8000/health}"
 FRONTEND_TARGET_DIR="${FRONTEND_TARGET_DIR:-${VPS_FRONTEND_DIR:-/usr/share/nginx/html}}"
 MIGRATIONS_MODE="${MIGRATIONS_MODE:-auto}"
-PUBLIC_HOST="${PUBLIC_HOST:-191.252.204.67}"
+PUBLIC_HOST="${PUBLIC_HOST:-app.useruach.com.br}"
 GIT_COMMIT="${GIT_COMMIT:-$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)}"
 BUILD_ID="${BUILD_ID:-$(date '+%Y%m%d%H%M%S')-${GIT_COMMIT}}"
 BUILD_TIMESTAMP="${BUILD_TIMESTAMP:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
 REQUIRE_NGINX="${REQUIRE_NGINX:-true}"
 AUTO_FIX_NGINX_PROXY="${AUTO_FIX_NGINX_PROXY:-true}"
+DISABLE_LEGACY_DOCKER="${DISABLE_LEGACY_DOCKER:-true}"
 SYSTEMD_USER="${SYSTEMD_USER:-root}"
 BACKEND_ENV_B64="${BACKEND_ENV_B64:-}"
 DEPLOY_SECRET_KEY="${DEPLOY_SECRET_KEY:-}"
@@ -30,6 +33,12 @@ DEPLOY_CORS_ORIGINS="${DEPLOY_CORS_ORIGINS:-}"
 DEPLOY_BLING_CLIENT_ID="${DEPLOY_BLING_CLIENT_ID:-}"
 DEPLOY_BLING_CLIENT_SECRET="${DEPLOY_BLING_CLIENT_SECRET:-}"
 DEPLOY_BLING_REDIRECT_URI="${DEPLOY_BLING_REDIRECT_URI:-}"
+DEPLOY_SMTP_HOST="${DEPLOY_SMTP_HOST:-}"
+DEPLOY_SMTP_PORT="${DEPLOY_SMTP_PORT:-}"
+DEPLOY_SMTP_USERNAME="${DEPLOY_SMTP_USERNAME:-}"
+DEPLOY_SMTP_PASSWORD="${DEPLOY_SMTP_PASSWORD:-}"
+DEPLOY_SMTP_FROM_EMAIL="${DEPLOY_SMTP_FROM_EMAIL:-}"
+DEPLOY_SMTP_FROM_NAME="${DEPLOY_SMTP_FROM_NAME:-}"
 
 cd "${REPO_ROOT}"
 
@@ -90,7 +99,7 @@ ensure_env_defaults() {
   cors_origins="$(env_value CORS_ORIGINS)"
   if [ -z "$cors_origins" ]; then
     log "CORS_ORIGINS ausente; definindo padrao seguro para ${PUBLIC_HOST}"
-    upsert_env_key CORS_ORIGINS "http://${PUBLIC_HOST}"
+    upsert_env_key CORS_ORIGINS "https://${PUBLIC_HOST}"
   fi
 }
 
@@ -146,6 +155,13 @@ hydrate_env_from_inputs() {
   [ -n "$DEPLOY_BLING_CLIENT_ID" ] && upsert_env_key BLING_CLIENT_ID "$DEPLOY_BLING_CLIENT_ID"
   [ -n "$DEPLOY_BLING_CLIENT_SECRET" ] && upsert_env_key BLING_CLIENT_SECRET "$DEPLOY_BLING_CLIENT_SECRET"
   [ -n "$DEPLOY_BLING_REDIRECT_URI" ] && upsert_env_key BLING_REDIRECT_URI "$DEPLOY_BLING_REDIRECT_URI"
+  [ -n "$DEPLOY_SMTP_HOST" ] && upsert_env_key SMTP_HOST "$DEPLOY_SMTP_HOST"
+  [ -n "$DEPLOY_SMTP_PORT" ] && upsert_env_key SMTP_PORT "$DEPLOY_SMTP_PORT"
+  [ -n "$DEPLOY_SMTP_USERNAME" ] && upsert_env_key SMTP_USERNAME "$DEPLOY_SMTP_USERNAME"
+  [ -n "$DEPLOY_SMTP_PASSWORD" ] && upsert_env_key SMTP_PASSWORD "$DEPLOY_SMTP_PASSWORD"
+  [ -n "$DEPLOY_SMTP_FROM_EMAIL" ] && upsert_env_key SMTP_FROM_EMAIL "$DEPLOY_SMTP_FROM_EMAIL"
+  [ -n "$DEPLOY_SMTP_FROM_NAME" ] && upsert_env_key SMTP_FROM_NAME "$DEPLOY_SMTP_FROM_NAME"
+  return 0
 }
 
 upsert_env_key() {
@@ -158,6 +174,47 @@ upsert_env_key() {
   else
     printf '\n%s=%s\n' "$key" "$val" >> backend/.env
   fi
+}
+
+validate_local_public_rollout() {
+  local expected_short
+  expected_short="${GIT_COMMIT:0:12}"
+
+  curl --fail --silent --show-error --location --insecure --max-time 8 "http://127.0.0.1/build-info.json" > /tmp/local-build-info.json || fail "Nginx local nao serviu /build-info.json"
+  curl --fail --silent --show-error --location --insecure --max-time 8 "http://127.0.0.1/api/health" > /tmp/local-health.json || fail "Nginx local nao serviu /api/health"
+
+  python3 - <<'PY'
+import json
+import os
+
+expected = os.environ.get("GIT_COMMIT", "")
+expected_short = expected[:12]
+
+with open('/tmp/local-build-info.json', 'r', encoding='utf-8') as f:
+    build_raw = f.read()
+with open('/tmp/local-health.json', 'r', encoding='utf-8') as f:
+    health_raw = f.read()
+
+try:
+    build = json.loads(build_raw)
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"Local /build-info.json nao e JSON valido: {exc}; inicio={build_raw[:180]!r}")
+
+try:
+    health = json.loads(health_raw)
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"Local /api/health nao e JSON valido: {exc}; inicio={health_raw[:180]!r}")
+
+build_commit = str(build.get('git_commit', ''))
+health_commit = str(health.get('git_commit', ''))
+
+if expected_short not in build_commit and expected not in build_commit:
+    raise SystemExit(f"Local /build-info.json desatualizado. Esperado {expected_short} ou {expected}, recebido {build_commit}")
+if expected_short not in health_commit and expected not in health_commit:
+    raise SystemExit(f"Local /api/health desatualizado. Esperado {expected_short} ou {expected}, recebido {health_commit}")
+
+print("Local public rollout verified")
+PY
 }
 
 validate_backend_env() {
@@ -210,17 +267,86 @@ fix_nginx_backend_proxy() {
   fi
 }
 
+stop_legacy_docker_ingress() {
+  [ "${DISABLE_LEGACY_DOCKER}" = "true" ] || return 0
+
+  if ! command -v docker >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local legacy_rows cid proxy_listeners
+  legacy_rows="$(
+    docker ps --format '{{.ID}}\t{{.Ports}}' \
+      | awk -F '\t' '$2 ~ /(^|, )[[:space:]]*[^,]*:(80|443|8000)->/ { print }' \
+      || true
+  )"
+
+  if [ -n "$legacy_rows" ]; then
+    warn "Containers Docker com publish em 80/443/8000 detectados; desativando para evitar conflito com nginx"
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      cid="$(printf '%s' "$row" | awk -F '\t' '{print $1}')"
+      [ -n "$cid" ] || continue
+      docker update --restart=no "$cid" >/dev/null 2>&1 || true
+      docker stop "$cid" >/dev/null 2>&1 || true
+      docker rm "$cid" >/dev/null 2>&1 || true
+    done <<< "$legacy_rows"
+  fi
+
+  proxy_listeners=""
+  if command -v ss >/dev/null 2>&1; then
+    proxy_listeners="$(ss -ltnp 2>/dev/null | awk '/:(80|8000)[[:space:]]/ && /docker-proxy/ { print }' || true)"
+  elif command -v lsof >/dev/null 2>&1; then
+    proxy_listeners="$(lsof -nP -iTCP:80 -iTCP:8000 -sTCP:LISTEN 2>/dev/null | awk '/docker-proxy/ { print }' || true)"
+  else
+    warn "Nem ss nem lsof disponiveis para verificar listeners docker-proxy em 80/8000"
+  fi
+
+  if [ -n "$proxy_listeners" ]; then
+    printf '%s\n' "$proxy_listeners" >&2
+    fail "docker-proxy ainda escutando em 80/8000 apos limpeza de containers legados. Interrompendo deploy para evitar conflito de ingress."
+  fi
+}
+
 enforce_nginx_public_server() {
   [ "$REQUIRE_NGINX" = "true" ] || return 0
 
-  local conf_path
+  local conf_path cert_path is_ip
   conf_path="/etc/nginx/conf.d/smartbling-public.conf"
+  cert_path="/etc/letsencrypt/live/${PUBLIC_HOST}/fullchain.pem"
 
-  cat > "$conf_path" <<EOF
+  # Detect whether PUBLIC_HOST is a bare IP address
+  is_ip=false
+  if printf '%s' "$PUBLIC_HOST" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+    is_ip=true
+  fi
+
+  if [ "$is_ip" = "false" ] && [ -f "$cert_path" ]; then
+    # ── HTTPS mode ────────────────────────────────────────────────
+    log "Certificado SSL detectado; configurando nginx com HTTPS"
+    cat > "$conf_path" <<EOF
 server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-    server_name _;
+    listen 80;
+    listen [::]:80;
+    server_name ${PUBLIC_HOST};
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${PUBLIC_HOST};
+
+    ssl_certificate     /etc/letsencrypt/live/${PUBLIC_HOST}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${PUBLIC_HOST}/privkey.pem;
+    ssl_trusted_certificate /etc/letsencrypt/live/${PUBLIC_HOST}/chain.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
     gzip on;
     gzip_types text/plain text/css application/json application/javascript text/xml application/xml+rss text/javascript;
@@ -256,6 +382,58 @@ server {
     }
 }
 EOF
+  else
+    # ── HTTP-only mode (cert nao existe ainda, ou PUBLIC_HOST e IP) ──
+    local listen_v4 listen_v6
+    listen_v4="listen 80;"
+    listen_v6="listen [::]:80;"
+
+    if ! nginx -T 2>/dev/null | grep -qE 'listen[[:space:]]+80[[:space:]]+default_server'; then
+      listen_v4="listen 80 default_server;"
+      listen_v6="listen [::]:80 default_server;"
+    fi
+
+    cat > "$conf_path" <<EOF
+server {
+    ${listen_v4}
+    ${listen_v6}
+    server_name ${PUBLIC_HOST};
+
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml+rss text/javascript;
+    gzip_min_length 1000;
+
+    root ${FRONTEND_TARGET_DIR};
+    index index.html;
+
+    location = /index.html {
+        add_header Cache-Control "no-store, must-revalidate";
+    }
+
+    location = /build-info.json {
+        add_header Cache-Control "no-store, must-revalidate";
+        try_files /build-info.json =404;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000/;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Prefix /api;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_connect_timeout 10s;
+    }
+
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
+}
+EOF
+  fi
 
   if [ -f /etc/nginx/sites-enabled/default ]; then
     rm -f /etc/nginx/sites-enabled/default
@@ -266,6 +444,43 @@ EOF
   log "Configuracao nginx publica reforcada em $conf_path"
 }
 
+provision_ssl_cert() {
+  local cert_path email
+
+  # Skip if PUBLIC_HOST is a bare IP — Let's Encrypt nao emite certs para IPs
+  if printf '%s' "$PUBLIC_HOST" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+    log "PUBLIC_HOST e um endereco IP; ignorando provisionamento de certificado SSL"
+    return 0
+  fi
+
+  cert_path="/etc/letsencrypt/live/${PUBLIC_HOST}/fullchain.pem"
+
+  if [ -f "$cert_path" ]; then
+    log "Certificado SSL ja existe para ${PUBLIC_HOST}; nenhuma acao necessaria"
+    return 0
+  fi
+
+  if ! command -v certbot >/dev/null 2>&1; then
+    warn "certbot nao encontrado; ignorando provisionamento SSL automatico"
+    return 0
+  fi
+
+  email="$(env_value SMTP_FROM_EMAIL)"
+  email="${email:-ian.prioste@useruach.com.br}"
+
+  log "Obtendo certificado Let's Encrypt para ${PUBLIC_HOST} (email: ${email})"
+  if certbot certonly --nginx \
+      -d "$PUBLIC_HOST" \
+      --non-interactive \
+      --agree-tos \
+      --email "$email" \
+      --no-eff-email; then
+    log "Certificado SSL obtido com sucesso; aplicando configuracao nginx com HTTPS"
+    enforce_nginx_public_server
+  else
+    warn "Falha ao obter certificado SSL para ${PUBLIC_HOST}; aplicacao permanecera em HTTP"
+  fi
+}
 publish_frontend_atomic() {
   local target="$1"
   local tmp_target prev_target
@@ -344,6 +559,41 @@ EOF
   systemctl enable "${BACKEND_SERVICE}" >/dev/null 2>&1 || true
 }
 
+backend_unit_exists() {
+  local unit_name unit_path
+  unit_name="${BACKEND_SERVICE}.service"
+  unit_path="/etc/systemd/system/${unit_name}"
+
+  if [ -f "$unit_path" ]; then
+    return 0
+  fi
+
+  systemctl cat "${BACKEND_SERVICE}" >/dev/null 2>&1
+}
+
+free_backend_port_conflicts() {
+  local service_pid listener_pid
+
+  service_pid="$(systemctl show -p MainPID --value "${BACKEND_SERVICE}" 2>/dev/null || echo 0)"
+  service_pid="${service_pid:-0}"
+
+  listener_pid=""
+  if command -v ss >/dev/null 2>&1; then
+    listener_pid="$(ss -ltnp 2>/dev/null | sed -n 's/.*:8000[[:space:]].*pid=\([0-9][0-9]*\).*/\1/p' | head -n 1)"
+  elif command -v lsof >/dev/null 2>&1; then
+    listener_pid="$(lsof -nP -iTCP:8000 -sTCP:LISTEN -t 2>/dev/null | head -n 1)"
+  fi
+
+  if [ -n "${listener_pid}" ] && [ "${listener_pid}" != "${service_pid}" ]; then
+    warn "Processo nao gerenciado ocupando porta 8000 (pid=${listener_pid}); encerrando para liberar backend"
+    kill "${listener_pid}" >/dev/null 2>&1 || true
+    sleep 1
+    if kill -0 "${listener_pid}" >/dev/null 2>&1; then
+      kill -9 "${listener_pid}" >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
 require_cmd git
 require_cmd python3
 require_cmd npm
@@ -352,13 +602,13 @@ require_cmd systemctl
 require_cmd curl
 require_cmd nginx
 
-if ! systemctl list-unit-files | grep -q "^${BACKEND_SERVICE}\.service"; then
+if ! backend_unit_exists; then
   log "Unit ${BACKEND_SERVICE}.service nao encontrada; instalando unit de producao"
 fi
 
 install_backend_systemd_unit
 
-if ! systemctl list-unit-files | grep -q "^${BACKEND_SERVICE}\.service"; then
+if ! backend_unit_exists; then
   fail "Falha ao instalar unit systemd obrigatoria: ${BACKEND_SERVICE}.service"
 fi
 
@@ -430,9 +680,12 @@ if [ -n "${FRONTEND_TARGET_DIR}" ]; then
   sync_frontend_to_nginx_roots
 fi
 
+stop_legacy_docker_ingress
 enforce_nginx_public_server
+provision_ssl_cert
 
 log "Reiniciando backend via systemd (${BACKEND_SERVICE})"
+free_backend_port_conflicts
 systemctl daemon-reload || true
 systemctl restart "${BACKEND_SERVICE}" || {
   systemctl status "${BACKEND_SERVICE}" --no-pager || true
@@ -456,6 +709,9 @@ if ! curl --fail --silent --show-error --retry 20 --retry-delay 3 --retry-connre
   journalctl -u "${BACKEND_SERVICE}" -n 150 --no-pager || true
   fail "Health-check falhou"
 fi
+
+log "Validando rollout local via nginx (build-info + api/health)"
+validate_local_public_rollout
 
 health_payload="$(curl --fail --silent --show-error "${HEALTH_URL}")"
 if ! printf '%s' "$health_payload" | grep -q "\"git_commit\""; then

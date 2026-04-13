@@ -16,6 +16,7 @@ from app.domain.bling_situacoes import get_bling_status_ids
 from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.order_snapshot_repo import OrderSnapshotRepository, parse_progress_from_sync_message
 from app.repositories.item_production_note_repo import ItemProductionNoteRepository
+from app.repositories.sync_scope_version_repo import SyncScopeVersionRepository, SCOPE_ORDERS_GLOBAL, scope_event_sales
 from app.models.database import BlingOrderSnapshotModel
 from app.models.schemas import ItemProductionNoteUpdateRequest, ItemProductionNoteResponse, OrderStatusUpdateRequest
 from app.utils.datetime_utils import now_local
@@ -43,6 +44,13 @@ STATUS_NAME_MAP = {
 VALID_STATUS_NAMES = {"Em aberto", "Atendido", "Cancelado"}
 
 
+def _field_was_provided(model, field_name: str) -> bool:
+    fields_set = getattr(model, "model_fields_set", None)
+    if fields_set is None:
+        fields_set = getattr(model, "__fields_set__", set())
+    return field_name in fields_set
+
+
 def _normalize_status_name(name: str | None) -> str | None:
     if not name:
         return name
@@ -54,6 +62,18 @@ def _normalize_status_name(name: str | None) -> str | None:
     if "pendente" in lower:
         return "Em aberto"
     return name
+
+
+def _parse_since_cursor(since: str | None) -> datetime:
+    if not since:
+        return now_local() - timedelta(seconds=30)
+    text = since.strip()
+    if not text:
+        return now_local() - timedelta(seconds=30)
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Cursor 'since' inválido")
 
 
 def _run_sync_in_local_background(mode: str) -> None:
@@ -693,6 +713,53 @@ async def sync_orders_status(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/sync/version")
+async def sync_orders_version(db: Session = Depends(get_db)):
+    """Lightweight version token for client-side delta polling."""
+    row = SyncScopeVersionRepository.get_scope_version(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
+    return {
+        "ok": True,
+        "scope": SCOPE_ORDERS_GLOBAL,
+        "current_version": int(row.version) if row else 0,
+        "last_updated_at": row.updated_at.isoformat() if row and row.updated_at else None,
+    }
+
+
+@router.get("/sync/updates")
+async def sync_orders_updates(since: str | None = Query(default=None), db: Session = Depends(get_db)):
+    """Incremental updates for orders page (notes/status only, no full payload reload)."""
+    since_dt = _parse_since_cursor(since)
+    status_rows = OrderSnapshotRepository.list_status_updates_since(db, DEFAULT_TENANT_ID, since_dt)
+    production_rows = ItemProductionNoteRepository.list_updated_since(db, DEFAULT_TENANT_ID, since_dt)
+    version_row = SyncScopeVersionRepository.get_scope_version(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
+
+    return {
+        "ok": True,
+        "scope": SCOPE_ORDERS_GLOBAL,
+        "current_version": int(version_row.version) if version_row else 0,
+        "last_updated_at": version_row.updated_at.isoformat() if version_row and version_row.updated_at else None,
+        "server_time": now_local().isoformat(),
+        "order_status_updates": [
+            {
+                "order_id": int(row.bling_order_id),
+                "situacao": row.status_name,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+            for row in status_rows
+        ],
+        "production_updates": [
+            {
+                "sku": row.sku,
+                "bling_order_id": int(row.bling_order_id) if row.bling_order_id is not None else None,
+                "production_status": row.production_status,
+                "notes": row.notes,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+            for row in production_rows
+        ],
+    }
+
+
 @router.get("/diagnose/{order_numero}")
 async def diagnose_order(order_numero: str, db: Session = Depends(get_db)):
     """Diagnose a specific order by numero, showing stored status and Bling status."""
@@ -782,9 +849,19 @@ async def update_order_item_production(
         event_id = latest_event.id
 
     row = ItemProductionNoteRepository.upsert(
-        db, DEFAULT_TENANT_ID, event_id, norm_sku, body.production_status, body.notes,
+        db,
+        DEFAULT_TENANT_ID,
+        event_id,
+        norm_sku,
+        body.production_status,
+        body.notes,
         bling_order_id=body.bling_order_id,
+        preserve_existing_notes=not _field_was_provided(body, "notes"),
     )
+    # Bump both scopes to notify changes in both Orders and Event Sales pages
+    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
+    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, scope_event_sales(event_id))
+    db.commit()
     return ItemProductionNoteResponse(
         sku=row.sku, production_status=row.production_status, notes=row.notes,
         bling_order_id=row.bling_order_id,
@@ -829,6 +906,8 @@ async def update_order_bling_status(
     if snapshot:
         snapshot.status_id = target_id
         snapshot.status_name = body.situacao
-        db.commit()
+
+    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
+    db.commit()
 
     return {"ok": True, "order_id": order_id, "new_status": body.situacao}
