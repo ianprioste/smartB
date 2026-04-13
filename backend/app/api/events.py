@@ -840,7 +840,10 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
 
         filtered_orders = list(filtered_order_map.values())
         _inject_production_data(db, event_id, filtered_orders)
-        _inject_event_tags(db, event_id, filtered_orders)
+        try:
+            _inject_event_tags(db, event_id, filtered_orders)
+        except Exception as exc:
+            logger.warning("event_tags_injection_failed event_id=%s error=%s", str(event_id), str(exc))
 
         logger.info(
             "event_sales_local_db_done event_id=%s matched_orders=%s matched_items=%s total_matched=%.2f",
@@ -1003,7 +1006,7 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
     except BlingAuthError:
         raise HTTPException(status_code=401, detail="Sessão do Bling expirada. Reconecte sua conta.")
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Erro ao buscar vendas do evento: {exc}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar pedidos da campanha: {exc}")
 
 
 @router.get("/{event_id}/tags")
