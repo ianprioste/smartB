@@ -470,14 +470,18 @@ def _inject_production_data_orders(db: Session, orders: List[Dict[str, Any]]) ->
 
 
 def _inject_global_tags(db: Session, orders: List[Dict[str, Any]]) -> None:
-    order_ids = [int(order.get("id")) for order in orders if order.get("id") is not None]
-    tag_map = OrderTagRepository.get_assignments_map(
-        db=db,
-        tenant_id=DEFAULT_TENANT_ID,
-        scope_key="global",
-        event_id=None,
-        bling_order_ids=order_ids,
-    )
+    try:
+        order_ids = [int(order.get("id")) for order in orders if order.get("id") is not None]
+        tag_map = OrderTagRepository.get_assignments_map(
+            db=db,
+            tenant_id=DEFAULT_TENANT_ID,
+            scope_key="global",
+            event_id=None,
+            bling_order_ids=order_ids,
+        )
+    except Exception as exc:
+        logger.warning("orders_global_tags_injection_failed error=%s", str(exc))
+        tag_map = {}
     for order in orders:
         oid = order.get("id")
         tags = tag_map.get(int(oid), []) if oid is not None else []
@@ -490,18 +494,24 @@ def _filter_global_orders_by_tag(db: Session, orders: List[Dict[str, Any]], tag_
     if not wanted:
         return orders
 
-    order_ids = [int(order.get("id")) for order in orders if order.get("id") is not None]
-    tag_map = OrderTagRepository.get_assignments_map(
-        db=db,
-        tenant_id=DEFAULT_TENANT_ID,
-        scope_key="global",
-        event_id=None,
-        bling_order_ids=order_ids,
-    )
+    try:
+        order_ids = [int(order.get("id")) for order in orders if order.get("id") is not None]
+        tag_map = OrderTagRepository.get_assignments_map(
+            db=db,
+            tenant_id=DEFAULT_TENANT_ID,
+            scope_key="global",
+            event_id=None,
+            bling_order_ids=order_ids,
+        )
+    except Exception as exc:
+        logger.warning("orders_global_tag_filter_failed tag=%s error=%s", wanted, str(exc))
+        return orders
+
     return [
         order
         for order in orders
-        if wanted in {(name or "").strip().casefold() for name in tag_map.get(int(order.get("id")), [])}
+        if order.get("id") is not None
+        and wanted in {(name or "").strip().casefold() for name in tag_map.get(int(order.get("id")), [])}
     ]
 
 
@@ -690,12 +700,16 @@ async def list_orders(
 
 @router.get("/tags")
 async def list_global_order_tags(db: Session = Depends(get_db)):
-    rows = OrderTagRepository.list_tags(
-        db=db,
-        tenant_id=DEFAULT_TENANT_ID,
-        scope_key="global",
-        event_id=None,
-    )
+    try:
+        rows = OrderTagRepository.list_tags(
+            db=db,
+            tenant_id=DEFAULT_TENANT_ID,
+            scope_key="global",
+            event_id=None,
+        )
+    except Exception as exc:
+        logger.warning("orders_list_tags_failed error=%s", str(exc))
+        rows = []
     return {
         "tags": [
             {
