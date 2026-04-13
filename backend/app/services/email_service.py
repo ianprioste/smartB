@@ -5,6 +5,9 @@ import smtplib
 from email.message import EmailMessage
 
 from app.settings import settings
+import logging
+
+_log = logging.getLogger(__name__)
 
 
 class EmailService:
@@ -55,18 +58,51 @@ class EmailService:
         message.set_content(text_body)
         message.add_alternative(html_body, subtype="html")
 
-        if settings.SMTP_USE_SSL:
-            with smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as smtp:
-                if settings.SMTP_USERNAME:
-                    smtp.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
-                smtp.send_message(message, from_addr=sender_email, to_addrs=[to_email])
-            return
+        last_exc: Exception | None = None
 
+        # Attempt 1: use configured port/mode (default: 587 STARTTLS)
+        try:
+            EmailService._send_via_starttls(message, sender_email, to_email)
+            return
+        except Exception as exc:
+            _log.warning("smtp_attempt_starttls_failed host=%s port=%s err=%s",
+                         settings.SMTP_HOST, settings.SMTP_PORT, exc)
+            last_exc = exc
+
+        # Attempt 2: fallback to SSL on port 465 (common VPS restriction workaround)
+        if settings.SMTP_PORT != 465:
+            try:
+                EmailService._send_via_ssl(message, sender_email, to_email, port=465)
+                return
+            except Exception as exc:
+                _log.warning("smtp_attempt_ssl465_failed host=%s err=%s", settings.SMTP_HOST, exc)
+                last_exc = exc
+
+        # Attempt 3: SSL on the same configured port if it differs
+        if not settings.SMTP_USE_SSL:
+            try:
+                EmailService._send_via_ssl(message, sender_email, to_email, port=settings.SMTP_PORT)
+                return
+            except Exception as exc:
+                _log.warning("smtp_attempt_ssl_configured_failed host=%s port=%s err=%s",
+                             settings.SMTP_HOST, settings.SMTP_PORT, exc)
+                last_exc = exc
+
+        raise RuntimeError(f"Falha em todas as tentativas SMTP: {last_exc}") from last_exc
+
+    @staticmethod
+    def _send_via_starttls(message: EmailMessage, sender_email: str, to_email: str) -> None:
         with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as smtp:
             smtp.ehlo()
-            if settings.SMTP_USE_TLS:
-                smtp.starttls()
-                smtp.ehlo()
+            smtp.starttls()
+            smtp.ehlo()
+            if settings.SMTP_USERNAME:
+                smtp.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
+            smtp.send_message(message, from_addr=sender_email, to_addrs=[to_email])
+
+    @staticmethod
+    def _send_via_ssl(message: EmailMessage, sender_email: str, to_email: str, port: int) -> None:
+        with smtplib.SMTP_SSL(settings.SMTP_HOST, port, timeout=15) as smtp:
             if settings.SMTP_USERNAME:
                 smtp.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
             smtp.send_message(message, from_addr=sender_email, to_addrs=[to_email])

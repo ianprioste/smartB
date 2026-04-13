@@ -154,7 +154,7 @@ async def request_password_reset(payload: PasswordResetRequest, db: Session = De
         )
     except Exception as exc:
         db.rollback()
-        logger.error("password_reset_email_failed email=%s error=%s", email, str(exc))
+        logger.error("password_reset_email_failed email=%s error=%r", email, exc)
         raise HTTPException(status_code=500, detail="Falha ao enviar o código de recuperação")
     db.commit()
     logger.info("password_reset_requested email=%s", email)
