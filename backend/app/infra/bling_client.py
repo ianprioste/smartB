@@ -163,8 +163,9 @@ class BlingClient:
 
         try:
             async with httpx.AsyncClient() as client:
+                _token_url = settings.BLING_TOKEN_PROXY_URL or settings.BLING_TOKEN_URL
                 response = await client.post(
-                    settings.BLING_TOKEN_URL,
+                    _token_url,
                     headers={
                         "Content-Type": "application/x-www-form-urlencoded",
                         "Accept": "application/json",
