@@ -638,6 +638,35 @@ log "Atualizando pip e instalando dependencias do backend"
 ./.venv/bin/python -m pip install --upgrade pip
 ./.venv/bin/python -m pip install -r backend/requirements.txt
 
+if [ -f backend/smartbling.db ]; then
+  log "Aplicando reparo SQL legado para colunas de tags no SQLite"
+  ./.venv/bin/python - <<'PY'
+import sqlite3
+
+db_path = "backend/smartbling.db"
+conn = sqlite3.connect(db_path)
+cur = conn.cursor()
+
+checks = [
+    ("order_tag_links", "created_at", "ALTER TABLE order_tag_links ADD COLUMN created_at DATETIME"),
+    ("order_tag_links", "updated_at", "ALTER TABLE order_tag_links ADD COLUMN updated_at DATETIME"),
+    ("order_tags", "name_key", "ALTER TABLE order_tags ADD COLUMN name_key VARCHAR(80)"),
+    ("order_tags", "created_at", "ALTER TABLE order_tags ADD COLUMN created_at DATETIME"),
+    ("order_tags", "updated_at", "ALTER TABLE order_tags ADD COLUMN updated_at DATETIME"),
+    ("order_tag_assignments", "created_at", "ALTER TABLE order_tag_assignments ADD COLUMN created_at DATETIME"),
+    ("order_tag_assignments", "updated_at", "ALTER TABLE order_tag_assignments ADD COLUMN updated_at DATETIME"),
+]
+
+for table, column, ddl in checks:
+    cols = {row[1] for row in cur.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in cols:
+        cur.execute(ddl)
+
+conn.commit()
+conn.close()
+PY
+fi
+
 if [ -f backend/alembic.ini ]; then
   if [ "${MIGRATIONS_MODE}" = "off" ]; then
     log "Migrations desativadas por MIGRATIONS_MODE=off"
