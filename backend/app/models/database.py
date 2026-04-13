@@ -258,6 +258,41 @@ class BlingOrderSnapshotModel(Base):
     )
 
 
+class OrderTagModel(Base):
+    """Reusable tags scoped by tenant + global/event scope."""
+    __tablename__ = "order_tags"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    scope_key = Column(String(255), nullable=False)
+    event_id = Column(UUID(as_uuid=True), ForeignKey("sales_events.id"), nullable=True)
+    name = Column(String(120), nullable=False)
+    name_key = Column(String(120), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "scope_key", "event_id", "name_key", name="uq_order_tags_tenant_scope_event_name_key"),
+    )
+
+
+class OrderTagLinkModel(Base):
+    """Many-to-many links between Bling orders and reusable tags."""
+    __tablename__ = "order_tag_links"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    scope_key = Column(String(255), nullable=False)
+    event_id = Column(UUID(as_uuid=True), ForeignKey("sales_events.id"), nullable=True)
+    bling_order_id = Column(BigInteger, nullable=False)
+    tag_id = Column(UUID(as_uuid=True), ForeignKey("order_tags.id"), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "scope_key", "event_id", "bling_order_id", "tag_id", name="uq_order_tag_links_tenant_scope_event_order_tag"),
+    )
+
+
 class BlingOrdersSyncStateModel(Base):
     """Tracks last sync checkpoints for Bling orders import."""
     __tablename__ = "bling_orders_sync_state"
