@@ -26,6 +26,29 @@ function isExpandedMatch(current, next) {
   return String(current) === String(next);
 }
 
+function getScrollContainer() {
+  if (typeof document === 'undefined') return null;
+  return document.querySelector('.page-content');
+}
+
+function getCurrentScrollY() {
+  if (typeof window === 'undefined') return 0;
+  const container = getScrollContainer();
+  if (container) return container.scrollTop;
+  return window.scrollY;
+}
+
+function restoreScrollY(value) {
+  if (typeof window === 'undefined') return;
+  const targetY = Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
+  const container = getScrollContainer();
+  if (container) {
+    container.scrollTop = targetY;
+    return;
+  }
+  window.scrollTo(0, targetY);
+}
+
 function readSavedOrdersUiState() {
   if (typeof window === 'undefined') return null;
   try {
@@ -445,7 +468,7 @@ export function OrdersPage() {
       selectedStatuses,
       page,
       expandedOrderId,
-      scrollY: typeof window !== 'undefined' ? window.scrollY : 0,
+      scrollY: getCurrentScrollY(),
     });
   }, [search, selectedStatuses, page, expandedOrderId]);
 
@@ -457,7 +480,7 @@ export function OrdersPage() {
         selectedStatuses,
         page,
         expandedOrderId,
-        scrollY: window.scrollY,
+        scrollY: getCurrentScrollY(),
       });
     };
     window.addEventListener('beforeunload', persistOnUnload);
@@ -469,7 +492,7 @@ export function OrdersPage() {
     hasRestoredScrollRef.current = true;
     if (initialScrollYRef.current > 0) {
       window.requestAnimationFrame(() => {
-        window.scrollTo(0, initialScrollYRef.current);
+        restoreScrollY(initialScrollYRef.current);
       });
     }
   }, [loading]);

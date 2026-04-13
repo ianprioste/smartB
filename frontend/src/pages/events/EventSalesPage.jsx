@@ -17,6 +17,29 @@ function isExpandedMatch(current, next) {
   return String(current) === String(next);
 }
 
+function getScrollContainer() {
+  if (typeof document === 'undefined') return null;
+  return document.querySelector('.page-content');
+}
+
+function getCurrentScrollY() {
+  if (typeof window === 'undefined') return 0;
+  const container = getScrollContainer();
+  if (container) return container.scrollTop;
+  return window.scrollY;
+}
+
+function restoreScrollY(value) {
+  if (typeof window === 'undefined') return;
+  const targetY = Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
+  const container = getScrollContainer();
+  if (container) {
+    container.scrollTop = targetY;
+    return;
+  }
+  window.scrollTo(0, targetY);
+}
+
 function readSavedUiState() {
   if (typeof window === 'undefined') return null;
   try {
@@ -317,8 +340,8 @@ export function EventSalesPage() {
   }, []);
 
   useEffect(() => {
+    if (loadingEvents) return;
     if (events.length === 0) {
-      setSelectedEventId('');
       setSalesData(null);
       return;
     }
@@ -326,7 +349,7 @@ export function EventSalesPage() {
     if (!hasSelected) {
       setSelectedEventId(String(events[0].id));
     }
-  }, [events, selectedEventId]);
+  }, [events, loadingEvents, selectedEventId]);
 
   useEffect(() => {
     persistUiState({
@@ -335,7 +358,7 @@ export function EventSalesPage() {
       expandedOrderId,
       searchTerm,
       selectedStatuses,
-      scrollY: typeof window !== 'undefined' ? window.scrollY : 0,
+      scrollY: getCurrentScrollY(),
     });
   }, [selectedEventId, groupBy, expandedOrderId, searchTerm, selectedStatuses]);
 
@@ -348,7 +371,7 @@ export function EventSalesPage() {
         expandedOrderId,
         searchTerm,
         selectedStatuses,
-        scrollY: window.scrollY,
+        scrollY: getCurrentScrollY(),
       });
     };
     window.addEventListener('beforeunload', persistOnUnload);
@@ -357,7 +380,6 @@ export function EventSalesPage() {
 
   useEffect(() => {
     if (selectedEventId) {
-      setSelectedStatuses(null);
       loadSales(selectedEventId);
     }
   }, [loadSales, selectedEventId]);
@@ -394,7 +416,7 @@ export function EventSalesPage() {
     hasRestoredScrollRef.current = true;
     if (initialScrollYRef.current > 0) {
       window.requestAnimationFrame(() => {
-        window.scrollTo(0, initialScrollYRef.current);
+        restoreScrollY(initialScrollYRef.current);
       });
     }
   }, [loadingSales]);
