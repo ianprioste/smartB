@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 const PRODUCTION_STATUSES = ['Pendente', 'Em produção', 'Produzido', 'Embalado', 'Impedimento'];
 const IMPEDIMENT_LABEL = 'Motivo do Impedimento:';
@@ -13,7 +14,7 @@ const PROD_COLORS = {
 
 export function ProductionStatusBadge({ status, onChangeStatus }) {
   const [open, setOpen] = useState(false);
-  const [openUpward, setOpenUpward] = useState(false);
+  const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0, minWidth: 140, maxHeight: 260 });
   const ref = useRef(null);
   const menuRef = useRef(null);
   const colors = PROD_COLORS[status] || PROD_COLORS.Pendente;
@@ -21,6 +22,9 @@ export function ProductionStatusBadge({ status, onChangeStatus }) {
   useEffect(() => {
     if (!open) return;
     const handler = (e) => {
+      if (ref.current?.contains(e.target) || menuRef.current?.contains(e.target)) {
+        return;
+      }
       if (ref.current && !ref.current.contains(e.target)) {
         setOpen(false);
       }
@@ -37,11 +41,28 @@ export function ProductionStatusBadge({ status, onChangeStatus }) {
       if (!rootRect) return;
 
       const menuHeight = menuRef.current?.offsetHeight || 220;
+      const menuWidth = Math.max(rootRect.width, 140);
+      const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
       const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
       const spaceBelow = viewportHeight - rootRect.bottom;
       const spaceAbove = rootRect.top;
-      const shouldOpenUpward = spaceBelow < menuHeight + 8 && spaceAbove > spaceBelow;
-      setOpenUpward(shouldOpenUpward);
+      const openUpward = spaceBelow < menuHeight + 8 && spaceAbove > spaceBelow;
+
+      const rawLeft = rootRect.left;
+      const left = Math.max(8, Math.min(rawLeft, viewportWidth - menuWidth - 8));
+      const top = openUpward
+        ? Math.max(8, rootRect.top - menuHeight - 4)
+        : Math.min(viewportHeight - 8, rootRect.bottom + 4);
+      const maxHeight = openUpward
+        ? Math.max(120, rootRect.top - 12)
+        : Math.max(120, viewportHeight - rootRect.bottom - 12);
+
+      setMenuPosition({
+        top,
+        left,
+        minWidth: menuWidth,
+        maxHeight,
+      });
     };
 
     updatePlacement();
@@ -78,56 +99,58 @@ export function ProductionStatusBadge({ status, onChangeStatus }) {
       </button>
 
       {open && (
-        <div
-          ref={menuRef}
-          style={{
-            position: 'absolute',
-            top: openUpward ? 'auto' : '100%',
-            bottom: openUpward ? '100%' : 'auto',
-            left: 0,
-            marginTop: openUpward ? 0 : 4,
-            marginBottom: openUpward ? 4 : 0,
-            background: '#fff',
-            border: '1px solid #e2e8f0',
-            borderRadius: 8,
-            boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-            zIndex: 50,
-            minWidth: 140,
-            overflow: 'hidden',
-          }}
-        >
-          {PRODUCTION_STATUSES.map((nextStatus) => {
-            const nextColors = PROD_COLORS[nextStatus];
-            return (
-              <div
-                key={nextStatus}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setOpen(false);
-                  onChangeStatus?.(nextStatus);
-                }}
-                style={{
-                  padding: '8px 14px',
-                  cursor: 'pointer',
-                  fontSize: 13,
-                  background: nextStatus === status ? nextColors.bg : '#fff',
-                  color: nextColors.color,
-                  fontWeight: nextStatus === status ? 600 : 400,
-                  borderLeft: `3px solid ${nextStatus === status ? nextColors.border : 'transparent'}`,
-                  transition: 'background 0.1s',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = nextColors.bg;
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = nextStatus === status ? nextColors.bg : '#fff';
-                }}
-              >
-                {nextStatus}
-              </div>
-            );
-          })}
-        </div>
+        createPortal(
+          <div
+            ref={menuRef}
+            style={{
+              position: 'fixed',
+              top: menuPosition.top,
+              left: menuPosition.left,
+              background: '#fff',
+              border: '1px solid #e2e8f0',
+              borderRadius: 8,
+              boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+              zIndex: 9999,
+              minWidth: menuPosition.minWidth,
+              maxHeight: menuPosition.maxHeight,
+              overflowY: 'auto',
+              overflowX: 'hidden',
+            }}
+          >
+            {PRODUCTION_STATUSES.map((nextStatus) => {
+              const nextColors = PROD_COLORS[nextStatus];
+              return (
+                <div
+                  key={nextStatus}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setOpen(false);
+                    onChangeStatus?.(nextStatus);
+                  }}
+                  style={{
+                    padding: '8px 14px',
+                    cursor: 'pointer',
+                    fontSize: 13,
+                    background: nextStatus === status ? nextColors.bg : '#fff',
+                    color: nextColors.color,
+                    fontWeight: nextStatus === status ? 600 : 400,
+                    borderLeft: `3px solid ${nextStatus === status ? nextColors.border : 'transparent'}`,
+                    transition: 'background 0.1s',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = nextColors.bg;
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = nextStatus === status ? nextColors.bg : '#fff';
+                  }}
+                >
+                  {nextStatus}
+                </div>
+              );
+            })}
+          </div>,
+          document.body
+        )
       )}
     </span>
   );
