@@ -10,13 +10,24 @@ branch_labels = None
 depends_on = None
 
 
+def _uuid_type(conn):
+    return postgresql.UUID(as_uuid=True) if conn.dialect.name == 'postgresql' else sa.CHAR(length=32)
+
+
+def _json_type(conn):
+    return postgresql.JSON(astext_type=sa.Text()) if conn.dialect.name == 'postgresql' else sa.JSON()
+
+
 def upgrade():
     """Create initial tables."""
+    conn = op.get_bind()
+    uuid_t = _uuid_type(conn)
+    json_t = _json_type(conn)
     
     # Tenants table
     op.create_table(
         'tenants',
-        sa.Column('id', postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column('id', uuid_t, nullable=False),
         sa.Column('name', sa.String(255), nullable=False),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.PrimaryKeyConstraint('id')
@@ -25,19 +36,16 @@ def upgrade():
     # Bling tokens table
     op.create_table(
         'bling_tokens',
-        sa.Column('id', postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column('tenant_id', postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column('id', uuid_t, nullable=False),
+        sa.Column('tenant_id', uuid_t, nullable=False),
         sa.Column('access_token', sa.Text(), nullable=False),
-            sa.Column('name', sa.String(255), nullable=False),
-            sa.Column('created_at', sa.DateTime(), nullable=False),
-            sa.PrimaryKeyConstraint('id')
         sa.Column('expires_at', sa.DateTime(), nullable=False),
         sa.Column('token_type', sa.String(50), nullable=True),
         sa.Column('scope', sa.String(500), nullable=True),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('updated_at', sa.DateTime(), nullable=False),
         sa.ForeignKeyConstraint(['tenant_id'], ['tenants.id'], ),
-            sa.Column('tenant_id', sa.String(36), nullable=False),
+        sa.PrimaryKeyConstraint('id')
     )
     
     op.create_index('ix_bling_tokens_tenant_id', 'bling_tokens', ['tenant_id'])
@@ -45,17 +53,17 @@ def upgrade():
     # Jobs table
     op.create_table(
         'jobs',
-        sa.Column('id', postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column('tenant_id', postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column('id', uuid_t, nullable=False),
+        sa.Column('tenant_id', uuid_t, nullable=False),
         sa.Column('type', sa.String(100), nullable=False),
         sa.Column('status', sa.Enum('DRAFT', 'QUEUED', 'RUNNING', 'DONE', 'FAILED', name='jobstatusenum'), nullable=False),
-        sa.Column('input_payload', postgresql.JSON(astext_type=sa.Text()), nullable=True),
-        sa.Column('job_metadata', postgresql.JSON(astext_type=sa.Text()), nullable=True),
+        sa.Column('input_payload', json_t, nullable=True),
+        sa.Column('job_metadata', json_t, nullable=True),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('started_at', sa.DateTime(), nullable=True),
         sa.Column('finished_at', sa.DateTime(), nullable=True),
         sa.ForeignKeyConstraint(['tenant_id'], ['tenants.id'], ),
-            sa.Column('tenant_id', sa.String(36), nullable=False),
+        sa.PrimaryKeyConstraint('id')
     )
     
     op.create_index('ix_jobs_tenant_id', 'jobs', ['tenant_id'])
@@ -64,17 +72,17 @@ def upgrade():
     # Job items table
     op.create_table(
         'job_items',
-        sa.Column('id', postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column('job_id', postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column('id', uuid_t, nullable=False),
+        sa.Column('job_id', uuid_t, nullable=False),
         sa.Column('status', sa.Enum('PENDING', 'RUNNING', 'OK', 'ERROR', name='jobitemstatusenum'), nullable=False),
-        sa.Column('payload', postgresql.JSON(astext_type=sa.Text()), nullable=True),
-        sa.Column('result', postgresql.JSON(astext_type=sa.Text()), nullable=True),
+        sa.Column('payload', json_t, nullable=True),
+        sa.Column('result', json_t, nullable=True),
         sa.Column('error_message', sa.Text(), nullable=True),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('started_at', sa.DateTime(), nullable=True),
         sa.Column('finished_at', sa.DateTime(), nullable=True),
         sa.ForeignKeyConstraint(['job_id'], ['jobs.id'], ),
-            sa.Column('job_id', sa.String(36), nullable=False),
+        sa.PrimaryKeyConstraint('id')
     )
     
     op.create_index('ix_job_items_job_id', 'job_items', ['job_id'])

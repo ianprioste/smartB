@@ -463,7 +463,7 @@ export function EventSalesPage() {
       const resp = await fetch(`${API_BASE}/events/${eventId}/sales`);
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
-        const message = errData.detail || 'Falha ao carregar vendas da campanha';
+        const message = errData.detail || 'Falha ao carregar pedidos da campanha';
         throw new Error(message);
       }
       setSalesData(await resp.json());
