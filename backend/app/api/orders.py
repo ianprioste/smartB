@@ -44,6 +44,13 @@ STATUS_NAME_MAP = {
 VALID_STATUS_NAMES = {"Em aberto", "Atendido", "Cancelado"}
 
 
+def _field_was_provided(model, field_name: str) -> bool:
+    fields_set = getattr(model, "model_fields_set", None)
+    if fields_set is None:
+        fields_set = getattr(model, "__fields_set__", set())
+    return field_name in fields_set
+
+
 def _normalize_status_name(name: str | None) -> str | None:
     if not name:
         return name
@@ -842,8 +849,14 @@ async def update_order_item_production(
         event_id = latest_event.id
 
     row = ItemProductionNoteRepository.upsert(
-        db, DEFAULT_TENANT_ID, event_id, norm_sku, body.production_status, body.notes,
+        db,
+        DEFAULT_TENANT_ID,
+        event_id,
+        norm_sku,
+        body.production_status,
+        body.notes,
         bling_order_id=body.bling_order_id,
+        preserve_existing_notes=not _field_was_provided(body, "notes"),
     )
     SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
     db.commit()

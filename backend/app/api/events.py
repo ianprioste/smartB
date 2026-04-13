@@ -52,6 +52,13 @@ _CANCELADO_IDS = {12, 15}
 STATUS_ID_NAME_MAP = {**{sid: "Atendido" for sid in _ATENDIDO_IDS}, **{sid: "Cancelado" for sid in _CANCELADO_IDS}}
 
 
+def _field_was_provided(model, field_name: str) -> bool:
+    fields_set = getattr(model, "model_fields_set", None)
+    if fields_set is None:
+        fields_set = getattr(model, "__fields_set__", set())
+    return field_name in fields_set
+
+
 def _parse_since_cursor(since: str | None) -> datetime:
     if not since:
         return datetime.utcnow() - timedelta(seconds=30)
@@ -1066,8 +1073,14 @@ async def update_item_production(
 
     norm_sku = sku.strip().upper()
     row = ItemProductionNoteRepository.upsert(
-        db, DEFAULT_TENANT_ID, event_id, norm_sku, body.production_status, body.notes,
+        db,
+        DEFAULT_TENANT_ID,
+        event_id,
+        norm_sku,
+        body.production_status,
+        body.notes,
         bling_order_id=body.bling_order_id,
+        preserve_existing_notes=not _field_was_provided(body, "notes"),
     )
 
     # Auto-update Bling when all items of an order become "Embalado".

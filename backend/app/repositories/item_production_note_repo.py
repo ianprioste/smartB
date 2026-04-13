@@ -55,6 +55,7 @@ class ItemProductionNoteRepository:
         production_status: str,
         notes: Optional[str],
         bling_order_id: Optional[int] = None,
+        preserve_existing_notes: bool = False,
     ) -> ItemProductionNoteModel:
         filters = [
             ItemProductionNoteModel.tenant_id == tenant_id,
@@ -68,7 +69,8 @@ class ItemProductionNoteRepository:
         row = db.query(ItemProductionNoteModel).filter(*filters).first()
         if row:
             row.production_status = production_status
-            row.notes = notes
+            if not preserve_existing_notes:
+                row.notes = notes
         else:
             row = ItemProductionNoteModel(
                 tenant_id=tenant_id,
