@@ -1208,7 +1208,7 @@ export function EventSalesPage() {
                           <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}><strong>Data:</strong> {formatDate(order.data)}</div>
                           <div style={{ fontSize: 12, color: '#475569', marginBottom: 8 }}><strong>Código:</strong> {order.numero_loja || '—'}</div>
                           <div style={{ fontSize: 12, color: '#475569', marginBottom: 8, display: 'grid', gap: 4 }}>
-                            <strong>Tag:</strong>
+                            <div style={{ fontWeight: 700 }}>Tag:</div>
                             <EventOrderTagEditor
                               orderId={order.id}
                               currentTags={order.tags || (order.tag ? [order.tag] : [])}
