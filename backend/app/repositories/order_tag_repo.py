@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
-from app.models.database import OrderTagLinkModel, OrderTagModel
+from app.models.database import OrderTagAssignmentModel, OrderTagLinkModel, OrderTagModel
 
 
 class OrderTagRepository:
@@ -23,7 +23,16 @@ class OrderTagRepository:
         return OrderTagRepository._clean_name(name).lower()
 
     @staticmethod
+    def _ensure_schema(db: Session) -> None:
+        """Create tag tables on demand when schema is behind deployment code."""
+        bind = db.get_bind()
+        OrderTagModel.__table__.create(bind=bind, checkfirst=True)
+        OrderTagAssignmentModel.__table__.create(bind=bind, checkfirst=True)
+        OrderTagLinkModel.__table__.create(bind=bind, checkfirst=True)
+
+    @staticmethod
     def list_tags(db: Session, tenant_id: UUID, scope_key: str, event_id: Optional[UUID]) -> List[OrderTagModel]:
+        OrderTagRepository._ensure_schema(db)
         # Only list tags that are currently assigned to at least one order in the same scope.
         return (
             db.query(OrderTagModel)
@@ -152,6 +161,7 @@ class OrderTagRepository:
         bling_order_id: int,
         tag_name: str,
     ) -> List[str]:
+        OrderTagRepository._ensure_schema(db)
         tag = OrderTagRepository.get_or_create_tag(
             db=db,
             tenant_id=tenant_id,
@@ -193,6 +203,7 @@ class OrderTagRepository:
         bling_order_id: int,
         tag_name: str,
     ) -> List[str]:
+        OrderTagRepository._ensure_schema(db)
         clean_name = OrderTagRepository._clean_name(tag_name)
         name_key = OrderTagRepository._key(clean_name)
 
@@ -235,6 +246,7 @@ class OrderTagRepository:
         event_id: Optional[UUID],
         bling_order_id: int,
     ) -> None:
+        OrderTagRepository._ensure_schema(db)
         db.query(OrderTagLinkModel).filter(
             OrderTagLinkModel.tenant_id == tenant_id,
             OrderTagLinkModel.scope_key == scope_key,
@@ -253,6 +265,7 @@ class OrderTagRepository:
         bling_order_ids: Iterable[int],
     ) -> Dict[int, List[str]]:
         """Return map of bling_order_id -> list of tag names."""
+        OrderTagRepository._ensure_schema(db)
         links = (
             db.query(OrderTagLinkModel)
             .filter(
