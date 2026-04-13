@@ -40,24 +40,22 @@ class OrderTagRepository:
         bind = db.get_bind()
         inspector = sa.inspect(bind)
         missing = [table for table in ("order_tags", "order_tag_links") if not inspector.has_table(table)]
-        if not missing:
-            return
+        if missing:
+            try:
+                OrderTagModel.__table__.create(bind=bind, checkfirst=True)
+                OrderTagLinkModel.__table__.create(bind=bind, checkfirst=True)
+            except Exception as exc:
+                raise OrderTagSchemaError(
+                    "Schema de tags indisponivel. Rode a migration 011 (alembic upgrade head)."
+                ) from exc
 
-        try:
-            OrderTagModel.__table__.create(bind=bind, checkfirst=True)
-            OrderTagLinkModel.__table__.create(bind=bind, checkfirst=True)
-        except Exception as exc:
-            raise OrderTagSchemaError(
-                "Schema de tags indisponivel. Rode a migration 011 (alembic upgrade head)."
-            ) from exc
-
-        # Validate again so permission-restricted environments fail explicitly.
-        inspector = sa.inspect(bind)
-        still_missing = [table for table in ("order_tags", "order_tag_links") if not inspector.has_table(table)]
-        if still_missing:
-            raise OrderTagSchemaError(
-                "Schema de tags ausente apos tentativa de criacao. Rode alembic upgrade head com usuario de banco com DDL."
-            )
+            # Validate again so permission-restricted environments fail explicitly.
+            inspector = sa.inspect(bind)
+            still_missing = [table for table in ("order_tags", "order_tag_links") if not inspector.has_table(table)]
+            if still_missing:
+                raise OrderTagSchemaError(
+                    "Schema de tags ausente apos tentativa de criacao. Rode alembic upgrade head com usuario de banco com DDL."
+                )
 
         # Heal partial/legacy schemas where tables exist but columns were not fully created.
         inspector = sa.inspect(bind)
