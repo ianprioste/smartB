@@ -481,7 +481,6 @@ provision_ssl_cert() {
     warn "Falha ao obter certificado SSL para ${PUBLIC_HOST}; aplicacao permanecera em HTTP"
   fi
 }
-
 publish_frontend_atomic() {
   local target="$1"
   local tmp_target prev_target

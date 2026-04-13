@@ -1,108 +1,26 @@
-"""SMTP e-mail service for transactional messages."""
-from __future__ import annotations
-
-import smtplib
-from email.message import EmailMessage
-
-from app.settings import settings
+"""Email service for sending emails (stub implementation)."""
 import logging
 
-_log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class EmailService:
-    @staticmethod
-    def _sender_email() -> str:
-        smtp_user = (settings.SMTP_USERNAME or "").strip()
-        from_email = (settings.SMTP_FROM_EMAIL or "").strip()
-
-        # Gmail commonly rejects non-verified envelope senders.
-        if "gmail.com" in (settings.SMTP_HOST or "").lower() and smtp_user:
-            return smtp_user
-
-        return from_email or smtp_user
-
-    @staticmethod
-    def _build_sender() -> str:
-        sender_email = EmailService._sender_email()
-        if settings.SMTP_FROM_NAME and sender_email:
-            return f"{settings.SMTP_FROM_NAME} <{sender_email}>"
-        return sender_email
+    """Email service for sending emails."""
 
     @staticmethod
     def send_password_reset_code(to_email: str, code: str, expires_minutes: int) -> None:
-        sender_email = EmailService._sender_email()
-        if not settings.SMTP_HOST or not sender_email:
-            raise RuntimeError("SMTP não configurado para envio de recuperação de senha")
-
-        message = EmailMessage()
-        message["Subject"] = f"{settings.PROJECT_NAME} - Código de recuperação de senha"
-        message["From"] = EmailService._build_sender()
-        message["To"] = to_email
-
-        text_body = (
-            f"Seu código de recuperação é: {code}\n\n"
-            f"Este código expira em {expires_minutes} minutos.\n"
-            "Se você não solicitou a troca de senha, ignore este e-mail."
+        """Send password reset code to email.
+        
+        Args:
+            to_email: Recipient email address
+            code: Reset code to include in email
+            expires_minutes: How many minutes the code is valid for
+        """
+        logger.info(
+            "PASSWORD_RESET_EMAIL to=%s code=%s expires_minutes=%s",
+            to_email,
+            code,
+            expires_minutes
         )
-        html_body = (
-            "<div style=\"font-family:Arial,sans-serif;color:#0f172a;line-height:1.5\">"
-            f"<h2 style=\"margin-bottom:8px\">{settings.PROJECT_NAME}</h2>"
-            "<p>Recebemos uma solicitação para redefinir sua senha.</p>"
-            f"<p style=\"font-size:28px;font-weight:700;letter-spacing:6px;color:#1d4ed8\">{code}</p>"
-            f"<p>Este código expira em <strong>{expires_minutes} minutos</strong>.</p>"
-            "<p>Se você não solicitou a troca de senha, ignore este e-mail.</p>"
-            "</div>"
-        )
-
-        message.set_content(text_body)
-        message.add_alternative(html_body, subtype="html")
-
-        last_exc: Exception | None = None
-
-        # Attempt 1: use configured port/mode (default: 587 STARTTLS)
-        try:
-            EmailService._send_via_starttls(message, sender_email, to_email)
-            return
-        except Exception as exc:
-            _log.warning("smtp_attempt_starttls_failed host=%s port=%s err=%s",
-                         settings.SMTP_HOST, settings.SMTP_PORT, exc)
-            last_exc = exc
-
-        # Attempt 2: fallback to SSL on port 465 (common VPS restriction workaround)
-        if settings.SMTP_PORT != 465:
-            try:
-                EmailService._send_via_ssl(message, sender_email, to_email, port=465)
-                return
-            except Exception as exc:
-                _log.warning("smtp_attempt_ssl465_failed host=%s err=%s", settings.SMTP_HOST, exc)
-                last_exc = exc
-
-        # Attempt 3: SSL on the same configured port if it differs
-        if not settings.SMTP_USE_SSL:
-            try:
-                EmailService._send_via_ssl(message, sender_email, to_email, port=settings.SMTP_PORT)
-                return
-            except Exception as exc:
-                _log.warning("smtp_attempt_ssl_configured_failed host=%s port=%s err=%s",
-                             settings.SMTP_HOST, settings.SMTP_PORT, exc)
-                last_exc = exc
-
-        raise RuntimeError(f"Falha em todas as tentativas SMTP: {last_exc}") from last_exc
-
-    @staticmethod
-    def _send_via_starttls(message: EmailMessage, sender_email: str, to_email: str) -> None:
-        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as smtp:
-            smtp.ehlo()
-            smtp.starttls()
-            smtp.ehlo()
-            if settings.SMTP_USERNAME:
-                smtp.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
-            smtp.send_message(message, from_addr=sender_email, to_addrs=[to_email])
-
-    @staticmethod
-    def _send_via_ssl(message: EmailMessage, sender_email: str, to_email: str, port: int) -> None:
-        with smtplib.SMTP_SSL(settings.SMTP_HOST, port, timeout=15) as smtp:
-            if settings.SMTP_USERNAME:
-                smtp.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
-            smtp.send_message(message, from_addr=sender_email, to_addrs=[to_email])
+        # TODO: Implement actual email sending (e.g., SendGrid, SMTP, etc.)
+        # For now, just log it for development/testing

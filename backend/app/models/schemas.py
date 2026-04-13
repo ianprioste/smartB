@@ -595,18 +595,6 @@ class EventOrderResponse(BaseModel):
     matched_items: List[EventMatchedItemResponse] = Field(default_factory=list)
 
 
-class OrderTagAssignRequest(BaseModel):
-    tag_name: str
-
-    @field_validator("tag_name")
-    @classmethod
-    def validate_tag_name(cls, v: str) -> str:
-        text = (v or "").strip()
-        if not text:
-            raise ValueError("Tag não pode ser vazia")
-        return text
-
-
 class EventSalesSummaryResponse(BaseModel):
     orders_count: int = 0
     matched_items_count: int = 0
@@ -634,5 +622,9 @@ class ItemProductionNoteResponse(BaseModel):
 
 class OrderStatusUpdateRequest(BaseModel):
     situacao: str
+
+
+class OrderTagAssignRequest(BaseModel):
+    tag_name: str
 
 

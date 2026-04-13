@@ -174,23 +174,26 @@ function EventOrderTagEditor({
         {saving && <span style={{ fontSize: 11, color: '#64748b' }}>Salvando...</span>}
       </div>
       {tags.length > 0 && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-          {tags.map((tag) => (
-            <span key={tag} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '2px 8px', borderRadius: 999, background: '#eff6ff', color: '#1d4ed8', fontSize: 11, fontWeight: 600 }}>
-              {tag}
-              <button
-                type="button"
-                onClick={() => onRemove(orderId, tag)}
-                disabled={!key || saving}
-                aria-label={`Remover tag ${tag}`}
-                style={{ border: 'none', background: 'transparent', color: '#1d4ed8', fontSize: 12, fontWeight: 700, cursor: !key || saving ? 'not-allowed' : 'pointer', padding: 0, lineHeight: 1 }}
-              >
-                x
-              </button>
-            </span>
-          ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            {tags.map((tag) => (
+              <span key={tag} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '2px 8px', borderRadius: 999, background: '#eff6ff', color: '#1d4ed8', fontSize: 11, fontWeight: 600 }}>
+                {tag}
+                <button
+                  type="button"
+                  onClick={() => onRemove(orderId, tag)}
+                  disabled={!key || saving}
+                  aria-label={`Remover tag ${tag}`}
+                  style={{ border: 'none', background: 'transparent', color: '#1d4ed8', fontSize: 12, fontWeight: 700, cursor: !key || saving ? 'not-allowed' : 'pointer', padding: 0, lineHeight: 1 }}
+                >
+                  x
+                </button>
+              </span>
+            ))}
+          </div>
         </div>
       )}
+      <div style={{ fontSize: 11, color: '#94a3b8' }}>Pressione Enter para adicionar.</div>
       {!!error && <span style={{ fontSize: 11, color: '#b91c1c' }}>{error}</span>}
     </div>
   );
@@ -329,15 +332,30 @@ export function EventSalesPage() {
         throw new Error(data.detail || 'Falha ao salvar tag');
       }
       const data = await resp.json();
-      const resolvedTags = Array.isArray(data.tags) ? data.tags : ((data.tag || '').trim() ? [String(data.tag).trim()] : [chosenTag]);
       setSalesData((prev) => {
         if (!prev) return prev;
+        const normalizeExisting = (order) => (Array.isArray(order.tags) ? order.tags : ((order.tag || '').trim() ? [order.tag] : []));
         return {
           ...prev,
-          orders: (prev.orders || []).map((o) => (o.id === orderId ? { ...o, tags: resolvedTags, tag: resolvedTags[0] || null } : o)),
+          orders: (prev.orders || []).map((o) => {
+            if (o.id !== orderId) return o;
+            const existing = normalizeExisting(o);
+            const resolvedTags = Array.isArray(data.tags)
+              ? data.tags
+              : ((data.tag || '').trim() ? Array.from(new Set([...existing, String(data.tag).trim()])) : Array.from(new Set([...existing, chosenTag])));
+            return { ...o, tags: resolvedTags, tag: resolvedTags[0] || null };
+          }),
         };
       });
-      setAvailableTags((prev) => Array.from(new Set([...prev, ...resolvedTags])).sort((a, b) => a.localeCompare(b, 'pt-BR')));
+      setAvailableTags((prev) => {
+        const next = new Set(prev);
+        if (Array.isArray(data.tags)) {
+          data.tags.forEach((name) => next.add(name));
+        } else {
+          next.add(chosenTag);
+        }
+        return Array.from(next).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+      });
       setDraftTagsByOrder((prev) => ({ ...prev, [key]: '' }));
       markLocalMutation();
     } catch (err) {
@@ -362,12 +380,19 @@ export function EventSalesPage() {
         throw new Error(data.detail || 'Falha ao remover tag');
       }
       const data = await resp.json();
-      const resolvedTags = Array.isArray(data.tags) ? data.tags : [];
       setSalesData((prev) => {
         if (!prev) return prev;
+        const normalizeExisting = (order) => (Array.isArray(order.tags) ? order.tags : ((order.tag || '').trim() ? [order.tag] : []));
         return {
           ...prev,
-          orders: (prev.orders || []).map((o) => (o.id === orderId ? { ...o, tags: resolvedTags, tag: resolvedTags[0] || null } : o)),
+          orders: (prev.orders || []).map((o) => {
+            if (o.id !== orderId) return o;
+            const existing = normalizeExisting(o);
+            const resolvedTags = Array.isArray(data.tags)
+              ? data.tags
+              : existing.filter((name) => (name || '').trim().toLowerCase() !== (tagName || '').trim().toLowerCase());
+            return { ...o, tags: resolvedTags, tag: resolvedTags[0] || null };
+          }),
         };
       });
       await loadEventTags(selectedEventId);
@@ -441,14 +466,7 @@ export function EventSalesPage() {
         const message = errData.detail || 'Falha ao carregar vendas da campanha';
         throw new Error(message);
       }
-      const data = await resp.json();
-      setSalesData({
-        ...data,
-        orders: (data.orders || []).map((order) => ({
-          ...order,
-          tags: Array.isArray(order.tags) ? order.tags : ((order.tag || '').trim() ? [order.tag] : []),
-        })),
-      });
+      setSalesData(await resp.json());
       deltaCursorRef.current = new Date().toISOString();
     } catch (err) {
       setError(err.message);
@@ -628,16 +646,18 @@ export function EventSalesPage() {
     const allOrders = Array.isArray(salesData?.orders) ? salesData.orders : [];
     const term = (searchTerm || '').trim().toLowerCase();
     const activeStatuses = selectedStatuses || new Set();
+    const wantedTag = (selectedTagFilter || '').trim().toLowerCase();
 
     return allOrders.filter((order) => {
       const statusLabel = normalizeStatusLabel(order.situacao);
       const statusOk = activeStatuses.has(statusLabel);
       if (!statusOk) return false;
 
-      if (selectedTagFilter) {
-        const tags = Array.isArray(order.tags) ? order.tags : ((order.tag || '').trim() ? [order.tag] : []);
-        const tagOk = tags.some((name) => (name || '').trim().toLowerCase() === selectedTagFilter.trim().toLowerCase());
-        if (!tagOk) return false;
+      if (wantedTag) {
+        const orderTags = Array.isArray(order.tags)
+          ? order.tags.map((name) => (name || '').toString().trim().toLowerCase())
+          : ((order.tag || '').toString().trim() ? [(order.tag || '').toString().trim().toLowerCase()] : []);
+        if (!orderTags.includes(wantedTag)) return false;
       }
 
       if (!term) return true;
@@ -921,7 +941,7 @@ export function EventSalesPage() {
                   <select
                     value={selectedTagFilter}
                     onChange={(e) => setSelectedTagFilter(e.target.value)}
-                    style={{ marginLeft: 8, padding: '6px 10px', borderRadius: 8, border: '1px solid #d1d5db', fontSize: 13, background: '#fff', color: '#334155' }}
+                    style={{ marginLeft: 8, padding: '6px 10px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: 12, background: '#fff', color: '#334155' }}
                   >
                     <option value="">Todas as tags</option>
                     {availableTags.map((tag) => (
@@ -1187,16 +1207,11 @@ export function EventSalesPage() {
                           </div>
                           <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}><strong>Data:</strong> {formatDate(order.data)}</div>
                           <div style={{ fontSize: 12, color: '#475569', marginBottom: 8 }}><strong>Código:</strong> {order.numero_loja || '—'}</div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                            <StatusBadge text={order.situacao} />
-                            <span style={{ fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</span>
-                            <span title={order.has_frete ? 'Envio' : 'Retirada'}>{order.has_frete ? '🚚' : '🏪'}</span>
-                            {matchedItems.length > 0 && <ChevronIcon isExpanded={isExpanded} />}
-                          </div>
-                          <div style={{ marginTop: 8 }}>
+                          <div style={{ fontSize: 12, color: '#475569', marginBottom: 8, display: 'grid', gap: 4 }}>
+                            <strong>Tag:</strong>
                             <EventOrderTagEditor
                               orderId={order.id}
-                              currentTags={order.tags}
+                              currentTags={order.tags || (order.tag ? [order.tag] : [])}
                               availableTags={availableTags}
                               draftTagsByOrder={draftTagsByOrder}
                               setDraftTagsByOrder={setDraftTagsByOrder}
@@ -1205,6 +1220,12 @@ export function EventSalesPage() {
                               saving={!!tagSavingByOrder[String(order.id || '')]}
                               error={tagErrorByOrder[String(order.id || '')]}
                             />
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <StatusBadge text={order.situacao} />
+                            <span style={{ fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</span>
+                            <span title={order.has_frete ? 'Envio' : 'Retirada'}>{order.has_frete ? '🚚' : '🏪'}</span>
+                            {matchedItems.length > 0 && <ChevronIcon isExpanded={isExpanded} />}
                           </div>
                         </button>
 
@@ -1260,9 +1281,9 @@ export function EventSalesPage() {
                       <th>Nuvemshop</th>
                       <th>Data</th>
                       <th>Cliente</th>
+                      <th>Tag</th>
                       <th>Situação</th>
                       <th>Produção</th>
-                      <th>Tags</th>
                       <th></th>
                       <th>Total Itens Evento</th>
                     </tr>
@@ -1287,12 +1308,10 @@ export function EventSalesPage() {
                             <td style={{ color: '#64748b' }}>{order.numero_loja || '—'}</td>
                             <td>{formatDate(order.data)}</td>
                             <td>{order.cliente || '—'}</td>
-                            <td><StatusBadge text={order.situacao} /></td>
-                            <td style={{ fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</td>
-                            <td style={{ minWidth: 240 }}>
+                            <td>
                               <EventOrderTagEditor
                                 orderId={order.id}
-                                currentTags={order.tags}
+                                currentTags={order.tags || (order.tag ? [order.tag] : [])}
                                 availableTags={availableTags}
                                 draftTagsByOrder={draftTagsByOrder}
                                 setDraftTagsByOrder={setDraftTagsByOrder}
@@ -1302,6 +1321,8 @@ export function EventSalesPage() {
                                 error={tagErrorByOrder[String(order.id || '')]}
                               />
                             </td>
+                            <td><StatusBadge text={order.situacao} /></td>
+                            <td style={{ fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</td>
                             <td style={{ fontSize: 14 }} title={order.has_frete ? 'Envio' : 'Retirada'}>{order.has_frete ? '🚚' : '🏪'}</td>
                             <td style={{ fontWeight: 600 }}>{formatBRL(order.total_matched)}</td>
                           </tr>

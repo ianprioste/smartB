@@ -4,7 +4,7 @@ from uuid import UUID
 import re
 from datetime import datetime, time, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.infra.db import get_db
@@ -14,9 +14,9 @@ from app.domain.order_local_cache import get_cached_order_detail, warm_order_det
 from app.domain.bling_situacoes import get_bling_status_ids
 from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.order_snapshot_repo import OrderSnapshotRepository
+from app.repositories.order_tag_repo import OrderTagRepository
 from app.repositories.sales_event_repo import SalesEventRepository
 from app.repositories.item_production_note_repo import ItemProductionNoteRepository
-from app.repositories.order_tag_repo import OrderTagRepository
 from app.repositories.sync_scope_version_repo import (
     SyncScopeVersionRepository,
     SCOPE_ORDERS_GLOBAL,
@@ -121,21 +121,17 @@ def _inject_production_data(db: Session, event_id: UUID, filtered_orders: list) 
     return filtered_orders
 
 
-def _inject_event_tags(db: Session, event_id: UUID, orders: list[EventOrderResponse]) -> None:
-    order_ids = [int(order.id) for order in orders if order.id is not None]
-    assignments = OrderTagRepository.get_assignments_map(
+def _inject_event_tags(db: Session, event_id: UUID, filtered_orders: List[EventOrderResponse]) -> None:
+    order_ids = [int(order.id) for order in filtered_orders if order.id is not None]
+    tag_map = OrderTagRepository.get_assignments_map(
         db=db,
         tenant_id=DEFAULT_TENANT_ID,
-        scope_key=scope_event_sales(event_id),
+        scope_key="event",
         event_id=event_id,
         bling_order_ids=order_ids,
     )
-    for order in orders:
-        if order.id is None:
-            order.tags = []
-            order.tag = None
-            continue
-        tags = assignments.get(int(order.id), [])
+    for order in filtered_orders:
+        tags = tag_map.get(int(order.id), []) if order.id is not None else []
         order.tags = tags
         order.tag = tags[0] if tags else None
 
@@ -823,10 +819,8 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
             total_matched += order_total_matched
 
             key = row.bling_order_id or row.numero
-            situacao_text = _status_to_text(
-                order_payload.get("situacao") if isinstance(order_payload, dict) else None,
-                row.status_id,
-            ) if isinstance(order_payload, dict) else _status_to_text(row.status_name, row.status_id)
+            # Priorize status persistido localmente no snapshot quando disponível.
+            situacao_text = _status_to_text(row.status_name, row.status_id)
 
             if situacao_text == "Cancelado":
                 continue
@@ -1012,6 +1006,84 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Erro ao buscar vendas do evento: {exc}")
 
 
+@router.get("/{event_id}/tags")
+async def list_event_order_tags(event_id: UUID, db: Session = Depends(get_db)):
+    event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
+    if not event:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+
+    rows = OrderTagRepository.list_tags(
+        db=db,
+        tenant_id=DEFAULT_TENANT_ID,
+        scope_key="event",
+        event_id=event_id,
+    )
+    return {
+        "tags": [
+            {
+                "id": str(row.id),
+                "name": row.name,
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.put("/{event_id}/orders/{order_id}/tag")
+async def set_event_order_tag(event_id: UUID, order_id: int, payload: OrderTagAssignRequest, db: Session = Depends(get_db)):
+    event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
+    if not event:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+
+    try:
+        tags = OrderTagRepository.add_tag_by_name(
+            db=db,
+            tenant_id=DEFAULT_TENANT_ID,
+            scope_key="event",
+            event_id=event_id,
+            bling_order_id=order_id,
+            tag_name=payload.tag_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    db.commit()
+    return {"ok": True, "event_id": str(event_id), "order_id": int(order_id), "tag": tags[0] if tags else None, "tags": tags}
+
+
+@router.delete("/{event_id}/orders/{order_id}/tag")
+async def clear_event_order_tag(
+    event_id: UUID,
+    order_id: int,
+    tag_name: str | None = Query(default=None, description="Optional specific tag name to remove"),
+    db: Session = Depends(get_db),
+):
+    event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
+    if not event:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+
+    if (tag_name or "").strip():
+        tags = OrderTagRepository.remove_tag_by_name(
+            db=db,
+            tenant_id=DEFAULT_TENANT_ID,
+            scope_key="event",
+            event_id=event_id,
+            bling_order_id=order_id,
+            tag_name=tag_name,
+        )
+    else:
+        OrderTagRepository.clear_assignment(
+            db=db,
+            tenant_id=DEFAULT_TENANT_ID,
+            scope_key="event",
+            event_id=event_id,
+            bling_order_id=order_id,
+        )
+        tags = []
+    db.commit()
+    return {"ok": True, "event_id": str(event_id), "order_id": int(order_id), "tag": tags[0] if tags else None, "tags": tags}
+
+
 @router.get("/{event_id}/sync/version")
 async def get_event_sync_version(event_id: UUID, db: Session = Depends(get_db)):
     """Lightweight version token for event sales delta polling."""
@@ -1131,9 +1203,13 @@ async def _check_and_update_bling_orders(db: Session, event, event_id: UUID):
 
     # Load production notes and event products.
     notes = ItemProductionNoteRepository.get_all_for_event(db, DEFAULT_TENANT_ID, event_id)
-    note_map = {}
+    note_map: dict[tuple[str, int | None], str] = {}
+    sku_fallback_map: dict[str, str] = {}
     for n in notes:
-        note_map[(n.sku.strip().upper(), n.bling_order_id)] = n.production_status
+        sku_key = n.sku.strip().upper()
+        note_map[(sku_key, n.bling_order_id)] = n.production_status
+        if n.bling_order_id is None:
+            sku_fallback_map[sku_key] = n.production_status
 
     event_response = _map_event_response(db, event)
     selected_skus_canonical = {
@@ -1147,9 +1223,9 @@ async def _check_and_update_bling_orders(db: Session, event, event_id: UUID):
     sit_ids = await get_bling_status_ids(client)
     pronto_envio_id = sit_ids.get("pronto_envio")
     pronto_retirada_id = sit_ids.get("pronto_retirada")
-    if not pronto_envio_id and not pronto_retirada_id:
-        logger.warning("bling_situacoes_not_found skipping auto-update")
-        return
+    can_update_bling = bool(pronto_envio_id or pronto_retirada_id)
+    if not can_update_bling:
+        logger.warning("bling_situacoes_not_found applying local status fallback only")
 
     # Scan orders in event period.
     start_dt = datetime.combine(event.start_date, time.min)
@@ -1169,33 +1245,60 @@ async def _check_and_update_bling_orders(db: Session, event, event_id: UUID):
             continue
 
         # Check if ALL matched items are Embalado.
-        all_embalado = all(
-            note_map.get(((item.get("sku", "")).strip().upper(), row.bling_order_id)) == "Embalado"
-            for item in matched
-        )
+        def _item_embalado(item: dict[str, Any]) -> bool:
+            sku_key = (item.get("sku", "")).strip().upper()
+            if not sku_key:
+                return False
+            status = note_map.get((sku_key, row.bling_order_id))
+            if status is None:
+                status = sku_fallback_map.get(sku_key)
+            return status == "Embalado"
+
+        all_embalado = all(_item_embalado(item) for item in matched)
         if not all_embalado:
             continue
 
         # Determine envio vs retirada.
         frete = _has_frete(detail_payload, order_payload)
+        target_name = "Pronto para envio" if frete else "Pronto para retirada"
         target_id = pronto_envio_id if frete else pronto_retirada_id
         if not target_id:
+            target_id = pronto_retirada_id if frete else pronto_envio_id
+
+        snapshot = db.query(BlingOrderSnapshotModel).filter(
+            BlingOrderSnapshotModel.bling_order_id == row.bling_order_id,
+            BlingOrderSnapshotModel.tenant_id == DEFAULT_TENANT_ID,
+        ).first()
+
+        if not can_update_bling or not target_id:
+            if snapshot:
+                snapshot.status_name = target_name
+                db.commit()
+            logger.info(
+                "order_status_local_fallback order_id=%s status=%s",
+                row.bling_order_id,
+                target_name,
+            )
             continue
 
         try:
             await client.patch(f"/pedidos/vendas/{row.bling_order_id}/situacoes/{target_id}", {})
             # Update local snapshot.
-            snapshot = db.query(BlingOrderSnapshotModel).filter(
-                BlingOrderSnapshotModel.bling_order_id == row.bling_order_id,
-                BlingOrderSnapshotModel.tenant_id == DEFAULT_TENANT_ID,
-            ).first()
             if snapshot:
                 snapshot.status_id = target_id
-                snapshot.status_name = "Pronto para envio" if frete else "Pronto para retirada"
+                snapshot.status_name = target_name
                 db.commit()
             logger.info("bling_order_status_updated order_id=%s new_status_id=%s", row.bling_order_id, target_id)
         except Exception as exc:
-            logger.warning("bling_order_status_update_failed order_id=%s error=%s", row.bling_order_id, str(exc))
+            if snapshot:
+                snapshot.status_name = target_name
+                db.commit()
+            logger.warning(
+                "bling_order_status_update_failed order_id=%s error=%s local_status_applied=%s",
+                row.bling_order_id,
+                str(exc),
+                target_name,
+            )
 
 
 @router.put("/{event_id}/orders/{order_id}/status")
@@ -1230,10 +1333,17 @@ async def update_order_status(
     if not target_id:
         raise HTTPException(status_code=400, detail=f"Situação '{body.situacao}' não encontrada no Bling")
 
+    local_only = False
     try:
         await client.patch(f"/pedidos/vendas/{order_id}/situacoes/{target_id}", {})
     except BlingAPIError as exc:
-        raise HTTPException(status_code=502, detail=f"Erro ao atualizar status no Bling: {exc}")
+        logger.warning(
+            "update_order_status_bling_error order_id=%s target_id=%s error=%s fallback_local=true",
+            order_id,
+            target_id,
+            str(exc),
+        )
+        local_only = True
 
     # Update local snapshot.
     snapshot = db.query(BlingOrderSnapshotModel).filter(
@@ -1248,77 +1358,4 @@ async def update_order_status(
     SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
     db.commit()
 
-    return {"ok": True, "order_id": order_id, "new_status": body.situacao}
-
-
-@router.get("/{event_id}/tags")
-async def list_event_tags(event_id: UUID, db: Session = Depends(get_db)):
-    event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
-    if not event:
-        raise HTTPException(status_code=404, detail="Campanha não encontrada")
-
-    rows = OrderTagRepository.list_tags(db, DEFAULT_TENANT_ID, scope_event_sales(event_id), event_id)
-    return {"tags": [{"name": row.name} for row in rows]}
-
-
-@router.put("/{event_id}/orders/{order_id}/tag")
-async def add_event_order_tag(
-    event_id: UUID,
-    order_id: int,
-    body: OrderTagAssignRequest,
-    db: Session = Depends(get_db),
-):
-    event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
-    if not event:
-        raise HTTPException(status_code=404, detail="Campanha não encontrada")
-
-    tag_name = (body.tag_name or "").strip()
-    if not tag_name:
-        raise HTTPException(status_code=400, detail="Tag não pode ser vazia")
-
-    tags = OrderTagRepository.add_tag_by_name(
-        db=db,
-        tenant_id=DEFAULT_TENANT_ID,
-        scope_key=scope_event_sales(event_id),
-        event_id=event_id,
-        bling_order_id=order_id,
-        tag_name=tag_name,
-    )
-    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, scope_event_sales(event_id))
-    db.commit()
-    return {"ok": True, "order_id": order_id, "tag": tags[0] if tags else None, "tags": tags}
-
-
-@router.delete("/{event_id}/orders/{order_id}/tag")
-async def remove_event_order_tag(
-    event_id: UUID,
-    order_id: int,
-    tag_name: str | None = None,
-    db: Session = Depends(get_db),
-):
-    event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
-    if not event:
-        raise HTTPException(status_code=404, detail="Campanha não encontrada")
-
-    if (tag_name or "").strip():
-        tags = OrderTagRepository.remove_tag_by_name(
-            db=db,
-            tenant_id=DEFAULT_TENANT_ID,
-            scope_key=scope_event_sales(event_id),
-            event_id=event_id,
-            bling_order_id=order_id,
-            tag_name=tag_name,
-        )
-    else:
-        OrderTagRepository.clear_assignment(
-            db=db,
-            tenant_id=DEFAULT_TENANT_ID,
-            scope_key=scope_event_sales(event_id),
-            event_id=event_id,
-            bling_order_id=order_id,
-        )
-        tags = []
-
-    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, scope_event_sales(event_id))
-    db.commit()
-    return {"ok": True, "order_id": order_id, "tag": tags[0] if tags else None, "tags": tags}
+    return {"ok": True, "order_id": order_id, "new_status": body.situacao, "local_only": local_only}

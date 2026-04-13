@@ -13,7 +13,7 @@ const KNOWN_STATUSES = [
   { id: 15, nome: 'Cancelado', color: '#dc2626', bg: '#fef2f2' },
 ];
 
-const DEFAULT_STATUS_IDS = [6, 9, 15];
+const DEFAULT_STATUS_IDS = [6];
 const KNOWN_STATUS_IDS = new Set(KNOWN_STATUSES.map((status) => status.id));
 
 function normalizeExpandedKey(value) {
@@ -55,11 +55,7 @@ function readSavedOrdersUiState() {
     const raw = window.localStorage.getItem(ORDERS_UI_STATE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    const restoredStatuses = Array.isArray(parsed?.selectedStatuses)
-      ? parsed.selectedStatuses
-        .map((value) => Number(value))
-        .filter((id) => KNOWN_STATUS_IDS.has(id))
-      : DEFAULT_STATUS_IDS;
+    const restoredStatuses = DEFAULT_STATUS_IDS;
     return {
       search: typeof parsed?.search === 'string' ? parsed.search : '',
       selectedStatuses: new Set(restoredStatuses),
@@ -115,72 +111,6 @@ function ChevronIcon({ isExpanded }) {
       style={{ transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s ease', display: 'block' }}>
       <polyline points="9 18 15 12 9 6" />
     </svg>
-  );
-}
-
-function OrderTagEditor({
-  orderId,
-  currentTags,
-  availableTags,
-  draftTagsByOrder,
-  setDraftTagsByOrder,
-  onAdd,
-  onRemove,
-  saving,
-  error,
-}) {
-  const key = String(orderId || '');
-  const datalistId = `global-order-tags-${key || 'unknown'}`;
-  const value = key ? (draftTagsByOrder[key] ?? '') : '';
-  const tags = Array.isArray(currentTags) ? currentTags.filter(Boolean) : [];
-
-  return (
-    <div onClick={(e) => e.stopPropagation()} style={{ display: 'grid', gap: 4 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-        <input
-          list={datalistId}
-          value={value}
-          onChange={(e) => {
-            const next = e.target.value;
-            setDraftTagsByOrder((prev) => ({ ...prev, [key]: next }));
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              if ((value || '').trim()) onAdd(orderId, value);
-            }
-          }}
-          placeholder="Digite a tag"
-          disabled={!key || saving}
-          style={{ padding: '5px 8px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: 12, background: '#fff', color: '#334155', minWidth: 130 }}
-        />
-        <datalist id={datalistId}>
-          {availableTags.map((tag) => (
-            <option key={tag} value={tag} />
-          ))}
-        </datalist>
-        {saving && <span style={{ fontSize: 11, color: '#64748b' }}>Salvando...</span>}
-      </div>
-      {tags.length > 0 && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-          {tags.map((tag) => (
-            <span key={tag} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '2px 8px', borderRadius: 999, background: '#eff6ff', color: '#1d4ed8', fontSize: 11, fontWeight: 600 }}>
-              {tag}
-              <button
-                type="button"
-                onClick={() => onRemove(orderId, tag)}
-                disabled={!key || saving}
-                aria-label={`Remover tag ${tag}`}
-                style={{ border: 'none', background: 'transparent', color: '#1d4ed8', fontSize: 12, fontWeight: 700, cursor: !key || saving ? 'not-allowed' : 'pointer', padding: 0, lineHeight: 1 }}
-              >
-                x
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-      {!!error && <span style={{ fontSize: 11, color: '#b91c1c' }}>{error}</span>}
-    </div>
   );
 }
 
@@ -300,6 +230,75 @@ function TimelineItem({ label, value }) {
   );
 }
 
+function OrderTagEditor({
+  orderId,
+  currentTags,
+  availableTags,
+  draftTagsByOrder,
+  setDraftTagsByOrder,
+  onAdd,
+  onRemove,
+  saving,
+  error,
+}) {
+  const key = String(orderId || '');
+  const datalistId = `global-tags-${key || 'unknown'}`;
+  const value = key ? (draftTagsByOrder[key] ?? '') : '';
+  const tags = Array.isArray(currentTags) ? currentTags.filter(Boolean) : [];
+
+  return (
+    <div onClick={(e) => e.stopPropagation()} style={{ display: 'grid', gap: 4 }}>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        <input
+          list={datalistId}
+          value={value}
+          onChange={(e) => {
+            const next = e.target.value;
+            setDraftTagsByOrder((prev) => ({ ...prev, [key]: next }));
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if ((value || '').trim()) onAdd(orderId, value);
+            }
+          }}
+          placeholder="Digite a tag"
+          disabled={!key || saving}
+          style={{ padding: '5px 8px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: 12, background: '#fff', color: '#334155', minWidth: 130 }}
+        />
+        <datalist id={datalistId}>
+          {availableTags.map((tag) => (
+            <option key={tag} value={tag} />
+          ))}
+        </datalist>
+        {saving && <span style={{ fontSize: 11, color: '#64748b' }}>Salvando...</span>}
+      </div>
+      {tags.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            {tags.map((tag) => (
+              <span key={tag} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '2px 8px', borderRadius: 999, background: '#eff6ff', color: '#1d4ed8', fontSize: 11, fontWeight: 600 }}>
+                {tag}
+                <button
+                  type="button"
+                  onClick={() => onRemove(orderId, tag)}
+                  disabled={!key || saving}
+                  aria-label={`Remover tag ${tag}`}
+                  style={{ border: 'none', background: 'transparent', color: '#1d4ed8', fontSize: 12, fontWeight: 700, cursor: !key || saving ? 'not-allowed' : 'pointer', padding: 0, lineHeight: 1 }}
+                >
+                  x
+                </button>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      <div style={{ fontSize: 11, color: '#94a3b8' }}>Pressione Enter para adicionar.</div>
+      {!!error && <span style={{ fontSize: 11, color: '#b91c1c' }}>{error}</span>}
+    </div>
+  );
+}
+
 /* ── Main Page ──────────────────────────────────────────────── */
 export function OrdersPage() {
   const savedUiState = readSavedOrdersUiState();
@@ -313,18 +312,18 @@ export function OrdersPage() {
   const [syncRunning, setSyncRunning] = useState(false);
   const [sourceMode, setSourceMode] = useState('');
   const [search, setSearch] = useState(savedUiState?.search || '');
-  const [selectedStatuses, setSelectedStatuses] = useState(() => savedUiState?.selectedStatuses || new Set(DEFAULT_STATUS_IDS));
+  const [selectedStatuses, setSelectedStatuses] = useState(() => new Set(DEFAULT_STATUS_IDS));
   const [page, setPage] = useState(savedUiState?.page || 1);
   const [totalPages, setTotalPages] = useState(0);
   const [total, setTotal] = useState(0);
   const [syncMessage, setSyncMessage] = useState('');
-  const [expandedOrderId, setExpandedOrderId] = useState(savedUiState?.expandedOrderId ?? null);
-  const [syncModalOpen, setSyncModalOpen] = useState(false);
   const [availableTags, setAvailableTags] = useState([]);
   const [selectedTagFilter, setSelectedTagFilter] = useState('');
   const [draftTagsByOrder, setDraftTagsByOrder] = useState({});
   const [tagSavingByOrder, setTagSavingByOrder] = useState({});
   const [tagErrorByOrder, setTagErrorByOrder] = useState({});
+  const [expandedOrderId, setExpandedOrderId] = useState(savedUiState?.expandedOrderId ?? null);
+  const [syncModalOpen, setSyncModalOpen] = useState(false);
   const initialScrollYRef = useRef(savedUiState?.scrollY || 0);
   const hasRestoredScrollRef = useRef(false);
   const debounceRef = useRef(null);
@@ -356,13 +355,13 @@ export function OrdersPage() {
     );
   }, []);
 
-  const handleProductionStatusChange = useCallback(async (sku, currentStatus, nextStatus) => {
+  const handleProductionStatusChange = useCallback(async (sku, currentStatus, nextStatus, blingOrderId) => {
     if (nextStatus === currentStatus) return;
     try {
       await fetch(`${API_BASE}/orders/items/${encodeURIComponent(sku)}/production`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ production_status: nextStatus }),
+        body: JSON.stringify({ production_status: nextStatus, ...(blingOrderId ? { bling_order_id: blingOrderId } : {}) }),
       });
       markLocalMutation();
       handleProductionSaved(sku, nextStatus, undefined);
@@ -371,11 +370,11 @@ export function OrdersPage() {
     }
   }, [handleProductionSaved, markLocalMutation]);
 
-  const handleProductionNotesChange = useCallback((sku, productionStatus, notes) => {
+  const handleProductionNotesChange = useCallback((sku, productionStatus, notes, blingOrderId) => {
     fetch(`${API_BASE}/orders/items/${encodeURIComponent(sku)}/production`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ production_status: productionStatus || 'Pendente', notes }),
+      body: JSON.stringify({ production_status: productionStatus || 'Pendente', notes, ...(blingOrderId ? { bling_order_id: blingOrderId } : {}) }),
     }).catch(() => {});
     markLocalMutation();
     handleProductionSaved(sku, undefined, notes);
@@ -405,7 +404,7 @@ export function OrdersPage() {
       const data = await resp.json();
       setAvailableTags((data.tags || []).map((t) => t.name).filter(Boolean));
     } catch {
-      // Keep page functional even if tags endpoint fails.
+      // Ignore tag list errors to keep orders functional.
     }
   }, []);
 
@@ -432,9 +431,23 @@ export function OrdersPage() {
         throw new Error(data.detail || 'Falha ao salvar tag');
       }
       const data = await resp.json();
-      const resolvedTags = Array.isArray(data.tags) ? data.tags : ((data.tag || '').trim() ? [String(data.tag).trim()] : [chosenTag]);
-      setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, tags: resolvedTags, tag: resolvedTags[0] || null } : o)));
-      setAvailableTags((prev) => Array.from(new Set([...prev, ...resolvedTags])).sort((a, b) => a.localeCompare(b, 'pt-BR')));
+      setOrders((prev) => prev.map((o) => {
+        if (o.id !== orderId) return o;
+        const existing = Array.isArray(o.tags) ? o.tags : ((o.tag || '').trim() ? [o.tag] : []);
+        const resolvedTags = Array.isArray(data.tags)
+          ? data.tags
+          : ((data.tag || '').trim() ? Array.from(new Set([...existing, String(data.tag).trim()])) : Array.from(new Set([...existing, chosenTag])));
+        return { ...o, tags: resolvedTags, tag: resolvedTags[0] || null };
+      }));
+      setAvailableTags((prev) => {
+        const next = new Set(prev);
+        if (Array.isArray(data.tags)) {
+          data.tags.forEach((name) => next.add(name));
+        } else {
+          next.add(chosenTag);
+        }
+        return Array.from(next).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+      });
       setDraftTagsByOrder((prev) => ({ ...prev, [key]: '' }));
       markLocalMutation();
     } catch (err) {
@@ -458,8 +471,14 @@ export function OrdersPage() {
         throw new Error(data.detail || 'Falha ao remover tag');
       }
       const data = await resp.json();
-      const resolvedTags = Array.isArray(data.tags) ? data.tags : [];
-      setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, tags: resolvedTags, tag: resolvedTags[0] || null } : o)));
+      setOrders((prev) => prev.map((o) => {
+        if (o.id !== orderId) return o;
+        const existing = Array.isArray(o.tags) ? o.tags : ((o.tag || '').trim() ? [o.tag] : []);
+        const resolvedTags = Array.isArray(data.tags)
+          ? data.tags
+          : existing.filter((name) => (name || '').trim().toLowerCase() !== (tagName || '').trim().toLowerCase());
+        return { ...o, tags: resolvedTags, tag: resolvedTags[0] || null };
+      }));
       await fetchGlobalTags();
       markLocalMutation();
     } catch (err) {
@@ -469,7 +488,7 @@ export function OrdersPage() {
     }
   }, [fetchGlobalTags, markLocalMutation]);
 
-  const fetchOrders = useCallback(async (searchTerm, statuses, pageNum, selectedTag = '') => {
+  const fetchOrders = useCallback(async (searchTerm, statuses, pageNum, selectedTag) => {
     try {
       setLoading(true);
       setError(null);
@@ -482,10 +501,7 @@ export function OrdersPage() {
       const data = await resp.json();
       setHasBling(data.has_bling_auth);
       setSourceMode(data.source || '');
-      setOrders((data.data ?? []).map((order) => ({
-        ...order,
-        tags: Array.isArray(order.tags) ? order.tags : ((order.tag || '').trim() ? [order.tag] : []),
-      })));
+      setOrders(data.data ?? []);
       setTotal(data.total ?? 0);
       setTotalPages(data.pages ?? 0);
       deltaCursorRef.current = new Date().toISOString();
@@ -751,6 +767,16 @@ export function OrdersPage() {
             <input type="text" placeholder="Buscar por nº pedido, cliente ou Nuvemshop…" value={search} onChange={handleSearchChange}
               style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #e2e8f0', fontSize: 14, outline: 'none', background: '#fff', color: '#0f172a', boxSizing: 'border-box' }} />
           </div>
+          <select
+            value={selectedTagFilter}
+            onChange={(e) => { setSelectedTagFilter(e.target.value); setPage(1); }}
+            style={{ padding: '10px 12px', borderRadius: 10, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff', color: '#334155', minWidth: 160 }}
+          >
+            <option value="">Todas as tags</option>
+            {availableTags.map((tag) => (
+              <option key={tag} value={tag}>{tag}</option>
+            ))}
+          </select>
           <div style={{ display: 'flex', gap: 6 }}>
             {KNOWN_STATUSES.map(s => {
               const active = selectedStatuses.has(s.id);
@@ -763,18 +789,6 @@ export function OrdersPage() {
                 </button>
               );
             })}
-          </div>
-          <div>
-            <select
-              value={selectedTagFilter}
-              onChange={(e) => { setSelectedTagFilter(e.target.value); setPage(1); }}
-              style={{ padding: '9px 10px', borderRadius: 10, border: '1px solid #e2e8f0', fontSize: 13, color: '#334155', background: '#fff' }}
-            >
-              <option value="">Todas as tags</option>
-              {availableTags.map((tag) => (
-                <option key={tag} value={tag}>{tag}</option>
-              ))}
-            </select>
           </div>
         </div>
 
@@ -812,24 +826,25 @@ export function OrdersPage() {
                           <div style={{ display: 'grid', gap: 6 }}>
                             <div style={{ fontSize: 12, color: '#64748b' }}><strong>Data:</strong> {order.data ? new Date(order.data).toLocaleDateString('pt-BR') : '—'}</div>
                             <div style={{ fontSize: 12, color: '#475569' }}><strong>Código:</strong> {order.numeroLoja || '—'}</div>
+                              <div style={{ fontSize: 12, color: '#475569', display: 'grid', gap: 4 }}>
+                                <strong>Tag:</strong>
+                                <OrderTagEditor
+                                  orderId={order.id}
+                                  currentTags={order.tags || (order.tag ? [order.tag] : [])}
+                                  availableTags={availableTags}
+                                  draftTagsByOrder={draftTagsByOrder}
+                                  setDraftTagsByOrder={setDraftTagsByOrder}
+                                  onAdd={handleOrderTagAdd}
+                                  onRemove={handleOrderTagRemove}
+                                  saving={!!tagSavingByOrder[String(order.id || '')]}
+                                  error={tagErrorByOrder[String(order.id || '')]}
+                                />
+                              </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                               <StatusBadge text={order.situacao} />
                               <span style={{ fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</span>
                               <span title={order.has_frete ? 'Envio' : 'Retirada'}>{order.has_frete ? '🚚' : '🏪'}</span>
                               {itens.length > 0 && <ChevronIcon isExpanded={expanded} />}
-                            </div>
-                            <div style={{ marginTop: 8 }}>
-                              <OrderTagEditor
-                                orderId={order.id}
-                                currentTags={order.tags}
-                                availableTags={availableTags}
-                                draftTagsByOrder={draftTagsByOrder}
-                                setDraftTagsByOrder={setDraftTagsByOrder}
-                                onAdd={handleOrderTagAdd}
-                                onRemove={handleOrderTagRemove}
-                                saving={!!tagSavingByOrder[String(order.id || '')]}
-                                error={tagErrorByOrder[String(order.id || '')]}
-                              />
                             </div>
                           </div>
                         </button>
@@ -859,13 +874,13 @@ export function OrdersPage() {
                                   <div style={{ marginBottom: 8 }}>
                                     <ProductionStatusBadge
                                       status={item.production_status}
-                                      onChangeStatus={(nextStatus) => handleProductionStatusChange(item.sku, item.production_status, nextStatus)}
+                                      onChangeStatus={(nextStatus) => handleProductionStatusChange(item.sku, item.production_status, nextStatus, order.id)}
                                     />
                                   </div>
                                   <ProductionNotesInput
                                     initialValue={item.notes}
                                     status={item.production_status}
-                                    onChangeNotes={(notes) => handleProductionNotesChange(item.sku, item.production_status, notes)}
+                                    onChangeNotes={(notes) => handleProductionNotesChange(item.sku, item.production_status, notes, order.id)}
                                   />
                                 </div>
                               ))}
@@ -885,9 +900,9 @@ export function OrdersPage() {
                       <th style={{ textAlign: 'left', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Nuvemshop</th>
                       <th style={{ textAlign: 'left', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Data</th>
                       <th style={{ textAlign: 'left', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Cliente</th>
+                      <th style={{ textAlign: 'center', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Tag</th>
                       <th style={{ textAlign: 'center', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Status</th>
                       <th style={{ textAlign: 'center', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Produção</th>
-                      <th style={{ textAlign: 'left', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Tags</th>
                       <th style={{ width: 36, padding: '12px 4px' }}></th>
                       <th style={{ textAlign: 'right', padding: '12px 12px', fontWeight: 700, color: '#64748b', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.3px' }}>Total</th>
                     </tr>
@@ -910,12 +925,10 @@ export function OrdersPage() {
                           <td style={{ padding: '10px 12px', color: '#64748b' }}>{order.numeroLoja || '—'}</td>
                           <td style={{ padding: '10px 12px', color: '#475569' }}>{order.data ? new Date(order.data).toLocaleDateString('pt-BR') : '—'}</td>
                           <td style={{ padding: '10px 12px', color: '#334155', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{order.cliente}</td>
-                          <td style={{ padding: '10px 12px', textAlign: 'center' }}><StatusBadge text={order.situacao} /></td>
-                          <td style={{ padding: '10px 12px', textAlign: 'center', fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</td>
-                          <td style={{ padding: '10px 12px', minWidth: 240 }}>
+                          <td style={{ padding: '10px 12px', textAlign: 'center' }}>
                             <OrderTagEditor
                               orderId={order.id}
-                              currentTags={order.tags}
+                              currentTags={order.tags || (order.tag ? [order.tag] : [])}
                               availableTags={availableTags}
                               draftTagsByOrder={draftTagsByOrder}
                               setDraftTagsByOrder={setDraftTagsByOrder}
@@ -925,6 +938,8 @@ export function OrdersPage() {
                               error={tagErrorByOrder[String(order.id || '')]}
                             />
                           </td>
+                          <td style={{ padding: '10px 12px', textAlign: 'center' }}><StatusBadge text={order.situacao} /></td>
+                          <td style={{ padding: '10px 12px', textAlign: 'center', fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</td>
                           <td style={{ padding: '10px 4px', fontSize: 14, textAlign: 'center' }} title={order.has_frete ? 'Envio' : 'Retirada'}>{order.has_frete ? '🚚' : '🏪'}</td>
                           <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 700, color: '#0f172a' }}>{formatBRL(order.total)}</td>
                         </tr>
@@ -961,7 +976,7 @@ export function OrdersPage() {
                                         <td style={{ padding: '7px 8px' }}>
                                           <ProductionStatusBadge
                                             status={item.production_status}
-                                            onChangeStatus={(nextStatus) => handleProductionStatusChange(item.sku, item.production_status, nextStatus)}
+                                            onChangeStatus={(nextStatus) => handleProductionStatusChange(item.sku, item.production_status, nextStatus, order.id)}
                                           />
                                         </td>
                                         <td style={{ textAlign: 'right', padding: '7px 8px', color: '#64748b' }}>{item.quantity}</td>
@@ -970,7 +985,7 @@ export function OrdersPage() {
                                           <ProductionNotesInput
                                             initialValue={item.notes}
                                             status={item.production_status}
-                                            onChangeNotes={(notes) => handleProductionNotesChange(item.sku, item.production_status, notes)}
+                                            onChangeNotes={(notes) => handleProductionNotesChange(item.sku, item.production_status, notes, order.id)}
                                           />
                                         </td>
                                       </tr>
