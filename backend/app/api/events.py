@@ -1038,12 +1038,14 @@ async def list_event_order_tags(event_id: UUID, db: Session = Depends(get_db)):
 
 @router.put("/{event_id}/orders/{order_id}/tag")
 async def set_event_order_tag(event_id: UUID, order_id: int, payload: OrderTagAssignRequest, db: Session = Depends(get_db)):
+    from sqlalchemy.exc import IntegrityError as _IntegrityError
+
     event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
     if not event:
         raise HTTPException(status_code=404, detail="Campanha não encontrada")
 
-    try:
-        tags = OrderTagRepository.add_tag_by_name(
+    def _do_add_tag():
+        return OrderTagRepository.add_tag_by_name(
             db=db,
             tenant_id=DEFAULT_TENANT_ID,
             scope_key="event",
@@ -1051,17 +1053,32 @@ async def set_event_order_tag(event_id: UUID, order_id: int, payload: OrderTagAs
             bling_order_id=order_id,
             tag_name=payload.tag_name,
         )
+
+    try:
+        tags = _do_add_tag()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except _IntegrityError:
+        # Race condition: concurrent save of the same tag. Rollback and retry once.
+        db.rollback()
+        try:
+            tags = _do_add_tag()
+        except Exception as exc2:
+            db.rollback()
+            err_type = type(exc2).__name__
+            logger.error(
+                "event_set_order_tag_retry_failed event_id=%s order_id=%s error_type=%s error=%s",
+                str(event_id), str(order_id), err_type, str(exc2), exc_info=True,
+            )
+            raise HTTPException(status_code=500, detail=f"Falha ao salvar tag [{err_type}]")
     except Exception as exc:
         db.rollback()
-        logger.warning(
-            "event_set_order_tag_failed event_id=%s order_id=%s error=%s",
-            str(event_id),
-            str(order_id),
-            str(exc),
+        err_type = type(exc).__name__
+        logger.error(
+            "event_set_order_tag_failed event_id=%s order_id=%s error_type=%s error=%s",
+            str(event_id), str(order_id), err_type, str(exc), exc_info=True,
         )
-        raise HTTPException(status_code=500, detail="Falha ao salvar tag")
+        raise HTTPException(status_code=500, detail=f"Falha ao salvar tag [{err_type}]")
 
     db.commit()
     return {"ok": True, "event_id": str(event_id), "order_id": int(order_id), "tag": tags[0] if tags else None, "tags": tags}
