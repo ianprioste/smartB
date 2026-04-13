@@ -5,6 +5,23 @@ import useIsMobile from '../../hooks/useIsMobile';
 import { useVersionPolling } from '../../hooks/useVersionPolling';
 
 const API_BASE = '/api';
+const EVENT_SALES_UI_STATE_KEY = 'smartbling:event-sales:ui-state:v1';
+
+function readSavedUiState() {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(EVENT_SALES_UI_STATE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return {
+      selectedEventId: parsed?.selectedEventId ? String(parsed.selectedEventId) : '',
+      groupBy: parsed?.groupBy === 'item' ? 'item' : 'pedido',
+      expandedOrderId: parsed?.expandedOrderId ? String(parsed.expandedOrderId) : null,
+    };
+  } catch {
+    return null;
+  }
+}
 
 function formatBRL(value) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value ?? 0);
@@ -51,17 +68,18 @@ function normalizeStatusLabel(value) {
 }
 
 export function EventSalesPage() {
+  const savedUiState = readSavedUiState();
   const isMobile = useIsMobile(1024);
   const [events, setEvents] = useState([]);
-  const [selectedEventId, setSelectedEventId] = useState('');
+  const [selectedEventId, setSelectedEventId] = useState(savedUiState?.selectedEventId || '');
   const [salesData, setSalesData] = useState(null);
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [loadingSales, setLoadingSales] = useState(false);
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedStatuses, setSelectedStatuses] = useState(null);
-  const [expandedOrderId, setExpandedOrderId] = useState(null);
-  const [groupBy, setGroupBy] = useState('pedido');
+  const [expandedOrderId, setExpandedOrderId] = useState(savedUiState?.expandedOrderId || null);
+  const [groupBy, setGroupBy] = useState(savedUiState?.groupBy || 'pedido');
   const deltaCursorRef = useRef(null);
   const suppressDeltaUntilRef = useRef(0);
 
@@ -148,7 +166,7 @@ export function EventSalesPage() {
       const activeList = list.filter((event) => event.is_active !== false);
       setEvents(activeList);
       if (!selectedEventId && activeList.length > 0) {
-        setSelectedEventId(activeList[0].id);
+        setSelectedEventId(String(activeList[0].id));
       }
     } catch (err) {
       setError(err.message);
@@ -271,11 +289,24 @@ export function EventSalesPage() {
       setSalesData(null);
       return;
     }
-    const hasSelected = events.some((event) => event.id === selectedEventId);
+    const hasSelected = events.some((event) => String(event.id) === String(selectedEventId));
     if (!hasSelected) {
-      setSelectedEventId(events[0].id);
+      setSelectedEventId(String(events[0].id));
     }
   }, [events, selectedEventId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(EVENT_SALES_UI_STATE_KEY, JSON.stringify({
+        selectedEventId: selectedEventId || '',
+        groupBy,
+        expandedOrderId: expandedOrderId == null ? null : String(expandedOrderId),
+      }));
+    } catch {
+      // Ignore persistence failures (private mode/quota).
+    }
+  }, [selectedEventId, groupBy, expandedOrderId]);
 
   useEffect(() => {
     if (selectedEventId) {
@@ -451,12 +482,12 @@ export function EventSalesPage() {
             ) : (
               <div style={{ display: 'grid', gap: 10 }}>
                 {events.map((event) => {
-                  const selected = selectedEventId === event.id;
+                  const selected = String(selectedEventId) === String(event.id);
                   return (
                     <button
                       key={event.id}
                       type="button"
-                      onClick={() => setSelectedEventId(event.id)}
+                      onClick={() => setSelectedEventId(String(event.id))}
                       style={{
                         border: selected ? '2px solid #2563eb' : '1px solid #e2e8f0',
                         borderRadius: 10,
