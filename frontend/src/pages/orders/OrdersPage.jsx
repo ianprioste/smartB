@@ -827,7 +827,7 @@ export function OrdersPage() {
                             <div style={{ fontSize: 12, color: '#64748b' }}><strong>Data:</strong> {order.data ? new Date(order.data).toLocaleDateString('pt-BR') : '—'}</div>
                             <div style={{ fontSize: 12, color: '#475569' }}><strong>Código:</strong> {order.numeroLoja || '—'}</div>
                               <div style={{ fontSize: 12, color: '#475569', display: 'grid', gap: 4 }}>
-                                <strong>Tag:</strong>
+                                <div style={{ fontWeight: 700 }}>Tag:</div>
                                 <OrderTagEditor
                                   orderId={order.id}
                                   currentTags={order.tags || (order.tag ? [order.tag] : [])}
