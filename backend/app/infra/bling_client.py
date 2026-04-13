@@ -165,6 +165,11 @@ class BlingClient:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     settings.BLING_TOKEN_URL,
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Accept": "application/json",
+                        "User-Agent": "Mozilla/5.0 (compatible; smartBling/2.0; +https://app.useruach.com.br)",
+                    },
                     data={
                         "grant_type": "refresh_token",
                         "refresh_token": self.refresh_token,

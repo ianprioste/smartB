@@ -158,6 +158,9 @@ async def bling_callback(
             settings.BLING_TOKEN_URL,
             headers={
                 "Authorization": f"Basic {encoded_credentials}",
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0 (compatible; smartBling/2.0; +https://app.useruach.com.br)",
             },
             data={
                 "grant_type": "authorization_code",
