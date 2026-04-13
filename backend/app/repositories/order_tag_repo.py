@@ -6,6 +6,7 @@ from typing import Dict, Iterable, List, Optional
 from uuid import UUID
 
 from sqlalchemy import and_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.database import OrderTagAssignmentModel, OrderTagLinkModel, OrderTagModel
@@ -148,9 +149,26 @@ class OrderTagRepository:
             name=clean_name,
             name_key=name_key,
         )
-        db.add(row)
-        db.flush()
-        return row
+        try:
+            db.add(row)
+            db.flush()
+            return row
+        except IntegrityError:
+            # Concurrent requests may create the same tag at the same time.
+            db.rollback()
+            existing = (
+                db.query(OrderTagModel)
+                .filter(
+                    OrderTagModel.tenant_id == tenant_id,
+                    OrderTagModel.scope_key == scope_key,
+                    OrderTagModel.event_id == event_id,
+                    OrderTagModel.name_key == name_key,
+                )
+                .first()
+            )
+            if existing:
+                return existing
+            raise
 
     @staticmethod
     def add_tag_by_name(
@@ -189,8 +207,12 @@ class OrderTagRepository:
                 bling_order_id=int(bling_order_id),
                 tag_id=tag.id,
             )
-            db.add(link)
-            db.flush()
+            try:
+                db.add(link)
+                db.flush()
+            except IntegrityError:
+                # Idempotent behavior when duplicate link is inserted concurrently.
+                db.rollback()
 
         return OrderTagRepository._tags_for_order(db, tenant_id, scope_key, event_id, bling_order_id)
 
