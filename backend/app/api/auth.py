@@ -149,6 +149,11 @@ async def bling_callback(
         credentials = f"{settings.BLING_CLIENT_ID}:{settings.BLING_CLIENT_SECRET}"
         encoded_credentials = base64.b64encode(credentials.encode()).decode()
         
+        logger.info(
+            "oauth_token_exchange_attempt redirect_uri=%s",
+            redirect_uri,
+        )
+
         token_response = httpx.post(
             settings.BLING_TOKEN_URL,
             headers={
@@ -161,11 +166,11 @@ async def bling_callback(
             },
             timeout=30.0,
         )
-        
-        # Log response for debugging
+
         logger.info(
-            "oauth_token_request_succeeded status_code=%s",
+            "oauth_token_response status_code=%s body=%s",
             token_response.status_code,
+            token_response.text[:500],
         )
         
         token_response.raise_for_status()
@@ -217,14 +222,23 @@ async def bling_callback(
         )
 
     except httpx.HTTPError as e:
+        bling_status = getattr(getattr(e, 'response', None), 'status_code', 'N/A')
+        bling_body = ""
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                bling_body = e.response.text[:500]
+            except Exception:
+                pass
         logger.error(
-            "oauth_token_exchange_failed error=%s response_status=%s",
+            "oauth_token_exchange_failed error=%s response_status=%s response_body=%s redirect_uri=%s",
             str(e),
-            getattr(e.response, 'status_code', 'N/A') if hasattr(e, 'response') else 'N/A',
+            bling_status,
+            bling_body,
+            redirect_uri,
         )
         raise HTTPException(
             status_code=400,
-            detail="Failed to exchange code for tokens",
+            detail=f"Failed to exchange code for tokens (Bling status={bling_status}): {bling_body}",
         )
     except Exception as e:
         logger.error("oauth_callback_error error=%s", str(e))
