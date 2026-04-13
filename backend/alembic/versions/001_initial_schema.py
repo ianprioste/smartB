@@ -10,13 +10,24 @@ branch_labels = None
 depends_on = None
 
 
+def _uuid_type(conn):
+    return postgresql.UUID(as_uuid=True) if conn.dialect.name == 'postgresql' else sa.CHAR(length=32)
+
+
+def _json_type(conn):
+    return postgresql.JSON(astext_type=sa.Text()) if conn.dialect.name == 'postgresql' else sa.JSON()
+
+
 def upgrade():
     """Create initial tables."""
+    conn = op.get_bind()
+    uuid_t = _uuid_type(conn)
+    json_t = _json_type(conn)
     
     # Tenants table
     op.create_table(
         'tenants',
-        sa.Column('id', postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column('id', uuid_t, nullable=False),
         sa.Column('name', sa.String(255), nullable=False),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.PrimaryKeyConstraint('id')
@@ -25,8 +36,8 @@ def upgrade():
     # Bling tokens table
     op.create_table(
         'bling_tokens',
-        sa.Column('id', postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column('tenant_id', postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column('id', uuid_t, nullable=False),
+        sa.Column('tenant_id', uuid_t, nullable=False),
         sa.Column('access_token', sa.Text(), nullable=False),
         sa.Column('refresh_token', sa.Text(), nullable=False),
         sa.Column('expires_at', sa.DateTime(), nullable=False),
@@ -43,12 +54,12 @@ def upgrade():
     # Jobs table
     op.create_table(
         'jobs',
-        sa.Column('id', postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column('tenant_id', postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column('id', uuid_t, nullable=False),
+        sa.Column('tenant_id', uuid_t, nullable=False),
         sa.Column('type', sa.String(100), nullable=False),
         sa.Column('status', sa.Enum('DRAFT', 'QUEUED', 'RUNNING', 'DONE', 'FAILED', name='jobstatusenum'), nullable=False),
-        sa.Column('input_payload', postgresql.JSON(astext_type=sa.Text()), nullable=True),
-        sa.Column('job_metadata', postgresql.JSON(astext_type=sa.Text()), nullable=True),
+        sa.Column('input_payload', json_t, nullable=True),
+        sa.Column('job_metadata', json_t, nullable=True),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('started_at', sa.DateTime(), nullable=True),
         sa.Column('finished_at', sa.DateTime(), nullable=True),
@@ -62,11 +73,11 @@ def upgrade():
     # Job items table
     op.create_table(
         'job_items',
-        sa.Column('id', postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column('job_id', postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column('id', uuid_t, nullable=False),
+        sa.Column('job_id', uuid_t, nullable=False),
         sa.Column('status', sa.Enum('PENDING', 'RUNNING', 'OK', 'ERROR', name='jobitemstatusenum'), nullable=False),
-        sa.Column('payload', postgresql.JSON(astext_type=sa.Text()), nullable=True),
-        sa.Column('result', postgresql.JSON(astext_type=sa.Text()), nullable=True),
+        sa.Column('payload', json_t, nullable=True),
+        sa.Column('result', json_t, nullable=True),
         sa.Column('error_message', sa.Text(), nullable=True),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('started_at', sa.DateTime(), nullable=True),

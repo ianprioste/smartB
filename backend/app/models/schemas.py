@@ -589,8 +589,22 @@ class EventOrderResponse(BaseModel):
     total_order: float = 0.0
     total_matched: float = 0.0
     has_frete: bool = False
+    tag: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
     production_summary: Optional[str] = None
     matched_items: List[EventMatchedItemResponse] = Field(default_factory=list)
+
+
+class OrderTagAssignRequest(BaseModel):
+    tag_name: str
+
+    @field_validator("tag_name")
+    @classmethod
+    def validate_tag_name(cls, v: str) -> str:
+        text = (v or "").strip()
+        if not text:
+            raise ValueError("Tag não pode ser vazia")
+        return text
 
 
 class EventSalesSummaryResponse(BaseModel):

@@ -16,6 +16,7 @@ from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.order_snapshot_repo import OrderSnapshotRepository
 from app.repositories.sales_event_repo import SalesEventRepository
 from app.repositories.item_production_note_repo import ItemProductionNoteRepository
+from app.repositories.order_tag_repo import OrderTagRepository
 from app.repositories.sync_scope_version_repo import (
     SyncScopeVersionRepository,
     SCOPE_ORDERS_GLOBAL,
@@ -34,6 +35,7 @@ from app.models.schemas import (
     ItemProductionNoteUpdateRequest,
     ItemProductionNoteResponse,
     OrderStatusUpdateRequest,
+    OrderTagAssignRequest,
 )
 
 router = APIRouter(prefix="/events", tags=["events"])
@@ -117,6 +119,25 @@ def _inject_production_data(db: Session, event_id: UUID, filtered_orders: list) 
         if total_items > 0:
             order.production_summary = f"{embalado_count}/{total_items} Embalado"
     return filtered_orders
+
+
+def _inject_event_tags(db: Session, event_id: UUID, orders: list[EventOrderResponse]) -> None:
+    order_ids = [int(order.id) for order in orders if order.id is not None]
+    assignments = OrderTagRepository.get_assignments_map(
+        db=db,
+        tenant_id=DEFAULT_TENANT_ID,
+        scope_key=scope_event_sales(event_id),
+        event_id=event_id,
+        bling_order_ids=order_ids,
+    )
+    for order in orders:
+        if order.id is None:
+            order.tags = []
+            order.tag = None
+            continue
+        tags = assignments.get(int(order.id), [])
+        order.tags = tags
+        order.tag = tags[0] if tags else None
 
 
 def _normalize_sku(value: Any) -> str:
@@ -825,6 +846,7 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
 
         filtered_orders = list(filtered_order_map.values())
         _inject_production_data(db, event_id, filtered_orders)
+        _inject_event_tags(db, event_id, filtered_orders)
 
         logger.info(
             "event_sales_local_db_done event_id=%s matched_orders=%s matched_items=%s total_matched=%.2f",
@@ -959,6 +981,7 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
 
         filtered_orders = list(filtered_order_map.values())
         _inject_production_data(db, event_id, filtered_orders)
+        _inject_event_tags(db, event_id, filtered_orders)
 
         logger.info(
             "event_sales_filter_done event_id=%s matched_orders=%s matched_items=%s total_matched=%.2f list_api_calls=1 detail_cache_hits=%s detail_api_fetched=%s detail_api_failed=%s local_fallback_used=%s total_api_calls=%s",
@@ -1226,3 +1249,76 @@ async def update_order_status(
     db.commit()
 
     return {"ok": True, "order_id": order_id, "new_status": body.situacao}
+
+
+@router.get("/{event_id}/tags")
+async def list_event_tags(event_id: UUID, db: Session = Depends(get_db)):
+    event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
+    if not event:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+
+    rows = OrderTagRepository.list_tags(db, DEFAULT_TENANT_ID, scope_event_sales(event_id), event_id)
+    return {"tags": [{"name": row.name} for row in rows]}
+
+
+@router.put("/{event_id}/orders/{order_id}/tag")
+async def add_event_order_tag(
+    event_id: UUID,
+    order_id: int,
+    body: OrderTagAssignRequest,
+    db: Session = Depends(get_db),
+):
+    event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
+    if not event:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+
+    tag_name = (body.tag_name or "").strip()
+    if not tag_name:
+        raise HTTPException(status_code=400, detail="Tag não pode ser vazia")
+
+    tags = OrderTagRepository.add_tag_by_name(
+        db=db,
+        tenant_id=DEFAULT_TENANT_ID,
+        scope_key=scope_event_sales(event_id),
+        event_id=event_id,
+        bling_order_id=order_id,
+        tag_name=tag_name,
+    )
+    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, scope_event_sales(event_id))
+    db.commit()
+    return {"ok": True, "order_id": order_id, "tag": tags[0] if tags else None, "tags": tags}
+
+
+@router.delete("/{event_id}/orders/{order_id}/tag")
+async def remove_event_order_tag(
+    event_id: UUID,
+    order_id: int,
+    tag_name: str | None = None,
+    db: Session = Depends(get_db),
+):
+    event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
+    if not event:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+
+    if (tag_name or "").strip():
+        tags = OrderTagRepository.remove_tag_by_name(
+            db=db,
+            tenant_id=DEFAULT_TENANT_ID,
+            scope_key=scope_event_sales(event_id),
+            event_id=event_id,
+            bling_order_id=order_id,
+            tag_name=tag_name,
+        )
+    else:
+        OrderTagRepository.clear_assignment(
+            db=db,
+            tenant_id=DEFAULT_TENANT_ID,
+            scope_key=scope_event_sales(event_id),
+            event_id=event_id,
+            bling_order_id=order_id,
+        )
+        tags = []
+
+    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, scope_event_sales(event_id))
+    db.commit()
+    return {"ok": True, "order_id": order_id, "tag": tags[0] if tags else None, "tags": tags}

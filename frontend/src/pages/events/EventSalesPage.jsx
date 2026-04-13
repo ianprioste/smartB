@@ -130,6 +130,72 @@ function normalizeProductionStatusKey(value) {
   return 'pending';
 }
 
+function EventOrderTagEditor({
+  orderId,
+  currentTags,
+  availableTags,
+  draftTagsByOrder,
+  setDraftTagsByOrder,
+  onAdd,
+  onRemove,
+  saving,
+  error,
+}) {
+  const key = String(orderId || '');
+  const datalistId = `event-tags-${key || 'unknown'}`;
+  const value = key ? (draftTagsByOrder[key] ?? '') : '';
+  const tags = Array.isArray(currentTags) ? currentTags.filter(Boolean) : [];
+
+  return (
+    <div onClick={(e) => e.stopPropagation()} style={{ display: 'grid', gap: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <input
+          list={datalistId}
+          value={value}
+          onChange={(e) => {
+            const next = e.target.value;
+            setDraftTagsByOrder((prev) => ({ ...prev, [key]: next }));
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if ((value || '').trim()) onAdd(orderId, value);
+            }
+          }}
+          placeholder="Digite a tag"
+          disabled={!key || saving}
+          style={{ padding: '5px 8px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: 12, background: '#fff', color: '#334155', minWidth: 130 }}
+        />
+        <datalist id={datalistId}>
+          {availableTags.map((tag) => (
+            <option key={tag} value={tag} />
+          ))}
+        </datalist>
+        {saving && <span style={{ fontSize: 11, color: '#64748b' }}>Salvando...</span>}
+      </div>
+      {tags.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          {tags.map((tag) => (
+            <span key={tag} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '2px 8px', borderRadius: 999, background: '#eff6ff', color: '#1d4ed8', fontSize: 11, fontWeight: 600 }}>
+              {tag}
+              <button
+                type="button"
+                onClick={() => onRemove(orderId, tag)}
+                disabled={!key || saving}
+                aria-label={`Remover tag ${tag}`}
+                style={{ border: 'none', background: 'transparent', color: '#1d4ed8', fontSize: 12, fontWeight: 700, cursor: !key || saving ? 'not-allowed' : 'pointer', padding: 0, lineHeight: 1 }}
+              >
+                x
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {!!error && <span style={{ fontSize: 11, color: '#b91c1c' }}>{error}</span>}
+    </div>
+  );
+}
+
 export function EventSalesPage() {
   const savedUiState = readSavedUiState();
   const isMobile = useIsMobile(1024);
@@ -145,6 +211,11 @@ export function EventSalesPage() {
   const [expandedOrderId, setExpandedOrderId] = useState(savedUiState?.expandedOrderId || null);
   const [groupBy, setGroupBy] = useState(savedUiState?.groupBy || 'pedido');
   const [selectedItemStatusFilter, setSelectedItemStatusFilter] = useState(null);
+  const [availableTags, setAvailableTags] = useState([]);
+  const [selectedTagFilter, setSelectedTagFilter] = useState('');
+  const [draftTagsByOrder, setDraftTagsByOrder] = useState({});
+  const [tagSavingByOrder, setTagSavingByOrder] = useState({});
+  const [tagErrorByOrder, setTagErrorByOrder] = useState({});
   const deltaCursorRef = useRef(null);
   const suppressDeltaUntilRef = useRef(0);
   const initialScrollYRef = useRef(savedUiState?.scrollY || 0);
@@ -219,6 +290,95 @@ export function EventSalesPage() {
     }
   }, [markLocalMutation, selectedEventId]);
 
+  const loadEventTags = useCallback(async (eventId) => {
+    if (!eventId) {
+      setAvailableTags([]);
+      return;
+    }
+    try {
+      const resp = await fetch(`${API_BASE}/events/${eventId}/tags`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      setAvailableTags((data.tags || []).map((t) => t.name).filter(Boolean));
+    } catch {
+      // Keep page functional even if tags endpoint fails.
+    }
+  }, []);
+
+  const handleOrderTagAdd = useCallback(async (orderId, rawTag) => {
+    const key = String(orderId || '');
+    if (!selectedEventId || !key) {
+      setTagErrorByOrder((prev) => ({ ...prev, [key]: 'Pedido sem ID válido para salvar tag' }));
+      return;
+    }
+
+    const chosenTag = (rawTag || '').trim();
+    setTagSavingByOrder((prev) => ({ ...prev, [key]: true }));
+    setTagErrorByOrder((prev) => ({ ...prev, [key]: '' }));
+
+    try {
+      if (!chosenTag) return;
+
+      const resp = await fetch(`${API_BASE}/events/${selectedEventId}/orders/${orderId}/tag`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tag_name: chosenTag }),
+      });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.detail || 'Falha ao salvar tag');
+      }
+      const data = await resp.json();
+      const resolvedTags = Array.isArray(data.tags) ? data.tags : ((data.tag || '').trim() ? [String(data.tag).trim()] : [chosenTag]);
+      setSalesData((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          orders: (prev.orders || []).map((o) => (o.id === orderId ? { ...o, tags: resolvedTags, tag: resolvedTags[0] || null } : o)),
+        };
+      });
+      setAvailableTags((prev) => Array.from(new Set([...prev, ...resolvedTags])).sort((a, b) => a.localeCompare(b, 'pt-BR')));
+      setDraftTagsByOrder((prev) => ({ ...prev, [key]: '' }));
+      markLocalMutation();
+    } catch (err) {
+      setTagErrorByOrder((prev) => ({ ...prev, [key]: err.message || 'Erro ao salvar tag' }));
+    } finally {
+      setTagSavingByOrder((prev) => ({ ...prev, [key]: false }));
+    }
+  }, [markLocalMutation, selectedEventId]);
+
+  const handleOrderTagRemove = useCallback(async (orderId, tagName) => {
+    const key = String(orderId || '');
+    if (!selectedEventId || !key || !(tagName || '').trim()) return;
+
+    setTagSavingByOrder((prev) => ({ ...prev, [key]: true }));
+    setTagErrorByOrder((prev) => ({ ...prev, [key]: '' }));
+
+    try {
+      const params = new URLSearchParams({ tag_name: tagName });
+      const resp = await fetch(`${API_BASE}/events/${selectedEventId}/orders/${orderId}/tag?${params.toString()}`, { method: 'DELETE' });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.detail || 'Falha ao remover tag');
+      }
+      const data = await resp.json();
+      const resolvedTags = Array.isArray(data.tags) ? data.tags : [];
+      setSalesData((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          orders: (prev.orders || []).map((o) => (o.id === orderId ? { ...o, tags: resolvedTags, tag: resolvedTags[0] || null } : o)),
+        };
+      });
+      await loadEventTags(selectedEventId);
+      markLocalMutation();
+    } catch (err) {
+      setTagErrorByOrder((prev) => ({ ...prev, [key]: err.message || 'Erro ao remover tag' }));
+    } finally {
+      setTagSavingByOrder((prev) => ({ ...prev, [key]: false }));
+    }
+  }, [loadEventTags, markLocalMutation, selectedEventId]);
+
   const loadEventOrdersCount = useCallback(async (eventList) => {
     const entries = await Promise.all(
       eventList.map(async (event) => {
@@ -281,7 +441,14 @@ export function EventSalesPage() {
         const message = errData.detail || 'Falha ao carregar vendas da campanha';
         throw new Error(message);
       }
-      setSalesData(await resp.json());
+      const data = await resp.json();
+      setSalesData({
+        ...data,
+        orders: (data.orders || []).map((order) => ({
+          ...order,
+          tags: Array.isArray(order.tags) ? order.tags : ((order.tag || '').trim() ? [order.tag] : []),
+        })),
+      });
       deltaCursorRef.current = new Date().toISOString();
     } catch (err) {
       setError(err.message);
@@ -416,8 +583,9 @@ export function EventSalesPage() {
   useEffect(() => {
     if (selectedEventId) {
       loadSales(selectedEventId);
+      loadEventTags(selectedEventId);
     }
-  }, [loadSales, selectedEventId]);
+  }, [loadEventTags, loadSales, selectedEventId]);
 
   useVersionPolling({
     enabled: Boolean(selectedEventId) && !loadingSales,
@@ -466,13 +634,19 @@ export function EventSalesPage() {
       const statusOk = activeStatuses.has(statusLabel);
       if (!statusOk) return false;
 
+      if (selectedTagFilter) {
+        const tags = Array.isArray(order.tags) ? order.tags : ((order.tag || '').trim() ? [order.tag] : []);
+        const tagOk = tags.some((name) => (name || '').trim().toLowerCase() === selectedTagFilter.trim().toLowerCase());
+        if (!tagOk) return false;
+      }
+
       if (!term) return true;
 
       const pedidoText = String(order.numero || order.id || '').toLowerCase();
       const clienteText = String(order.cliente || '').toLowerCase();
       return pedidoText.includes(term) || clienteText.includes(term);
     });
-  }, [salesData, searchTerm, selectedStatuses]);
+  }, [salesData, searchTerm, selectedStatuses, selectedTagFilter]);
 
   const filteredOrdersByItemStatus = useMemo(() => {
     if (!selectedItemStatusFilter) return visibleOrders;
@@ -744,6 +918,16 @@ export function EventSalesPage() {
                       </button>
                     );
                   })}
+                  <select
+                    value={selectedTagFilter}
+                    onChange={(e) => setSelectedTagFilter(e.target.value)}
+                    style={{ marginLeft: 8, padding: '6px 10px', borderRadius: 8, border: '1px solid #d1d5db', fontSize: 13, background: '#fff', color: '#334155' }}
+                  >
+                    <option value="">Todas as tags</option>
+                    {availableTags.map((tag) => (
+                      <option key={tag} value={tag}>{tag}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
             </div>
@@ -1009,6 +1193,19 @@ export function EventSalesPage() {
                             <span title={order.has_frete ? 'Envio' : 'Retirada'}>{order.has_frete ? '🚚' : '🏪'}</span>
                             {matchedItems.length > 0 && <ChevronIcon isExpanded={isExpanded} />}
                           </div>
+                          <div style={{ marginTop: 8 }}>
+                            <EventOrderTagEditor
+                              orderId={order.id}
+                              currentTags={order.tags}
+                              availableTags={availableTags}
+                              draftTagsByOrder={draftTagsByOrder}
+                              setDraftTagsByOrder={setDraftTagsByOrder}
+                              onAdd={handleOrderTagAdd}
+                              onRemove={handleOrderTagRemove}
+                              saving={!!tagSavingByOrder[String(order.id || '')]}
+                              error={tagErrorByOrder[String(order.id || '')]}
+                            />
+                          </div>
                         </button>
 
                         {isExpanded && matchedItems.length > 0 && (
@@ -1065,6 +1262,7 @@ export function EventSalesPage() {
                       <th>Cliente</th>
                       <th>Situação</th>
                       <th>Produção</th>
+                      <th>Tags</th>
                       <th></th>
                       <th>Total Itens Evento</th>
                     </tr>
@@ -1091,13 +1289,26 @@ export function EventSalesPage() {
                             <td>{order.cliente || '—'}</td>
                             <td><StatusBadge text={order.situacao} /></td>
                             <td style={{ fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</td>
+                            <td style={{ minWidth: 240 }}>
+                              <EventOrderTagEditor
+                                orderId={order.id}
+                                currentTags={order.tags}
+                                availableTags={availableTags}
+                                draftTagsByOrder={draftTagsByOrder}
+                                setDraftTagsByOrder={setDraftTagsByOrder}
+                                onAdd={handleOrderTagAdd}
+                                onRemove={handleOrderTagRemove}
+                                saving={!!tagSavingByOrder[String(order.id || '')]}
+                                error={tagErrorByOrder[String(order.id || '')]}
+                              />
+                            </td>
                             <td style={{ fontSize: 14 }} title={order.has_frete ? 'Envio' : 'Retirada'}>{order.has_frete ? '🚚' : '🏪'}</td>
                             <td style={{ fontWeight: 600 }}>{formatBRL(order.total_matched)}</td>
                           </tr>
 
                           {isExpanded && matchedItems.length > 0 && (
                             <tr style={{ background: '#f8fafc', borderTop: '2px solid #e2e8f0' }}>
-                              <td colSpan="9" style={{ padding: '16px 20px' }}>
+                              <td colSpan="10" style={{ padding: '16px 20px' }}>
                                 {allEmbalado && order.situacao !== 'Atendido' && (
                                   <div style={{ marginBottom: 12, display: 'flex', gap: 8 }}>
                                     <button

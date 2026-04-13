@@ -16,9 +16,10 @@ from app.domain.bling_situacoes import get_bling_status_ids
 from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.order_snapshot_repo import OrderSnapshotRepository, parse_progress_from_sync_message
 from app.repositories.item_production_note_repo import ItemProductionNoteRepository
+from app.repositories.order_tag_repo import OrderTagRepository
 from app.repositories.sync_scope_version_repo import SyncScopeVersionRepository, SCOPE_ORDERS_GLOBAL
 from app.models.database import BlingOrderSnapshotModel
-from app.models.schemas import ItemProductionNoteUpdateRequest, ItemProductionNoteResponse, OrderStatusUpdateRequest
+from app.models.schemas import ItemProductionNoteUpdateRequest, ItemProductionNoteResponse, OrderStatusUpdateRequest, OrderTagAssignRequest
 from app.utils.datetime_utils import now_local
 
 logger = get_logger(__name__)
@@ -414,6 +415,30 @@ def _inject_production_data_orders(db: Session, orders: List[Dict[str, Any]]) ->
         order["production_summary"] = f"{embalado}/{len(items)} Embalado" if items else None
 
 
+def _order_id_from_payload(order: Dict[str, Any]) -> int | None:
+    candidate = order.get("id") or order.get("numero")
+    try:
+        return int(candidate)
+    except Exception:
+        return None
+
+
+def _inject_global_tags(db: Session, orders: List[Dict[str, Any]]) -> None:
+    order_ids = [oid for oid in (_order_id_from_payload(order) for order in orders) if oid is not None]
+    assignments = OrderTagRepository.get_assignments_map(
+        db=db,
+        tenant_id=DEFAULT_TENANT_ID,
+        scope_key=SCOPE_ORDERS_GLOBAL,
+        event_id=None,
+        bling_order_ids=order_ids,
+    )
+    for order in orders:
+        oid = _order_id_from_payload(order)
+        tags = assignments.get(oid, []) if oid is not None else []
+        order["tags"] = tags
+        order["tag"] = tags[0] if tags else None
+
+
 def _format_snapshot_order(row) -> Dict[str, Any]:
     raw_detail = row.raw_detail if isinstance(row.raw_detail, dict) else {}
     raw_order = row.raw_order if isinstance(row.raw_order, dict) else {}
@@ -442,6 +467,7 @@ async def list_orders(
     db: Session = Depends(get_db),
     search: str = Query("", description="Search by order number, client name, or Nuvemshop number"),
     statuses: str = Query("6,9,15", description="Comma-separated Bling status IDs"),
+    tag: str = Query("", description="Filtro por tag (global)"),
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
 ):
@@ -516,6 +542,13 @@ async def list_orders(
         start = (page - 1) * limit
         end = start + limit
         page_data = formatted[start:end]
+        _inject_global_tags(db, page_data)
+        tag_filter = (tag or "").strip().lower()
+        if tag_filter:
+            page_data = [
+                order for order in page_data
+                if any((name or "").strip().lower() == tag_filter for name in (order.get("tags") or []))
+            ]
 
         return {
             "has_bling_auth": True,
@@ -556,6 +589,13 @@ async def list_orders(
     page_data = formatted[start:end]
 
     _inject_production_data_orders(db, page_data)
+    _inject_global_tags(db, page_data)
+    tag_filter = (tag or "").strip().lower()
+    if tag_filter:
+        page_data = [
+            order for order in page_data
+            if any((name or "").strip().lower() == tag_filter for name in (order.get("tags") or []))
+        ]
 
     return {
         "has_bling_auth": client is not None,
@@ -566,6 +606,63 @@ async def list_orders(
         "statuses": KNOWN_STATUSES,
         "source": "local-db",
     }
+
+
+@router.get("/tags")
+async def list_global_order_tags(db: Session = Depends(get_db)):
+    rows = OrderTagRepository.list_tags(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL, None)
+    return {
+        "tags": [{"name": row.name} for row in rows]
+    }
+
+
+@router.put("/{order_id}/tag")
+async def add_global_order_tag(order_id: int, body: OrderTagAssignRequest, db: Session = Depends(get_db)):
+    tag_name = (body.tag_name or "").strip()
+    if not tag_name:
+        raise HTTPException(status_code=400, detail="Tag não pode ser vazia")
+
+    tags = OrderTagRepository.add_tag_by_name(
+        db=db,
+        tenant_id=DEFAULT_TENANT_ID,
+        scope_key=SCOPE_ORDERS_GLOBAL,
+        event_id=None,
+        bling_order_id=order_id,
+        tag_name=tag_name,
+    )
+    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
+    db.commit()
+    return {"ok": True, "order_id": order_id, "tag": tags[0] if tags else None, "tags": tags}
+
+
+@router.delete("/{order_id}/tag")
+async def remove_global_order_tag(
+    order_id: int,
+    tag_name: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    if (tag_name or "").strip():
+        tags = OrderTagRepository.remove_tag_by_name(
+            db=db,
+            tenant_id=DEFAULT_TENANT_ID,
+            scope_key=SCOPE_ORDERS_GLOBAL,
+            event_id=None,
+            bling_order_id=order_id,
+            tag_name=tag_name,
+        )
+    else:
+        OrderTagRepository.clear_assignment(
+            db=db,
+            tenant_id=DEFAULT_TENANT_ID,
+            scope_key=SCOPE_ORDERS_GLOBAL,
+            event_id=None,
+            bling_order_id=order_id,
+        )
+        tags = []
+
+    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
+    db.commit()
+    return {"ok": True, "order_id": order_id, "tag": tags[0] if tags else None, "tags": tags}
 
 
 @router.post("/sync/full")
