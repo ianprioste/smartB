@@ -28,6 +28,13 @@ class OrderTagRepository:
         return OrderTagRepository._clean_name(name).lower()
 
     @staticmethod
+    def _ensure_column_exists(bind, inspector, table_name: str, column_name: str, ddl_sql: str) -> None:
+        existing = {col.get("name") for col in inspector.get_columns(table_name)}
+        if column_name in existing:
+            return
+        bind.execute(sa.text(ddl_sql))
+
+    @staticmethod
     def _try_ensure_schema(db: Session) -> None:
         """Ensure order tag tables exist, otherwise raise a clear schema error."""
         bind = db.get_bind()
@@ -51,6 +58,54 @@ class OrderTagRepository:
             raise OrderTagSchemaError(
                 "Schema de tags ausente apos tentativa de criacao. Rode alembic upgrade head com usuario de banco com DDL."
             )
+
+        # Heal partial/legacy schemas where tables exist but columns were not fully created.
+        inspector = sa.inspect(bind)
+        if bind.dialect.name == "postgresql":
+            dt_sql = "TIMESTAMP WITHOUT TIME ZONE"
+        else:
+            dt_sql = "DATETIME"
+
+        try:
+            OrderTagRepository._ensure_column_exists(
+                bind,
+                inspector,
+                "order_tags",
+                "name_key",
+                "ALTER TABLE order_tags ADD COLUMN name_key VARCHAR(80)",
+            )
+            OrderTagRepository._ensure_column_exists(
+                bind,
+                inspector,
+                "order_tags",
+                "created_at",
+                f"ALTER TABLE order_tags ADD COLUMN created_at {dt_sql}",
+            )
+            OrderTagRepository._ensure_column_exists(
+                bind,
+                inspector,
+                "order_tags",
+                "updated_at",
+                f"ALTER TABLE order_tags ADD COLUMN updated_at {dt_sql}",
+            )
+            OrderTagRepository._ensure_column_exists(
+                bind,
+                inspector,
+                "order_tag_links",
+                "created_at",
+                f"ALTER TABLE order_tag_links ADD COLUMN created_at {dt_sql}",
+            )
+            OrderTagRepository._ensure_column_exists(
+                bind,
+                inspector,
+                "order_tag_links",
+                "updated_at",
+                f"ALTER TABLE order_tag_links ADD COLUMN updated_at {dt_sql}",
+            )
+        except Exception as exc:
+            raise OrderTagSchemaError(
+                "Schema de tags incompleto (colunas ausentes). Rode alembic upgrade head para corrigir."
+            ) from exc
 
     @staticmethod
     def list_tags(db: Session, tenant_id: UUID, scope_key: str, event_id: Optional[UUID]) -> List[OrderTagModel]:
