@@ -13,7 +13,9 @@ const PROD_COLORS = {
 
 export function ProductionStatusBadge({ status, onChangeStatus }) {
   const [open, setOpen] = useState(false);
+  const [openUpward, setOpenUpward] = useState(false);
   const ref = useRef(null);
+  const menuRef = useRef(null);
   const colors = PROD_COLORS[status] || PROD_COLORS.Pendente;
 
   useEffect(() => {
@@ -25,6 +27,31 @@ export function ProductionStatusBadge({ status, onChangeStatus }) {
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const updatePlacement = () => {
+      const rootRect = ref.current?.getBoundingClientRect();
+      if (!rootRect) return;
+
+      const menuHeight = menuRef.current?.offsetHeight || 220;
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+      const spaceBelow = viewportHeight - rootRect.bottom;
+      const spaceAbove = rootRect.top;
+      const shouldOpenUpward = spaceBelow < menuHeight + 8 && spaceAbove > spaceBelow;
+      setOpenUpward(shouldOpenUpward);
+    };
+
+    updatePlacement();
+    window.addEventListener('resize', updatePlacement);
+    window.addEventListener('scroll', updatePlacement, true);
+
+    return () => {
+      window.removeEventListener('resize', updatePlacement);
+      window.removeEventListener('scroll', updatePlacement, true);
+    };
   }, [open]);
 
   return (
@@ -52,11 +79,14 @@ export function ProductionStatusBadge({ status, onChangeStatus }) {
 
       {open && (
         <div
+          ref={menuRef}
           style={{
             position: 'absolute',
-            top: '100%',
+            top: openUpward ? 'auto' : '100%',
+            bottom: openUpward ? '100%' : 'auto',
             left: 0,
-            marginTop: 4,
+            marginTop: openUpward ? 0 : 4,
+            marginBottom: openUpward ? 4 : 0,
             background: '#fff',
             border: '1px solid #e2e8f0',
             borderRadius: 8,
