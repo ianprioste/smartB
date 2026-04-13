@@ -118,7 +118,7 @@ jobs:
           APP_DIR="${VPS_APP_DIR:-/opt/smartB}"
           BACKEND_SERVICE="${VPS_BACKEND_SERVICE:-smartbling-backend}"
           FRONTEND_TARGET_DIR="${VPS_FRONTEND_DIR:-/usr/share/nginx/html}"
-          DEPLOY_BRANCH="production"
+          DEPLOY_BRANCH="main"
           REPO_URL="${VPS_REPO_URL:-https://github.com/${GITHUB_REPOSITORY}.git}"
 
           # Secrets can accidentally contain leading/trailing spaces.
