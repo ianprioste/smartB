@@ -37,10 +37,6 @@ class Settings(BaseSettings):
     BLING_AUTH_URL: str = "https://www.bling.com.br/Api/v3/oauth/authorize"
     BLING_TOKEN_URL: str = "https://www.bling.com.br/Api/v3/oauth/token"
     BLING_API_BASE_URL: str = "https://www.bling.com.br/Api/v3"
-    # Optional proxy for Bling token requests (e.g. Cloudflare Worker URL).
-    # Set when the VPS IP is blocked by Cloudflare protecting Bling's endpoints.
-    # The proxy must forward POST requests transparently to BLING_TOKEN_URL.
-    BLING_TOKEN_PROXY_URL: str = os.getenv("BLING_TOKEN_PROXY_URL", "")
     
     # JWT (internal)
     SECRET_KEY: str = os.getenv(

@@ -154,17 +154,12 @@ async def bling_callback(
             redirect_uri,
         )
 
-        _token_url = settings.BLING_TOKEN_PROXY_URL or settings.BLING_TOKEN_URL
-        if settings.BLING_TOKEN_PROXY_URL:
-            logger.info("oauth_token_via_proxy proxy_url=%s", settings.BLING_TOKEN_PROXY_URL)
-
         token_response = httpx.post(
-            _token_url,
+            settings.BLING_TOKEN_URL,
             headers={
                 "Authorization": f"Basic {encoded_credentials}",
                 "Content-Type": "application/x-www-form-urlencoded",
                 "Accept": "application/json",
-                "User-Agent": "Mozilla/5.0 (compatible; smartBling/2.0; +https://app.useruach.com.br)",
             },
             data={
                 "grant_type": "authorization_code",
