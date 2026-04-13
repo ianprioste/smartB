@@ -55,11 +55,15 @@ export function ProductionStatusBadge({ status, onChangeStatus }) {
 
       if (openUpward) {
         const spaceForMenu = rootRect.top - 12;
-        maxHeight = Math.max(ESTIMATED_ITEM_HEIGHT * 2, spaceForMenu);
-        top = Math.max(8, rootRect.top - maxHeight - 4);
+        const availableHeight = Math.max(ESTIMATED_ITEM_HEIGHT * 2, spaceForMenu);
+        maxHeight = Math.min(availableHeight, TOTAL_MENU_HEIGHT_EST);
+        const measuredHeight = menuRef.current?.scrollHeight || maxHeight;
+        const anchoredHeight = Math.min(measuredHeight, maxHeight);
+        top = Math.max(8, rootRect.top - anchoredHeight - 4);
       } else {
         const spaceForMenu = viewportHeight - rootRect.bottom - 12;
-        maxHeight = Math.max(ESTIMATED_ITEM_HEIGHT * 2, spaceForMenu);
+        const availableHeight = Math.max(ESTIMATED_ITEM_HEIGHT * 2, spaceForMenu);
+        maxHeight = Math.min(availableHeight, TOTAL_MENU_HEIGHT_EST);
         top = Math.min(viewportHeight - 8, rootRect.bottom + 4);
       }
 
@@ -72,10 +76,12 @@ export function ProductionStatusBadge({ status, onChangeStatus }) {
     };
 
     updatePlacement();
+    const rafId = window.requestAnimationFrame(updatePlacement);
     window.addEventListener('resize', updatePlacement);
     window.addEventListener('scroll', updatePlacement, true);
 
     return () => {
+      window.cancelAnimationFrame(rafId);
       window.removeEventListener('resize', updatePlacement);
       window.removeEventListener('scroll', updatePlacement, true);
     };
