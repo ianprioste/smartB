@@ -5,7 +5,17 @@ import useIsMobile from '../../hooks/useIsMobile';
 import { useVersionPolling } from '../../hooks/useVersionPolling';
 
 const API_BASE = '/api';
-const EVENT_SALES_UI_STATE_KEY = 'smartbling:event-sales:ui-state:v1';
+const EVENT_SALES_UI_STATE_KEY = 'smartbling:event-sales:ui-state:v2';
+
+function normalizeExpandedKey(value) {
+  if (value == null || value === '') return null;
+  return String(value);
+}
+
+function isExpandedMatch(current, next) {
+  if (current == null || next == null) return false;
+  return String(current) === String(next);
+}
 
 function readSavedUiState() {
   if (typeof window === 'undefined') return null;
@@ -16,10 +26,31 @@ function readSavedUiState() {
     return {
       selectedEventId: parsed?.selectedEventId ? String(parsed.selectedEventId) : '',
       groupBy: parsed?.groupBy === 'item' ? 'item' : 'pedido',
-      expandedOrderId: parsed?.expandedOrderId ? String(parsed.expandedOrderId) : null,
+      expandedOrderId: normalizeExpandedKey(parsed?.expandedOrderId),
+      searchTerm: typeof parsed?.searchTerm === 'string' ? parsed.searchTerm : '',
+      selectedStatuses: Array.isArray(parsed?.selectedStatuses)
+        ? new Set(parsed.selectedStatuses.filter((value) => typeof value === 'string' && value.trim()))
+        : null,
+      scrollY: Number.isFinite(Number(parsed?.scrollY)) ? Math.max(0, Number(parsed.scrollY)) : 0,
     };
   } catch {
     return null;
+  }
+}
+
+function persistUiState(state) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(EVENT_SALES_UI_STATE_KEY, JSON.stringify({
+      selectedEventId: state.selectedEventId || '',
+      groupBy: state.groupBy === 'item' ? 'item' : 'pedido',
+      expandedOrderId: state.expandedOrderId ?? null,
+      searchTerm: state.searchTerm || '',
+      selectedStatuses: state.selectedStatuses ? Array.from(state.selectedStatuses) : null,
+      scrollY: Number.isFinite(Number(state.scrollY)) ? Math.max(0, Number(state.scrollY)) : 0,
+    }));
+  } catch {
+    // Ignore persistence failures (private mode/quota).
   }
 }
 
@@ -76,12 +107,14 @@ export function EventSalesPage() {
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [loadingSales, setLoadingSales] = useState(false);
   const [error, setError] = useState(null);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [selectedStatuses, setSelectedStatuses] = useState(null);
+  const [searchTerm, setSearchTerm] = useState(savedUiState?.searchTerm || '');
+  const [selectedStatuses, setSelectedStatuses] = useState(() => savedUiState?.selectedStatuses ?? null);
   const [expandedOrderId, setExpandedOrderId] = useState(savedUiState?.expandedOrderId || null);
   const [groupBy, setGroupBy] = useState(savedUiState?.groupBy || 'pedido');
   const deltaCursorRef = useRef(null);
   const suppressDeltaUntilRef = useRef(0);
+  const initialScrollYRef = useRef(savedUiState?.scrollY || 0);
+  const hasRestoredScrollRef = useRef(false);
 
   const markLocalMutation = useCallback(() => {
     suppressDeltaUntilRef.current = Date.now() + 4000;
@@ -296,17 +329,31 @@ export function EventSalesPage() {
   }, [events, selectedEventId]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      window.localStorage.setItem(EVENT_SALES_UI_STATE_KEY, JSON.stringify({
-        selectedEventId: selectedEventId || '',
+    persistUiState({
+      selectedEventId,
+      groupBy,
+      expandedOrderId,
+      searchTerm,
+      selectedStatuses,
+      scrollY: typeof window !== 'undefined' ? window.scrollY : 0,
+    });
+  }, [selectedEventId, groupBy, expandedOrderId, searchTerm, selectedStatuses]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const persistOnUnload = () => {
+      persistUiState({
+        selectedEventId,
         groupBy,
-        expandedOrderId: expandedOrderId == null ? null : String(expandedOrderId),
-      }));
-    } catch {
-      // Ignore persistence failures (private mode/quota).
-    }
-  }, [selectedEventId, groupBy, expandedOrderId]);
+        expandedOrderId,
+        searchTerm,
+        selectedStatuses,
+        scrollY: window.scrollY,
+      });
+    };
+    window.addEventListener('beforeunload', persistOnUnload);
+    return () => window.removeEventListener('beforeunload', persistOnUnload);
+  }, [selectedEventId, groupBy, expandedOrderId, searchTerm, selectedStatuses]);
 
   useEffect(() => {
     if (selectedEventId) {
@@ -335,10 +382,22 @@ export function EventSalesPage() {
     if (availableStatuses.length > 0) {
       setSelectedStatuses((prev) => {
         if (prev === null) return new Set(availableStatuses);
-        return prev;
+        const allowed = new Set(availableStatuses);
+        const filtered = new Set(Array.from(prev).filter((status) => allowed.has(status)));
+        return filtered;
       });
     }
   }, [availableStatuses]);
+
+  useEffect(() => {
+    if (loadingSales || hasRestoredScrollRef.current || typeof window === 'undefined') return;
+    hasRestoredScrollRef.current = true;
+    if (initialScrollYRef.current > 0) {
+      window.requestAnimationFrame(() => {
+        window.scrollTo(0, initialScrollYRef.current);
+      });
+    }
+  }, [loadingSales]);
 
   const visibleOrders = useMemo(() => {
     const allOrders = Array.isArray(salesData?.orders) ? salesData.orders : [];
@@ -378,7 +437,8 @@ export function EventSalesPage() {
   };
 
   const toggleOrder = (orderId) => {
-    setExpandedOrderId((prev) => (prev === orderId ? null : orderId));
+    const normalizedId = normalizeExpandedKey(orderId);
+    setExpandedOrderId((prev) => (isExpandedMatch(prev, normalizedId) ? null : normalizedId));
   };
 
   const groupedByItem = useMemo(() => {
@@ -613,7 +673,7 @@ export function EventSalesPage() {
                     <div style={{ display: 'grid', gap: 12, padding: 12 }}>
                       {groupedByItem.map((group) => {
                         const gKey = group.sku || group.product_name;
-                        const isExpanded = expandedOrderId === gKey;
+                        const isExpanded = isExpandedMatch(expandedOrderId, gKey);
                         return (
                           <div key={gKey} style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
                             <button
@@ -681,7 +741,7 @@ export function EventSalesPage() {
                       <tbody>
                         {groupedByItem.map((group) => {
                           const gKey = group.sku || group.product_name;
-                          const isExpanded = expandedOrderId === gKey;
+                          const isExpanded = isExpandedMatch(expandedOrderId, gKey);
                           return (
                             <React.Fragment key={gKey}>
                               <tr
@@ -760,7 +820,7 @@ export function EventSalesPage() {
                 <div style={{ display: 'grid', gap: 12, padding: 12 }}>
                   {visibleOrders.map((order) => {
                     const orderKey = order.id || order.numero;
-                    const isExpanded = expandedOrderId === orderKey;
+                    const isExpanded = isExpandedMatch(expandedOrderId, orderKey);
                     const matchedItems = Array.isArray(order.matched_items) ? order.matched_items : [];
                     const allEmbalado = matchedItems.length > 0 && matchedItems.every((i) => i.production_status === 'Embalado');
 
@@ -845,7 +905,7 @@ export function EventSalesPage() {
                   <tbody>
                     {visibleOrders.map((order) => {
                       const orderKey = order.id || order.numero;
-                      const isExpanded = expandedOrderId === orderKey;
+                      const isExpanded = isExpandedMatch(expandedOrderId, orderKey);
                       const matchedItems = Array.isArray(order.matched_items) ? order.matched_items : [];
                       const allEmbalado = matchedItems.length > 0 && matchedItems.every((i) => i.production_status === 'Embalado');
 

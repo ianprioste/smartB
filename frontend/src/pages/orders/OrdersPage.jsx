@@ -5,6 +5,7 @@ import useIsMobile from '../../hooks/useIsMobile';
 import { useVersionPolling } from '../../hooks/useVersionPolling';
 
 const API_BASE = '/api';
+const ORDERS_UI_STATE_KEY = 'smartbling:orders:ui-state:v1';
 
 const KNOWN_STATUSES = [
   { id: 6, nome: 'Em aberto', color: '#eab308', bg: '#fefce8' },
@@ -13,6 +14,55 @@ const KNOWN_STATUSES = [
 ];
 
 const DEFAULT_STATUS_IDS = [6, 9, 15];
+const KNOWN_STATUS_IDS = new Set(KNOWN_STATUSES.map((status) => status.id));
+
+function normalizeExpandedKey(value) {
+  if (value == null || value === '') return null;
+  return String(value);
+}
+
+function isExpandedMatch(current, next) {
+  if (current == null || next == null) return false;
+  return String(current) === String(next);
+}
+
+function readSavedOrdersUiState() {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(ORDERS_UI_STATE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const restoredStatuses = Array.isArray(parsed?.selectedStatuses)
+      ? parsed.selectedStatuses
+        .map((value) => Number(value))
+        .filter((id) => KNOWN_STATUS_IDS.has(id))
+      : DEFAULT_STATUS_IDS;
+    return {
+      search: typeof parsed?.search === 'string' ? parsed.search : '',
+      selectedStatuses: new Set(restoredStatuses),
+      page: Number.isFinite(Number(parsed?.page)) && Number(parsed.page) > 0 ? Number(parsed.page) : 1,
+      expandedOrderId: normalizeExpandedKey(parsed?.expandedOrderId),
+      scrollY: Number.isFinite(Number(parsed?.scrollY)) ? Math.max(0, Number(parsed.scrollY)) : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistOrdersUiState(state) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(ORDERS_UI_STATE_KEY, JSON.stringify({
+      search: state.search || '',
+      selectedStatuses: Array.from(state.selectedStatuses || []),
+      page: Number(state.page) > 0 ? Number(state.page) : 1,
+      expandedOrderId: state.expandedOrderId ?? null,
+      scrollY: Number.isFinite(Number(state.scrollY)) ? Math.max(0, Number(state.scrollY)) : 0,
+    }));
+  } catch {
+    // Ignore persistence failures (private mode/quota).
+  }
+}
 
 function formatBRL(value) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value ?? 0);
@@ -163,6 +213,7 @@ function TimelineItem({ label, value }) {
 
 /* ── Main Page ──────────────────────────────────────────────── */
 export function OrdersPage() {
+  const savedUiState = readSavedOrdersUiState();
   const [orders, setOrders] = useState([]);
   const isMobile = useIsMobile(1024);
   const [loading, setLoading] = useState(true);
@@ -172,14 +223,16 @@ export function OrdersPage() {
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncRunning, setSyncRunning] = useState(false);
   const [sourceMode, setSourceMode] = useState('');
-  const [search, setSearch] = useState('');
-  const [selectedStatuses, setSelectedStatuses] = useState(() => new Set(DEFAULT_STATUS_IDS));
-  const [page, setPage] = useState(1);
+  const [search, setSearch] = useState(savedUiState?.search || '');
+  const [selectedStatuses, setSelectedStatuses] = useState(() => savedUiState?.selectedStatuses || new Set(DEFAULT_STATUS_IDS));
+  const [page, setPage] = useState(savedUiState?.page || 1);
   const [totalPages, setTotalPages] = useState(0);
   const [total, setTotal] = useState(0);
   const [syncMessage, setSyncMessage] = useState('');
-  const [expandedOrderId, setExpandedOrderId] = useState(null);
+  const [expandedOrderId, setExpandedOrderId] = useState(savedUiState?.expandedOrderId ?? null);
   const [syncModalOpen, setSyncModalOpen] = useState(false);
+  const initialScrollYRef = useRef(savedUiState?.scrollY || 0);
+  const hasRestoredScrollRef = useRef(false);
   const debounceRef = useRef(null);
   const pollRef = useRef(null);
   const prevSyncStatusRef = useRef(null);
@@ -386,6 +439,47 @@ export function OrdersPage() {
 
   useEffect(() => () => stopPolling(), [stopPolling]);
 
+  useEffect(() => {
+    persistOrdersUiState({
+      search,
+      selectedStatuses,
+      page,
+      expandedOrderId,
+      scrollY: typeof window !== 'undefined' ? window.scrollY : 0,
+    });
+  }, [search, selectedStatuses, page, expandedOrderId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const persistOnUnload = () => {
+      persistOrdersUiState({
+        search,
+        selectedStatuses,
+        page,
+        expandedOrderId,
+        scrollY: window.scrollY,
+      });
+    };
+    window.addEventListener('beforeunload', persistOnUnload);
+    return () => window.removeEventListener('beforeunload', persistOnUnload);
+  }, [search, selectedStatuses, page, expandedOrderId]);
+
+  useEffect(() => {
+    if (loading || hasRestoredScrollRef.current || typeof window === 'undefined') return;
+    hasRestoredScrollRef.current = true;
+    if (initialScrollYRef.current > 0) {
+      window.requestAnimationFrame(() => {
+        window.scrollTo(0, initialScrollYRef.current);
+      });
+    }
+  }, [loading]);
+
+  useEffect(() => {
+    if (totalPages > 0 && page > totalPages) {
+      setPage(1);
+    }
+  }, [page, totalPages]);
+
   const triggerSync = useCallback(async (mode) => {
     try {
       setSyncRunning(true);
@@ -519,13 +613,13 @@ export function OrdersPage() {
                 <div style={{ padding: 12, display: 'grid', gap: 12 }}>
                   {orders.map((order) => {
                     const itens = order.itens || [];
-                    const expanded = expandedOrderId === order.id;
+                    const expanded = isExpandedMatch(expandedOrderId, order.id);
                     const allEmbalado = itens.length > 0 && itens.every((i) => i.production_status === 'Embalado');
 
                     return (
                       <div key={order.id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
                         <button
-                          onClick={() => setExpandedOrderId(expanded ? null : order.id)}
+                          onClick={() => setExpandedOrderId(expanded ? null : String(order.id))}
                           style={{ width: '100%', textAlign: 'left', border: 'none', background: expanded ? '#f8fafc' : '#fff', padding: 14, cursor: 'pointer' }}
                         >
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
@@ -608,13 +702,13 @@ export function OrdersPage() {
                       const allEmbalado = itens.length > 0 && itens.every((i) => i.production_status === 'Embalado');
                       return (
                       <React.Fragment key={order.id}>
-                        <tr onClick={() => setExpandedOrderId(expandedOrderId === order.id ? null : order.id)}
+                        <tr onClick={() => setExpandedOrderId(isExpandedMatch(expandedOrderId, order.id) ? null : String(order.id))}
                           style={{ cursor: 'pointer', borderBottom: '1px solid #f1f5f9', transition: 'background .1s',
-                            background: expandedOrderId === order.id ? '#f8fafc' : '#fff' }}
-                          onMouseEnter={e => { if (expandedOrderId !== order.id) e.currentTarget.style.background = '#fafafa'; }}
-                          onMouseLeave={e => { if (expandedOrderId !== order.id) e.currentTarget.style.background = '#fff'; }}>
+                            background: isExpandedMatch(expandedOrderId, order.id) ? '#f8fafc' : '#fff' }}
+                          onMouseEnter={e => { if (!isExpandedMatch(expandedOrderId, order.id)) e.currentTarget.style.background = '#fafafa'; }}
+                          onMouseLeave={e => { if (!isExpandedMatch(expandedOrderId, order.id)) e.currentTarget.style.background = '#fff'; }}>
                           <td style={{ textAlign: 'center', padding: '10px 8px', color: '#cbd5e1' }}>
-                            {itens.length > 0 && <ChevronIcon isExpanded={expandedOrderId === order.id} />}
+                            {itens.length > 0 && <ChevronIcon isExpanded={isExpandedMatch(expandedOrderId, order.id)} />}
                           </td>
                           <td style={{ padding: '10px 12px', fontWeight: 700, color: '#0f172a' }}>{order.numero ?? order.id}</td>
                           <td style={{ padding: '10px 12px', color: '#64748b' }}>{order.numeroLoja || '—'}</td>
@@ -625,7 +719,7 @@ export function OrdersPage() {
                           <td style={{ padding: '10px 4px', fontSize: 14, textAlign: 'center' }} title={order.has_frete ? 'Envio' : 'Retirada'}>{order.has_frete ? '🚚' : '🏪'}</td>
                           <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 700, color: '#0f172a' }}>{formatBRL(order.total)}</td>
                         </tr>
-                        {expandedOrderId === order.id && itens.length > 0 && (
+                        {isExpandedMatch(expandedOrderId, order.id) && itens.length > 0 && (
                           <tr>
                             <td colSpan="9" style={{ padding: 0 }}>
                               <div style={{ margin: '0 16px 12px', padding: 16, background: '#f8fafc', borderRadius: 8, border: '1px solid #e2e8f0' }}>
