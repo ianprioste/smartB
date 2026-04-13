@@ -103,3 +103,17 @@ class ItemProductionNoteRepository:
         if event_id is not None:
             query = query.filter(ItemProductionNoteModel.event_id == event_id)
         return query.all()
+
+    @staticmethod
+    def list_campaign_order_ids(db: Session, tenant_id: UUID) -> set[int]:
+        """Return Bling order IDs that are already linked to campaigns."""
+        rows = (
+            db.query(ItemProductionNoteModel.bling_order_id)
+            .filter(
+                ItemProductionNoteModel.tenant_id == tenant_id,
+                ItemProductionNoteModel.bling_order_id.isnot(None),
+            )
+            .distinct()
+            .all()
+        )
+        return {int(row[0]) for row in rows if row and row[0] is not None}

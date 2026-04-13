@@ -7,6 +7,7 @@ falls back to well-known standard IDs (9 = Atendido).  Custom statuses like
 from __future__ import annotations
 
 from typing import Dict, Optional
+import os
 
 from app.infra.logging import get_logger
 
@@ -22,6 +23,27 @@ _cached_ids: Optional[Dict[str, int]] = None
 _FALLBACK_IDS: Dict[str, int] = {
     "atendido": 9,
 }
+
+
+def _env_status_ids() -> Dict[str, int]:
+    """Load optional status IDs from environment variables.
+
+    Useful when the token does not have Situações scope.
+    """
+    mapping = {
+        "pronto_envio": os.getenv("BLING_STATUS_PRONTO_ENVIO_ID", "").strip(),
+        "pronto_retirada": os.getenv("BLING_STATUS_PRONTO_RETIRADA_ID", "").strip(),
+        "atendido": os.getenv("BLING_STATUS_ATENDIDO_ID", "").strip(),
+    }
+    resolved: Dict[str, int] = {}
+    for key, raw in mapping.items():
+        if not raw:
+            continue
+        try:
+            resolved[key] = int(raw)
+        except ValueError:
+            logger.warning("invalid_env_status_id key=%s value=%s", key, raw)
+    return resolved
 
 # Names we look for (case-insensitive substring matching) when discovery works.
 _TARGETS = {
@@ -42,6 +64,8 @@ async def get_bling_status_ids(client) -> Dict[str, int]:
     if _cached_ids is not None:
         return _cached_ids
 
+    env_ids = _env_status_ids()
+
     try:
         resp = await client.get(f"/situacoes/modulos/{VENDAS_MODULE_ID}")
         items = resp.get("data", []) if isinstance(resp, dict) else []
@@ -52,7 +76,7 @@ async def get_bling_status_ids(client) -> Dict[str, int]:
             "bling_situacoes_fetch_failed error=%s — using fallback IDs",
             str(exc),
         )
-        _cached_ids = dict(_FALLBACK_IDS)
+        _cached_ids = {**_FALLBACK_IDS, **env_ids}
         logger.info("bling_situacoes_fallback ids=%s", _cached_ids)
         return _cached_ids
 
@@ -69,7 +93,10 @@ async def get_bling_status_ids(client) -> Dict[str, int]:
             if key not in result and target in name:
                 result[key] = int(sit_id)
 
-    # Ensure atendido always has a value (use fallback if discovery missed it).
+    # Merge env overrides and ensure atendido always has a value.
+    result.update(env_ids)
+
+    # Ensure atendido always has a value (use fallback if discovery/env missed it).
     for key, fallback_id in _FALLBACK_IDS.items():
         if key not in result:
             result[key] = fallback_id

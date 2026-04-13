@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import asyncio
 import platform
 import threading
+import re
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from typing import Any, Dict, List
@@ -16,9 +17,11 @@ from app.domain.bling_situacoes import get_bling_status_ids
 from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.order_snapshot_repo import OrderSnapshotRepository, parse_progress_from_sync_message
 from app.repositories.item_production_note_repo import ItemProductionNoteRepository
+from app.repositories.order_tag_repo import OrderTagRepository
+from app.repositories.sales_event_repo import SalesEventRepository
 from app.repositories.sync_scope_version_repo import SyncScopeVersionRepository, SCOPE_ORDERS_GLOBAL, scope_event_sales
 from app.models.database import BlingOrderSnapshotModel
-from app.models.schemas import ItemProductionNoteUpdateRequest, ItemProductionNoteResponse, OrderStatusUpdateRequest
+from app.models.schemas import ItemProductionNoteUpdateRequest, ItemProductionNoteResponse, OrderStatusUpdateRequest, OrderTagAssignRequest
 from app.utils.datetime_utils import now_local
 
 logger = get_logger(__name__)
@@ -169,6 +172,11 @@ def _normalize(text: str) -> str:
     return (text or "").lower().strip()
 
 
+def _canonical_sku(value: Any) -> str:
+    raw = str(value or "").strip().casefold()
+    return re.sub(r"[^a-z0-9]", "", raw)
+
+
 def _to_float(value: Any) -> float:
     try:
         return float(value or 0)
@@ -290,6 +298,53 @@ def _extract_order_items(order_detail: Dict[str, Any]) -> List[Dict[str, Any]]:
             continue
     
     return items
+
+
+def _build_active_campaign_filters(db: Session) -> List[Dict[str, Any]]:
+    events = SalesEventRepository.list_by_tenant(db, DEFAULT_TENANT_ID)
+    active_events = [event for event in events if getattr(event, "is_active", True) is not False]
+
+    filters: List[Dict[str, Any]] = []
+    for event in active_events:
+        products = SalesEventRepository.list_products(db, event.id)
+        selected_skus = {
+            _canonical_sku(p.sku)
+            for p in products
+            if _canonical_sku(p.sku)
+        }
+        if not selected_skus:
+            continue
+        filters.append(
+            {
+                "start_date": event.start_date,
+                "end_date": event.end_date,
+                "selected_skus": selected_skus,
+            }
+        )
+    return filters
+
+
+def _order_matches_active_campaign(order_date: datetime | None, order_payload: Dict[str, Any], campaign_filters: List[Dict[str, Any]]) -> bool:
+    if not order_date or not campaign_filters:
+        return False
+
+    order_items = _extract_order_items(order_payload)
+    order_skus = {
+        _canonical_sku(item.get("sku"))
+        for item in order_items
+        if _canonical_sku(item.get("sku"))
+    }
+    if not order_skus:
+        return False
+
+    order_day = order_date.date()
+    for rule in campaign_filters:
+        if not (rule["start_date"] <= order_day <= rule["end_date"]):
+            continue
+        if order_skus.intersection(rule["selected_skus"]):
+            return True
+
+    return False
 
 
 def _resolve_status_name(raw_status: Any, fallback_status_id: Any = None, persisted_status_name: str | None = None) -> str:
@@ -414,6 +469,42 @@ def _inject_production_data_orders(db: Session, orders: List[Dict[str, Any]]) ->
         order["production_summary"] = f"{embalado}/{len(items)} Embalado" if items else None
 
 
+def _inject_global_tags(db: Session, orders: List[Dict[str, Any]]) -> None:
+    order_ids = [int(order.get("id")) for order in orders if order.get("id") is not None]
+    tag_map = OrderTagRepository.get_assignments_map(
+        db=db,
+        tenant_id=DEFAULT_TENANT_ID,
+        scope_key="global",
+        event_id=None,
+        bling_order_ids=order_ids,
+    )
+    for order in orders:
+        oid = order.get("id")
+        tags = tag_map.get(int(oid), []) if oid is not None else []
+        order["tags"] = tags
+        order["tag"] = tags[0] if tags else None
+
+
+def _filter_global_orders_by_tag(db: Session, orders: List[Dict[str, Any]], tag_name: str | None) -> List[Dict[str, Any]]:
+    wanted = (tag_name or "").strip().casefold()
+    if not wanted:
+        return orders
+
+    order_ids = [int(order.get("id")) for order in orders if order.get("id") is not None]
+    tag_map = OrderTagRepository.get_assignments_map(
+        db=db,
+        tenant_id=DEFAULT_TENANT_ID,
+        scope_key="global",
+        event_id=None,
+        bling_order_ids=order_ids,
+    )
+    return [
+        order
+        for order in orders
+        if wanted in {(name or "").strip().casefold() for name in tag_map.get(int(order.get("id")), [])}
+    ]
+
+
 def _format_snapshot_order(row) -> Dict[str, Any]:
     raw_detail = row.raw_detail if isinstance(row.raw_detail, dict) else {}
     raw_order = row.raw_order if isinstance(row.raw_order, dict) else {}
@@ -444,8 +535,11 @@ async def list_orders(
     statuses: str = Query("6,9,15", description="Comma-separated Bling status IDs"),
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
+    tag: str = Query("", description="Filter by exact global tag name"),
 ):
     """List orders from local persistent snapshot with search and status filter."""
+    campaign_order_ids = ItemProductionNoteRepository.list_campaign_order_ids(db, DEFAULT_TENANT_ID)
+    campaign_filters = _build_active_campaign_filters(db)
     client = _make_client(db)
     snapshot_repo_available = True
     snapshot_count = 0
@@ -506,9 +600,19 @@ async def list_orders(
             }
 
         filtered = _filter_orders(all_orders, search)
-        formatted = [_format_order(o) for o in filtered]
+        formatted = []
+        for raw_order in filtered:
+            order = _format_order(raw_order)
+            order_id = int(order.get("id") or 0)
+            order_dt = _try_parse_datetime(order.get("data"))
+            if order_id in campaign_order_ids:
+                continue
+            if _order_matches_active_campaign(order_dt, raw_order, campaign_filters):
+                continue
+            formatted.append(order)
         if requested_labels:
             formatted = [o for o in formatted if (o.get("situacao") or "") in requested_labels]
+        formatted = _filter_global_orders_by_tag(db, formatted, tag)
         formatted.sort(key=lambda x: x.get("data") or "", reverse=True)
 
         total = len(formatted)
@@ -516,6 +620,7 @@ async def list_orders(
         start = (page - 1) * limit
         end = start + limit
         page_data = formatted[start:end]
+        _inject_global_tags(db, page_data)
 
         return {
             "has_bling_auth": True,
@@ -541,9 +646,23 @@ async def list_orders(
         }
 
     rows = OrderSnapshotRepository.list_for_orders_page(db, DEFAULT_TENANT_ID, [], search)
+    if campaign_order_ids or campaign_filters:
+        filtered_rows = []
+        for row in rows:
+            order_id = int(row.bling_order_id or 0)
+            if order_id in campaign_order_ids:
+                continue
+            raw_detail = row.raw_detail if isinstance(row.raw_detail, dict) else {}
+            raw_order = row.raw_order if isinstance(row.raw_order, dict) else {}
+            order_payload = raw_detail if raw_detail else raw_order
+            if _order_matches_active_campaign(row.order_date, order_payload, campaign_filters):
+                continue
+            filtered_rows.append(row)
+        rows = filtered_rows
     formatted = [_format_snapshot_order(row) for row in rows]
     if requested_labels:
         formatted = [o for o in formatted if (o.get("situacao") or "") in requested_labels]
+    formatted = _filter_global_orders_by_tag(db, formatted, tag)
 
     # Sort by date descending
     formatted.sort(key=lambda x: x.get("data") or "", reverse=True)
@@ -556,6 +675,7 @@ async def list_orders(
     page_data = formatted[start:end]
 
     _inject_production_data_orders(db, page_data)
+    _inject_global_tags(db, page_data)
 
     return {
         "has_bling_auth": client is not None,
@@ -566,6 +686,71 @@ async def list_orders(
         "statuses": KNOWN_STATUSES,
         "source": "local-db",
     }
+
+
+@router.get("/tags")
+async def list_global_order_tags(db: Session = Depends(get_db)):
+    rows = OrderTagRepository.list_tags(
+        db=db,
+        tenant_id=DEFAULT_TENANT_ID,
+        scope_key="global",
+        event_id=None,
+    )
+    return {
+        "tags": [
+            {
+                "id": str(row.id),
+                "name": row.name,
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.put("/{order_id}/tag")
+async def set_global_order_tag(order_id: int, payload: OrderTagAssignRequest, db: Session = Depends(get_db)):
+    try:
+        tags = OrderTagRepository.add_tag_by_name(
+            db=db,
+            tenant_id=DEFAULT_TENANT_ID,
+            scope_key="global",
+            event_id=None,
+            bling_order_id=order_id,
+            tag_name=payload.tag_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    db.commit()
+    return {"ok": True, "order_id": int(order_id), "tag": tags[0] if tags else None, "tags": tags}
+
+
+@router.delete("/{order_id}/tag")
+async def clear_global_order_tag(
+    order_id: int,
+    tag_name: str | None = Query(default=None, description="Optional specific tag name to remove"),
+    db: Session = Depends(get_db),
+):
+    if (tag_name or "").strip():
+        tags = OrderTagRepository.remove_tag_by_name(
+            db=db,
+            tenant_id=DEFAULT_TENANT_ID,
+            scope_key="global",
+            event_id=None,
+            bling_order_id=order_id,
+            tag_name=tag_name,
+        )
+    else:
+        OrderTagRepository.clear_assignment(
+            db=db,
+            tenant_id=DEFAULT_TENANT_ID,
+            scope_key="global",
+            event_id=None,
+            bling_order_id=order_id,
+        )
+        tags = []
+    db.commit()
+    return {"ok": True, "order_id": int(order_id), "tag": tags[0] if tags else None, "tags": tags}
 
 
 @router.post("/sync/full")

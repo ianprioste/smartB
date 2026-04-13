@@ -589,6 +589,8 @@ class EventOrderResponse(BaseModel):
     total_order: float = 0.0
     total_matched: float = 0.0
     has_frete: bool = False
+    tag: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
     production_summary: Optional[str] = None
     matched_items: List[EventMatchedItemResponse] = Field(default_factory=list)
 
@@ -620,5 +622,9 @@ class ItemProductionNoteResponse(BaseModel):
 
 class OrderStatusUpdateRequest(BaseModel):
     situacao: str
+
+
+class OrderTagAssignRequest(BaseModel):
+    tag_name: str
 
 

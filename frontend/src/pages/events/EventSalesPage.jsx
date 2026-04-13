@@ -130,6 +130,75 @@ function normalizeProductionStatusKey(value) {
   return 'pending';
 }
 
+function EventOrderTagEditor({
+  orderId,
+  currentTags,
+  availableTags,
+  draftTagsByOrder,
+  setDraftTagsByOrder,
+  onAdd,
+  onRemove,
+  saving,
+  error,
+}) {
+  const key = String(orderId || '');
+  const datalistId = `event-tags-${key || 'unknown'}`;
+  const value = key ? (draftTagsByOrder[key] ?? '') : '';
+  const tags = Array.isArray(currentTags) ? currentTags.filter(Boolean) : [];
+
+  return (
+    <div onClick={(e) => e.stopPropagation()} style={{ display: 'grid', gap: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <input
+          list={datalistId}
+          value={value}
+          onChange={(e) => {
+            const next = e.target.value;
+            setDraftTagsByOrder((prev) => ({ ...prev, [key]: next }));
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if ((value || '').trim()) onAdd(orderId, value);
+            }
+          }}
+          placeholder="Digite a tag"
+          disabled={!key || saving}
+          style={{ padding: '5px 8px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: 12, background: '#fff', color: '#334155', minWidth: 130 }}
+        />
+        <datalist id={datalistId}>
+          {availableTags.map((tag) => (
+            <option key={tag} value={tag} />
+          ))}
+        </datalist>
+        {saving && <span style={{ fontSize: 11, color: '#64748b' }}>Salvando...</span>}
+      </div>
+      {tags.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            {tags.map((tag) => (
+              <span key={tag} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '2px 8px', borderRadius: 999, background: '#eff6ff', color: '#1d4ed8', fontSize: 11, fontWeight: 600 }}>
+                {tag}
+                <button
+                  type="button"
+                  onClick={() => onRemove(orderId, tag)}
+                  disabled={!key || saving}
+                  aria-label={`Remover tag ${tag}`}
+                  style={{ border: 'none', background: 'transparent', color: '#1d4ed8', fontSize: 12, fontWeight: 700, cursor: !key || saving ? 'not-allowed' : 'pointer', padding: 0, lineHeight: 1 }}
+                >
+                  x
+                </button>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      <div style={{ fontSize: 11, color: '#94a3b8' }}>Pressione Enter para adicionar.</div>
+      {!!error && <span style={{ fontSize: 11, color: '#b91c1c' }}>{error}</span>}
+    </div>
+  );
+}
+
 export function EventSalesPage() {
   const savedUiState = readSavedUiState();
   const isMobile = useIsMobile(1024);
@@ -145,6 +214,11 @@ export function EventSalesPage() {
   const [expandedOrderId, setExpandedOrderId] = useState(savedUiState?.expandedOrderId || null);
   const [groupBy, setGroupBy] = useState(savedUiState?.groupBy || 'pedido');
   const [selectedItemStatusFilter, setSelectedItemStatusFilter] = useState(null);
+  const [availableTags, setAvailableTags] = useState([]);
+  const [selectedTagFilter, setSelectedTagFilter] = useState('');
+  const [draftTagsByOrder, setDraftTagsByOrder] = useState({});
+  const [tagSavingByOrder, setTagSavingByOrder] = useState({});
+  const [tagErrorByOrder, setTagErrorByOrder] = useState({});
   const deltaCursorRef = useRef(null);
   const suppressDeltaUntilRef = useRef(0);
   const initialScrollYRef = useRef(savedUiState?.scrollY || 0);
@@ -218,6 +292,117 @@ export function EventSalesPage() {
       alert(`Erro: ${err.message}`);
     }
   }, [markLocalMutation, selectedEventId]);
+
+  const loadEventTags = useCallback(async (eventId) => {
+    if (!eventId) {
+      setAvailableTags([]);
+      return;
+    }
+    try {
+      const resp = await fetch(`${API_BASE}/events/${eventId}/tags`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      setAvailableTags((data.tags || []).map((t) => t.name).filter(Boolean));
+    } catch {
+      // Keep page functional even if tags endpoint fails.
+    }
+  }, []);
+
+  const handleOrderTagAdd = useCallback(async (orderId, rawTag) => {
+    const key = String(orderId || '');
+    if (!selectedEventId || !key) {
+      setTagErrorByOrder((prev) => ({ ...prev, [key]: 'Pedido sem ID válido para salvar tag' }));
+      return;
+    }
+
+    const chosenTag = (rawTag || '').trim();
+    setTagSavingByOrder((prev) => ({ ...prev, [key]: true }));
+    setTagErrorByOrder((prev) => ({ ...prev, [key]: '' }));
+
+    try {
+      if (!chosenTag) return;
+
+      const resp = await fetch(`${API_BASE}/events/${selectedEventId}/orders/${orderId}/tag`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tag_name: chosenTag }),
+      });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.detail || 'Falha ao salvar tag');
+      }
+      const data = await resp.json();
+      setSalesData((prev) => {
+        if (!prev) return prev;
+        const normalizeExisting = (order) => (Array.isArray(order.tags) ? order.tags : ((order.tag || '').trim() ? [order.tag] : []));
+        return {
+          ...prev,
+          orders: (prev.orders || []).map((o) => {
+            if (o.id !== orderId) return o;
+            const existing = normalizeExisting(o);
+            const resolvedTags = Array.isArray(data.tags)
+              ? data.tags
+              : ((data.tag || '').trim() ? Array.from(new Set([...existing, String(data.tag).trim()])) : Array.from(new Set([...existing, chosenTag])));
+            return { ...o, tags: resolvedTags, tag: resolvedTags[0] || null };
+          }),
+        };
+      });
+      setAvailableTags((prev) => {
+        const next = new Set(prev);
+        if (Array.isArray(data.tags)) {
+          data.tags.forEach((name) => next.add(name));
+        } else {
+          next.add(chosenTag);
+        }
+        return Array.from(next).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+      });
+      setDraftTagsByOrder((prev) => ({ ...prev, [key]: '' }));
+      markLocalMutation();
+    } catch (err) {
+      setTagErrorByOrder((prev) => ({ ...prev, [key]: err.message || 'Erro ao salvar tag' }));
+    } finally {
+      setTagSavingByOrder((prev) => ({ ...prev, [key]: false }));
+    }
+  }, [markLocalMutation, selectedEventId]);
+
+  const handleOrderTagRemove = useCallback(async (orderId, tagName) => {
+    const key = String(orderId || '');
+    if (!selectedEventId || !key || !(tagName || '').trim()) return;
+
+    setTagSavingByOrder((prev) => ({ ...prev, [key]: true }));
+    setTagErrorByOrder((prev) => ({ ...prev, [key]: '' }));
+
+    try {
+      const params = new URLSearchParams({ tag_name: tagName });
+      const resp = await fetch(`${API_BASE}/events/${selectedEventId}/orders/${orderId}/tag?${params.toString()}`, { method: 'DELETE' });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.detail || 'Falha ao remover tag');
+      }
+      const data = await resp.json();
+      setSalesData((prev) => {
+        if (!prev) return prev;
+        const normalizeExisting = (order) => (Array.isArray(order.tags) ? order.tags : ((order.tag || '').trim() ? [order.tag] : []));
+        return {
+          ...prev,
+          orders: (prev.orders || []).map((o) => {
+            if (o.id !== orderId) return o;
+            const existing = normalizeExisting(o);
+            const resolvedTags = Array.isArray(data.tags)
+              ? data.tags
+              : existing.filter((name) => (name || '').trim().toLowerCase() !== (tagName || '').trim().toLowerCase());
+            return { ...o, tags: resolvedTags, tag: resolvedTags[0] || null };
+          }),
+        };
+      });
+      await loadEventTags(selectedEventId);
+      markLocalMutation();
+    } catch (err) {
+      setTagErrorByOrder((prev) => ({ ...prev, [key]: err.message || 'Erro ao remover tag' }));
+    } finally {
+      setTagSavingByOrder((prev) => ({ ...prev, [key]: false }));
+    }
+  }, [loadEventTags, markLocalMutation, selectedEventId]);
 
   const loadEventOrdersCount = useCallback(async (eventList) => {
     const entries = await Promise.all(
@@ -416,8 +601,9 @@ export function EventSalesPage() {
   useEffect(() => {
     if (selectedEventId) {
       loadSales(selectedEventId);
+      loadEventTags(selectedEventId);
     }
-  }, [loadSales, selectedEventId]);
+  }, [loadEventTags, loadSales, selectedEventId]);
 
   useVersionPolling({
     enabled: Boolean(selectedEventId) && !loadingSales,
@@ -460,11 +646,19 @@ export function EventSalesPage() {
     const allOrders = Array.isArray(salesData?.orders) ? salesData.orders : [];
     const term = (searchTerm || '').trim().toLowerCase();
     const activeStatuses = selectedStatuses || new Set();
+    const wantedTag = (selectedTagFilter || '').trim().toLowerCase();
 
     return allOrders.filter((order) => {
       const statusLabel = normalizeStatusLabel(order.situacao);
       const statusOk = activeStatuses.has(statusLabel);
       if (!statusOk) return false;
+
+      if (wantedTag) {
+        const orderTags = Array.isArray(order.tags)
+          ? order.tags.map((name) => (name || '').toString().trim().toLowerCase())
+          : ((order.tag || '').toString().trim() ? [(order.tag || '').toString().trim().toLowerCase()] : []);
+        if (!orderTags.includes(wantedTag)) return false;
+      }
 
       if (!term) return true;
 
@@ -472,7 +666,7 @@ export function EventSalesPage() {
       const clienteText = String(order.cliente || '').toLowerCase();
       return pedidoText.includes(term) || clienteText.includes(term);
     });
-  }, [salesData, searchTerm, selectedStatuses]);
+  }, [salesData, searchTerm, selectedStatuses, selectedTagFilter]);
 
   const filteredOrdersByItemStatus = useMemo(() => {
     if (!selectedItemStatusFilter) return visibleOrders;
@@ -744,6 +938,16 @@ export function EventSalesPage() {
                       </button>
                     );
                   })}
+                  <select
+                    value={selectedTagFilter}
+                    onChange={(e) => setSelectedTagFilter(e.target.value)}
+                    style={{ marginLeft: 8, padding: '6px 10px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: 12, background: '#fff', color: '#334155' }}
+                  >
+                    <option value="">Todas as tags</option>
+                    {availableTags.map((tag) => (
+                      <option key={tag} value={tag}>{tag}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
             </div>
@@ -1003,6 +1207,20 @@ export function EventSalesPage() {
                           </div>
                           <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}><strong>Data:</strong> {formatDate(order.data)}</div>
                           <div style={{ fontSize: 12, color: '#475569', marginBottom: 8 }}><strong>Código:</strong> {order.numero_loja || '—'}</div>
+                          <div style={{ fontSize: 12, color: '#475569', marginBottom: 8, display: 'grid', gap: 4 }}>
+                            <strong>Tag:</strong>
+                            <EventOrderTagEditor
+                              orderId={order.id}
+                              currentTags={order.tags || (order.tag ? [order.tag] : [])}
+                              availableTags={availableTags}
+                              draftTagsByOrder={draftTagsByOrder}
+                              setDraftTagsByOrder={setDraftTagsByOrder}
+                              onAdd={handleOrderTagAdd}
+                              onRemove={handleOrderTagRemove}
+                              saving={!!tagSavingByOrder[String(order.id || '')]}
+                              error={tagErrorByOrder[String(order.id || '')]}
+                            />
+                          </div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                             <StatusBadge text={order.situacao} />
                             <span style={{ fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</span>
@@ -1063,6 +1281,7 @@ export function EventSalesPage() {
                       <th>Nuvemshop</th>
                       <th>Data</th>
                       <th>Cliente</th>
+                      <th>Tag</th>
                       <th>Situação</th>
                       <th>Produção</th>
                       <th></th>
@@ -1089,6 +1308,19 @@ export function EventSalesPage() {
                             <td style={{ color: '#64748b' }}>{order.numero_loja || '—'}</td>
                             <td>{formatDate(order.data)}</td>
                             <td>{order.cliente || '—'}</td>
+                            <td>
+                              <EventOrderTagEditor
+                                orderId={order.id}
+                                currentTags={order.tags || (order.tag ? [order.tag] : [])}
+                                availableTags={availableTags}
+                                draftTagsByOrder={draftTagsByOrder}
+                                setDraftTagsByOrder={setDraftTagsByOrder}
+                                onAdd={handleOrderTagAdd}
+                                onRemove={handleOrderTagRemove}
+                                saving={!!tagSavingByOrder[String(order.id || '')]}
+                                error={tagErrorByOrder[String(order.id || '')]}
+                              />
+                            </td>
                             <td><StatusBadge text={order.situacao} /></td>
                             <td style={{ fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</td>
                             <td style={{ fontSize: 14 }} title={order.has_frete ? 'Envio' : 'Retirada'}>{order.has_frete ? '🚚' : '🏪'}</td>
@@ -1097,7 +1329,7 @@ export function EventSalesPage() {
 
                           {isExpanded && matchedItems.length > 0 && (
                             <tr style={{ background: '#f8fafc', borderTop: '2px solid #e2e8f0' }}>
-                              <td colSpan="9" style={{ padding: '16px 20px' }}>
+                              <td colSpan="10" style={{ padding: '16px 20px' }}>
                                 {allEmbalado && order.situacao !== 'Atendido' && (
                                   <div style={{ marginBottom: 12, display: 'flex', gap: 8 }}>
                                     <button
