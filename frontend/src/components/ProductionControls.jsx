@@ -40,22 +40,28 @@ export function ProductionStatusBadge({ status, onChangeStatus }) {
       const rootRect = ref.current?.getBoundingClientRect();
       if (!rootRect) return;
 
-      const menuHeight = menuRef.current?.offsetHeight || 220;
+      const ESTIMATED_ITEM_HEIGHT = 40;
+      const TOTAL_MENU_HEIGHT_EST = ESTIMATED_ITEM_HEIGHT * PRODUCTION_STATUSES.length + 8;
       const menuWidth = Math.max(rootRect.width, 140);
       const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
       const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
       const spaceBelow = viewportHeight - rootRect.bottom;
       const spaceAbove = rootRect.top;
-      const openUpward = spaceBelow < menuHeight + 8 && spaceAbove > spaceBelow;
+      const openUpward = spaceBelow < TOTAL_MENU_HEIGHT_EST + 8 && spaceAbove > spaceBelow;
 
       const rawLeft = rootRect.left;
       const left = Math.max(8, Math.min(rawLeft, viewportWidth - menuWidth - 8));
-      const top = openUpward
-        ? Math.max(8, rootRect.top - menuHeight - 4)
-        : Math.min(viewportHeight - 8, rootRect.bottom + 4);
-      const maxHeight = openUpward
-        ? Math.max(120, rootRect.top - 12)
-        : Math.max(120, viewportHeight - rootRect.bottom - 12);
+      let top, maxHeight;
+
+      if (openUpward) {
+        const spaceForMenu = rootRect.top - 12;
+        maxHeight = Math.max(ESTIMATED_ITEM_HEIGHT * 2, spaceForMenu);
+        top = Math.max(8, rootRect.top - maxHeight - 4);
+      } else {
+        const spaceForMenu = viewportHeight - rootRect.bottom - 12;
+        maxHeight = Math.max(ESTIMATED_ITEM_HEIGHT * 2, spaceForMenu);
+        top = Math.min(viewportHeight - 8, rootRect.bottom + 4);
+      }
 
       setMenuPosition({
         top,
