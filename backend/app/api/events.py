@@ -1070,7 +1070,7 @@ async def set_event_order_tag(event_id: UUID, order_id: int, payload: OrderTagAs
                 "event_set_order_tag_retry_failed event_id=%s order_id=%s error_type=%s error=%s",
                 str(event_id), str(order_id), err_type, str(exc2), exc_info=True,
             )
-            raise HTTPException(status_code=500, detail=f"Falha ao salvar tag [{err_type}]")
+            raise HTTPException(status_code=500, detail=f"Falha ao salvar tag [{err_type}]: {exc2}")
     except Exception as exc:
         db.rollback()
         err_type = type(exc).__name__
@@ -1078,7 +1078,7 @@ async def set_event_order_tag(event_id: UUID, order_id: int, payload: OrderTagAs
             "event_set_order_tag_failed event_id=%s order_id=%s error_type=%s error=%s",
             str(event_id), str(order_id), err_type, str(exc), exc_info=True,
         )
-        raise HTTPException(status_code=500, detail=f"Falha ao salvar tag [{err_type}]")
+        raise HTTPException(status_code=500, detail=f"Falha ao salvar tag [{err_type}]: {exc}")
 
     db.commit()
     return {"ok": True, "event_id": str(event_id), "order_id": int(order_id), "tag": tags[0] if tags else None, "tags": tags}

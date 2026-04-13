@@ -23,6 +23,17 @@ class OrderTagRepository:
         return OrderTagRepository._clean_name(name).lower()
 
     @staticmethod
+    def _try_ensure_schema(db: Session) -> None:
+        """Best-effort table creation in case migration 011 was skipped.
+        Silently ignores errors (e.g. table already exists or restricted permissions)."""
+        try:
+            bind = db.get_bind()
+            OrderTagModel.__table__.create(bind=bind, checkfirst=True)
+            OrderTagLinkModel.__table__.create(bind=bind, checkfirst=True)
+        except Exception:
+            pass
+
+    @staticmethod
     def list_tags(db: Session, tenant_id: UUID, scope_key: str, event_id: Optional[UUID]) -> List[OrderTagModel]:
         # Only list tags that are currently assigned to at least one order in the same scope.
         return (
@@ -152,6 +163,7 @@ class OrderTagRepository:
         bling_order_id: int,
         tag_name: str,
     ) -> List[str]:
+        OrderTagRepository._try_ensure_schema(db)
         tag = OrderTagRepository.get_or_create_tag(
             db=db,
             tenant_id=tenant_id,
