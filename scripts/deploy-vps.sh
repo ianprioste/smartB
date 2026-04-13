@@ -18,7 +18,7 @@ BACKEND_SERVICE="${BACKEND_SERVICE%.service}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8000/health}"
 FRONTEND_TARGET_DIR="${FRONTEND_TARGET_DIR:-${VPS_FRONTEND_DIR:-/usr/share/nginx/html}}"
 MIGRATIONS_MODE="${MIGRATIONS_MODE:-auto}"
-PUBLIC_HOST="${PUBLIC_HOST:-191.252.204.67}"
+PUBLIC_HOST="${PUBLIC_HOST:-app.useruach.com.br}"
 GIT_COMMIT="${GIT_COMMIT:-$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)}"
 BUILD_ID="${BUILD_ID:-$(date '+%Y%m%d%H%M%S')-${GIT_COMMIT}}"
 BUILD_TIMESTAMP="${BUILD_TIMESTAMP:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
@@ -99,7 +99,7 @@ ensure_env_defaults() {
   cors_origins="$(env_value CORS_ORIGINS)"
   if [ -z "$cors_origins" ]; then
     log "CORS_ORIGINS ausente; definindo padrao seguro para ${PUBLIC_HOST}"
-    upsert_env_key CORS_ORIGINS "http://${PUBLIC_HOST}"
+    upsert_env_key CORS_ORIGINS "https://${PUBLIC_HOST}"
   fi
 }
 
@@ -180,8 +180,8 @@ validate_local_public_rollout() {
   local expected_short
   expected_short="${GIT_COMMIT:0:12}"
 
-  curl --fail --silent --show-error --max-time 8 "http://127.0.0.1/build-info.json" > /tmp/local-build-info.json || fail "Nginx local nao serviu /build-info.json"
-  curl --fail --silent --show-error --max-time 8 "http://127.0.0.1/api/health" > /tmp/local-health.json || fail "Nginx local nao serviu /api/health"
+  curl --fail --silent --show-error --location --insecure --max-time 8 "http://127.0.0.1/build-info.json" > /tmp/local-build-info.json || fail "Nginx local nao serviu /build-info.json"
+  curl --fail --silent --show-error --location --insecure --max-time 8 "http://127.0.0.1/api/health" > /tmp/local-health.json || fail "Nginx local nao serviu /api/health"
 
   python3 - <<'PY'
 import json
@@ -311,21 +311,43 @@ stop_legacy_docker_ingress() {
 enforce_nginx_public_server() {
   [ "$REQUIRE_NGINX" = "true" ] || return 0
 
-  local conf_path listen_v4 listen_v6
+  local conf_path cert_path is_ip
   conf_path="/etc/nginx/conf.d/smartbling-public.conf"
-  listen_v4="listen 80;"
-  listen_v6="listen [::]:80;"
+  cert_path="/etc/letsencrypt/live/${PUBLIC_HOST}/fullchain.pem"
 
-  if ! nginx -T 2>/dev/null | grep -qE 'listen[[:space:]]+80[[:space:]]+default_server'; then
-    listen_v4="listen 80 default_server;"
-    listen_v6="listen [::]:80 default_server;"
+  # Detect whether PUBLIC_HOST is a bare IP address
+  is_ip=false
+  if printf '%s' "$PUBLIC_HOST" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+    is_ip=true
   fi
 
-  cat > "$conf_path" <<EOF
+  if [ "$is_ip" = "false" ] && [ -f "$cert_path" ]; then
+    # ── HTTPS mode ────────────────────────────────────────────────
+    log "Certificado SSL detectado; configurando nginx com HTTPS"
+    cat > "$conf_path" <<EOF
 server {
-    ${listen_v4}
-    ${listen_v6}
-    server_name _;
+    listen 80;
+    listen [::]:80;
+    server_name ${PUBLIC_HOST};
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name ${PUBLIC_HOST};
+    http2 on;
+
+    ssl_certificate     /etc/letsencrypt/live/${PUBLIC_HOST}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${PUBLIC_HOST}/privkey.pem;
+    ssl_trusted_certificate /etc/letsencrypt/live/${PUBLIC_HOST}/chain.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
     gzip on;
     gzip_types text/plain text/css application/json application/javascript text/xml application/xml+rss text/javascript;
@@ -361,6 +383,58 @@ server {
     }
 }
 EOF
+  else
+    # ── HTTP-only mode (cert nao existe ainda, ou PUBLIC_HOST e IP) ──
+    local listen_v4 listen_v6
+    listen_v4="listen 80;"
+    listen_v6="listen [::]:80;"
+
+    if ! nginx -T 2>/dev/null | grep -qE 'listen[[:space:]]+80[[:space:]]+default_server'; then
+      listen_v4="listen 80 default_server;"
+      listen_v6="listen [::]:80 default_server;"
+    fi
+
+    cat > "$conf_path" <<EOF
+server {
+    ${listen_v4}
+    ${listen_v6}
+    server_name ${PUBLIC_HOST};
+
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml+rss text/javascript;
+    gzip_min_length 1000;
+
+    root ${FRONTEND_TARGET_DIR};
+    index index.html;
+
+    location = /index.html {
+        add_header Cache-Control "no-store, must-revalidate";
+    }
+
+    location = /build-info.json {
+        add_header Cache-Control "no-store, must-revalidate";
+        try_files /build-info.json =404;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000/;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Prefix /api;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_connect_timeout 10s;
+    }
+
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
+}
+EOF
+  fi
 
   if [ -f /etc/nginx/sites-enabled/default ]; then
     rm -f /etc/nginx/sites-enabled/default
@@ -369,6 +443,44 @@ EOF
   nginx -t || fail "nginx invalido apos instalar smartbling-public.conf"
   systemctl reload nginx || fail "Falha ao recarregar nginx apos instalar smartbling-public.conf"
   log "Configuracao nginx publica reforcada em $conf_path"
+}
+
+provision_ssl_cert() {
+  local cert_path email
+
+  # Skip if PUBLIC_HOST is a bare IP — Let's Encrypt nao emite certs para IPs
+  if printf '%s' "$PUBLIC_HOST" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+    log "PUBLIC_HOST e um endereco IP; ignorando provisionamento de certificado SSL"
+    return 0
+  fi
+
+  cert_path="/etc/letsencrypt/live/${PUBLIC_HOST}/fullchain.pem"
+
+  if [ -f "$cert_path" ]; then
+    log "Certificado SSL ja existe para ${PUBLIC_HOST}; nenhuma acao necessaria"
+    return 0
+  fi
+
+  if ! command -v certbot >/dev/null 2>&1; then
+    warn "certbot nao encontrado; ignorando provisionamento SSL automatico"
+    return 0
+  fi
+
+  email="$(env_value SMTP_FROM_EMAIL)"
+  email="${email:-ian.prioste@useruach.com.br}"
+
+  log "Obtendo certificado Let's Encrypt para ${PUBLIC_HOST} (email: ${email})"
+  if certbot certonly --nginx \
+      -d "$PUBLIC_HOST" \
+      --non-interactive \
+      --agree-tos \
+      --email "$email" \
+      --no-eff-email; then
+    log "Certificado SSL obtido com sucesso; aplicando configuracao nginx com HTTPS"
+    enforce_nginx_public_server
+  else
+    warn "Falha ao obter certificado SSL para ${PUBLIC_HOST}; aplicacao permanecera em HTTP"
+  fi
 }
 
 publish_frontend_atomic() {
@@ -572,6 +684,7 @@ fi
 
 stop_legacy_docker_ingress
 enforce_nginx_public_server
+provision_ssl_cert
 
 log "Reiniciando backend via systemd (${BACKEND_SERVICE})"
 free_backend_port_conflicts

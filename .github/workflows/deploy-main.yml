@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      PUBLIC_HOST: 191.252.204.67
+      PUBLIC_HOST: app.useruach.com.br
       BUILD_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
@@ -158,8 +158,8 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          curl --fail --silent --show-error --dump-header /tmp/build.headers "http://${PUBLIC_HOST}/build-info.json?b=${BUILD_ID}" > /tmp/build-info.json
-          curl --fail --silent --show-error --dump-header /tmp/health.headers "http://${PUBLIC_HOST}/api/health?b=${BUILD_ID}" > /tmp/health.json
+          curl --fail --silent --show-error --dump-header /tmp/build.headers "https://${PUBLIC_HOST}/build-info.json?b=${BUILD_ID}" > /tmp/build-info.json
+          curl --fail --silent --show-error --dump-header /tmp/health.headers "https://${PUBLIC_HOST}/api/health?b=${BUILD_ID}" > /tmp/health.json
 
           echo "--- verify headers: build-info ---"
           sed -n '1,20p' /tmp/build.headers || true
@@ -219,9 +219,9 @@ jobs:
           set +e
 
           echo "=== PUBLIC ENDPOINTS ==="
-          curl -i --max-time 12 "http://${PUBLIC_HOST}/build-info.json" | sed -n '1,25p'
+          curl -iL --max-time 12 "https://${PUBLIC_HOST}/build-info.json" | sed -n '1,25p'
           echo
-          curl -i --max-time 12 "http://${PUBLIC_HOST}/api/health" | sed -n '1,30p'
+          curl -iL --max-time 12 "https://${PUBLIC_HOST}/api/health" | sed -n '1,30p'
           echo
 
           echo "=== VPS DIAGNOSTICS ==="
@@ -283,7 +283,7 @@ jobs:
 
           echo "--- public host from VPS ---"
           if [ -n "${PUBLIC_HOST:-}" ]; then
-            curl -i --max-time 8 "http://${PUBLIC_HOST}/build-info.json" | sed -n '1,25p' || true
-            curl -i --max-time 8 "http://${PUBLIC_HOST}/api/health" | sed -n '1,25p' || true
+            curl -iL --max-time 8 "https://${PUBLIC_HOST}/build-info.json" | sed -n '1,25p' || true
+            curl -iL --max-time 8 "https://${PUBLIC_HOST}/api/health" | sed -n '1,25p' || true
           fi
           REMOTE_DIAG
