@@ -676,6 +676,11 @@ async def list_all_products(
     # Get Bling OAuth2 token from database
     bling_token = BlingTokenRepository.get_by_tenant(db, DEFAULT_TENANT_ID)
     if not bling_token:
+        # No Bling token: serve from local snapshot when available.
+        snapshot_response = _list_from_snapshot(db, q, page, limit)
+        if snapshot_response.total_items and snapshot_response.total_items > 0:
+            logger.info("list_all_products_no_token_snapshot_fallback", extra={"total_items": snapshot_response.total_items})
+            return snapshot_response
         raise HTTPException(
             status_code=401,
             detail="Nenhum token OAuth2 encontrado. Por favor, autentique-se primeiro em /auth/callback."
@@ -754,17 +759,15 @@ async def list_all_products(
             "error_type": type(e).__name__,
         })
 
-        # First fallback: return local snapshot when available.
-        try:
-            snapshot_response = _list_from_snapshot(db, q, page, limit)
-            if snapshot_response.total_items and snapshot_response.total_items > 0:
-                logger.info("bling_list_products_snapshot_fallback", extra={"query": q, "total_items": snapshot_response.total_items})
-                return snapshot_response
-        except Exception as snapshot_exc:
-            logger.warning("bling_list_products_snapshot_fallback_failed", extra={"error": str(snapshot_exc)})
-        
         from app.infra.bling_client import BlingRefreshTokenExpiredError
-        
+
+        # Always try snapshot first regardless of error type.
+        snapshot_response = _list_from_snapshot(db, q, page, limit)
+        if snapshot_response.total_items and snapshot_response.total_items > 0:
+            logger.info("bling_list_products_snapshot_fallback", extra={"query": q, "total_items": snapshot_response.total_items})
+            return snapshot_response
+
+        # Snapshot is empty — raise a meaningful error for auth failures.
         if isinstance(e, BlingRefreshTokenExpiredError) or "Refresh token expired" in error_msg:
             detail_msg = "Token do Bling expirado. É necessário autenticar novamente."
             status_code = 401
@@ -774,9 +777,9 @@ async def list_all_products(
             status_code = 401
             code = "BLING_AUTH_ERROR"
         else:
-            # Graceful degradation: keep the page usable with empty/snapshot data.
-            logger.warning("bling_list_products_returning_snapshot_fallback", extra={"query": q, "error": error_msg})
-            return _list_from_snapshot(db, q, page, limit)
+            # Graceful degradation: return empty snapshot response.
+            logger.warning("bling_list_products_returning_empty_fallback", extra={"query": q, "error": error_msg})
+            return snapshot_response
         
         raise HTTPException(
             status_code=status_code,
