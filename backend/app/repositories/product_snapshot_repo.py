@@ -60,7 +60,7 @@ class ProductSnapshotRepository:
         return (
             db.query(BlingProductSnapshotModel)
             .filter(BlingProductSnapshotModel.tenant_id == tenant_id)
-            .order_by(BlingProductSnapshotModel.nome.asc().nullslast())
+            .order_by(BlingProductSnapshotModel.nome.asc())
             .all()
         )
 
@@ -81,7 +81,7 @@ class ProductSnapshotRepository:
                         BlingProductSnapshotModel.nome.ilike(f"%{term}%"),
                     ),
                 )
-                .order_by(BlingProductSnapshotModel.nome.asc().nullslast())
+                .order_by(BlingProductSnapshotModel.nome.asc())
                 .all()
             )
 
@@ -94,7 +94,7 @@ class ProductSnapshotRepository:
                     BlingProductSnapshotModel.nome.ilike(f"%{term}%"),
                 ),
             )
-            .order_by(BlingProductSnapshotModel.nome.asc().nullslast())
+            .order_by(BlingProductSnapshotModel.nome.asc())
             .all()
         )
 

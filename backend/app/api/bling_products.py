@@ -193,16 +193,26 @@ def _build_snapshot_item(row) -> BlingProductSearchItem:
 
 
 def _list_from_snapshot(db: Session, q: Optional[str], page: int, limit: int) -> BlingProductSearchResponse:
-    rows = ProductSnapshotRepository.list_by_query(db, DEFAULT_TENANT_ID, q or "")
-    items = _sort_catalog_items([_build_snapshot_item(row) for row in rows])
-    paged_items, total_groups = _paginate_grouped_items(items, page, limit)
-    return BlingProductSearchResponse(
-        total=total_groups,
-        page=page,
-        limit=limit,
-        items=paged_items,
-        total_items=len(items),
-    )
+    try:
+        rows = ProductSnapshotRepository.list_by_query(db, DEFAULT_TENANT_ID, q or "")
+        items = _sort_catalog_items([_build_snapshot_item(row) for row in rows])
+        paged_items, total_groups = _paginate_grouped_items(items, page, limit)
+        return BlingProductSearchResponse(
+            total=total_groups,
+            page=page,
+            limit=limit,
+            items=paged_items,
+            total_items=len(items),
+        )
+    except Exception as exc:
+        logger.warning("list_from_snapshot_failed", extra={"error": str(exc)})
+        return BlingProductSearchResponse(
+            total=0,
+            page=page,
+            limit=limit,
+            items=[],
+            total_items=0,
+        )
 
 
 def _can_use_raw_hierarchy(items: list[BlingProductSearchItem]) -> bool:
@@ -764,9 +774,9 @@ async def list_all_products(
             status_code = 401
             code = "BLING_AUTH_ERROR"
         else:
-            detail_msg = "Erro ao buscar produtos do Bling."
-            status_code = 500
-            code = "BLING_ERROR"
+            # Graceful degradation: keep the page usable with empty/snapshot data.
+            logger.warning("bling_list_products_returning_snapshot_fallback", extra={"query": q, "error": error_msg})
+            return _list_from_snapshot(db, q, page, limit)
         
         raise HTTPException(
             status_code=status_code,
