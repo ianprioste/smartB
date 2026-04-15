@@ -10,6 +10,7 @@ from app.infra.db import get_db
 from app.infra.bling_client import BlingClient
 from app.models.schemas import BlingProductSearchResponse, BlingProductDetailResponse, BlingProductSearchItem
 from app.repositories.bling_token_repo import BlingTokenRepository
+from app.repositories.product_snapshot_repo import ProductSnapshotRepository
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +176,32 @@ def _sort_catalog_items(items: list[BlingProductSearchItem]) -> list[BlingProduc
             1 if item.pai else 0,
             (item.nome or "").lower(),
         ),
+    )
+
+
+def _build_snapshot_item(row) -> BlingProductSearchItem:
+    return BlingProductSearchItem(
+        id=int(row.bling_product_id),
+        codigo=row.codigo or "",
+        nome=row.nome or f"Produto {row.bling_product_id}",
+        formato=row.formato,
+        situacao=row.situacao,
+        tipo_estoque=None,
+        pai=int(row.parent_product_id) if row.parent_product_id is not None else None,
+        quantidade_estoque=row.stock_quantity,
+    )
+
+
+def _list_from_snapshot(db: Session, q: Optional[str], page: int, limit: int) -> BlingProductSearchResponse:
+    rows = ProductSnapshotRepository.list_by_query(db, DEFAULT_TENANT_ID, q or "")
+    items = _sort_catalog_items([_build_snapshot_item(row) for row in rows])
+    paged_items, total_groups = _paginate_grouped_items(items, page, limit)
+    return BlingProductSearchResponse(
+        total=total_groups,
+        page=page,
+        limit=limit,
+        items=paged_items,
+        total_items=len(items),
     )
 
 
@@ -504,6 +531,10 @@ async def search_products(
     # Get Bling OAuth2 token from database
     bling_token = BlingTokenRepository.get_by_tenant(db, DEFAULT_TENANT_ID)
     if not bling_token:
+        # Fallback mode: keep products page usable from local snapshot cache.
+        snapshot_response = _list_from_snapshot(db, q, page, limit)
+        if snapshot_response.total_items and snapshot_response.total_items > 0:
+            return snapshot_response
         raise HTTPException(
             status_code=401,
             detail="Nenhum token OAuth2 encontrado. Por favor, autentique-se primeiro em /auth/callback."
@@ -712,6 +743,15 @@ async def list_all_products(
             "error": error_msg,
             "error_type": type(e).__name__,
         })
+
+        # First fallback: return local snapshot when available.
+        try:
+            snapshot_response = _list_from_snapshot(db, q, page, limit)
+            if snapshot_response.total_items and snapshot_response.total_items > 0:
+                logger.info("bling_list_products_snapshot_fallback", extra={"query": q, "total_items": snapshot_response.total_items})
+                return snapshot_response
+        except Exception as snapshot_exc:
+            logger.warning("bling_list_products_snapshot_fallback_failed", extra={"error": str(snapshot_exc)})
         
         from app.infra.bling_client import BlingRefreshTokenExpiredError
         

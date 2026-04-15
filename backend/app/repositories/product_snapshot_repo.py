@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.models.database import BlingProductSnapshotModel
@@ -53,6 +54,49 @@ class ProductSnapshotRepository:
 
         if existing is None:
             db.add(row)
+
+    @staticmethod
+    def list_all(db: Session, tenant_id: UUID) -> List[BlingProductSnapshotModel]:
+        return (
+            db.query(BlingProductSnapshotModel)
+            .filter(BlingProductSnapshotModel.tenant_id == tenant_id)
+            .order_by(BlingProductSnapshotModel.nome.asc().nullslast())
+            .all()
+        )
+
+    @staticmethod
+    def list_by_query(db: Session, tenant_id: UUID, q: str) -> List[BlingProductSnapshotModel]:
+        term = (q or "").strip()
+        if not term:
+            return ProductSnapshotRepository.list_all(db, tenant_id)
+
+        if term.isdigit():
+            return (
+                db.query(BlingProductSnapshotModel)
+                .filter(
+                    BlingProductSnapshotModel.tenant_id == tenant_id,
+                    or_(
+                        BlingProductSnapshotModel.bling_product_id == int(term),
+                        BlingProductSnapshotModel.codigo.ilike(f"%{term}%"),
+                        BlingProductSnapshotModel.nome.ilike(f"%{term}%"),
+                    ),
+                )
+                .order_by(BlingProductSnapshotModel.nome.asc().nullslast())
+                .all()
+            )
+
+        return (
+            db.query(BlingProductSnapshotModel)
+            .filter(
+                BlingProductSnapshotModel.tenant_id == tenant_id,
+                or_(
+                    BlingProductSnapshotModel.codigo.ilike(f"%{term}%"),
+                    BlingProductSnapshotModel.nome.ilike(f"%{term}%"),
+                ),
+            )
+            .order_by(BlingProductSnapshotModel.nome.asc().nullslast())
+            .all()
+        )
 
 
 def _extract_parent_id(product_data: Dict[str, Any]) -> Optional[int]:
