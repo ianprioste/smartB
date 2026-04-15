@@ -258,6 +258,31 @@ class BlingOrderSnapshotModel(Base):
     )
 
 
+class BlingProductSnapshotModel(Base):
+    """Persistent local snapshot of Bling products (including stock)."""
+    __tablename__ = "bling_product_snapshots"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    bling_product_id = Column(BigInteger, nullable=False)
+
+    codigo = Column(String(255), nullable=True)
+    nome = Column(String(500), nullable=True)
+    formato = Column(String(20), nullable=True)
+    situacao = Column(String(50), nullable=True)
+    parent_product_id = Column(BigInteger, nullable=True)
+    stock_quantity = Column(Float, nullable=True)
+
+    raw_payload = Column(JSON, nullable=True)
+    source_updated_at = Column(DateTime, nullable=True)
+    imported_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "bling_product_id", name="uq_bling_product_snapshot_tenant_product"),
+    )
+
+
 class OrderTagModel(Base):
     """Reusable order tags scoped to global orders or a specific sales event."""
     __tablename__ = "order_tags"

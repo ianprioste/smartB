@@ -21,6 +21,11 @@ CATALOG_CACHE_TTL_SECONDS = 180
 _catalog_cache: dict[str, tuple[float, list[BlingProductSearchItem]]] = {}
 
 
+def invalidate_catalog_cache() -> None:
+    """Clear in-memory catalog cache after product/stock webhook updates."""
+    _catalog_cache.clear()
+
+
 def _unwrap_bling_product(product: dict[str, Any]) -> dict[str, Any]:
     """Normalize Bling payloads that may come wrapped in a top-level data object."""
     if isinstance(product, dict) and isinstance(product.get("data"), dict):

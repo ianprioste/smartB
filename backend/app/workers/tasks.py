@@ -16,6 +16,7 @@ from app.repositories.job_repo import JobRepository, JobItemRepository
 from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.order_snapshot_repo import OrderSnapshotRepository
 from app.domain.order_sync import sync_orders, sync_single_order
+from app.domain.product_sync import sync_single_product
 
 logger = get_logger(__name__)
 DEFAULT_TENANT_ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -299,6 +300,60 @@ def process_webhook_order_task(self, event_id: str, bling_order_id: int):
             "webhook_order_processing_failed event_id=%s bling_order_id=%s attempt=%s error=%s",
             event_id,
             bling_order_id,
+            self.request.retries + 1,
+            error_str,
+        )
+        WebhookEventRepository.mark_failed(
+            db, event_uuid, error_str, max_retries=settings.WEBHOOK_MAX_RETRIES
+        )
+        delay = settings.WEBHOOK_RETRY_BASE_DELAY_S * (2 ** self.request.retries)
+        raise self.retry(exc=exc, countdown=delay, max_retries=settings.WEBHOOK_MAX_RETRIES)
+
+    finally:
+        if client is not None:
+            try:
+                asyncio.run(client.client.aclose())
+            except Exception:
+                pass
+        db.close()
+
+
+@celery_app.task(bind=True, name="process_webhook_product_task", max_retries=5)
+def process_webhook_product_task(self, event_id: str, bling_product_id: int, event_kind: str = "product"):
+    """Process product/stock webhook events and upsert product snapshot."""
+    from app.repositories.webhook_repo import WebhookEventRepository
+
+    event_uuid = UUID(event_id)
+    db = SessionLocal()
+    client = None
+    try:
+        WebhookEventRepository.set_processing(db, event_uuid)
+
+        client = _make_bling_client(db)
+        if not client:
+            raise RuntimeError("Bling nao autenticado - token ausente")
+
+        result = asyncio.run(sync_single_product(db, DEFAULT_TENANT_ID, client, bling_product_id))
+
+        if not result.get("ok"):
+            raise RuntimeError(result.get("error", "sync_single_product returned not ok"))
+
+        WebhookEventRepository.mark_processed(db, event_uuid)
+        logger.info(
+            "webhook_%s_processed event_id=%s bling_product_id=%s",
+            event_kind,
+            event_id,
+            bling_product_id,
+        )
+        return {"ok": True, "bling_product_id": bling_product_id, "event_kind": event_kind}
+
+    except Exception as exc:
+        error_str = str(exc)
+        logger.warning(
+            "webhook_%s_processing_failed event_id=%s bling_product_id=%s attempt=%s error=%s",
+            event_kind,
+            event_id,
+            bling_product_id,
             self.request.retries + 1,
             error_str,
         )

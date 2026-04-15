@@ -95,6 +95,33 @@ def _extract_order_id(payload: Dict[str, Any]) -> Optional[int]:
     return None
 
 
+def _extract_product_id(payload: Dict[str, Any]) -> Optional[int]:
+    """Try to extract bling_product_id from product/stock webhook payloads."""
+    if isinstance(payload.get("data"), dict):
+        candidate = payload["data"].get("id") or payload["data"].get("idProduto")
+        if candidate:
+            return int(candidate)
+
+    if "id" in payload:
+        try:
+            return int(payload["id"])
+        except (TypeError, ValueError):
+            pass
+
+    if "idProduto" in payload:
+        try:
+            return int(payload["idProduto"])
+        except (TypeError, ValueError):
+            pass
+
+    if isinstance(payload.get("produto"), dict):
+        candidate = payload["produto"].get("id") or payload["produto"].get("idProduto")
+        if candidate:
+            return int(candidate)
+
+    return None
+
+
 def _build_idempotency_key(event_type: str, order_id: Optional[int], payload: Dict[str, Any]) -> str:
     """Build a stable, unique key for deduplication.
 
@@ -177,6 +204,123 @@ def _dispatch_task(event_id: str, bling_order_id: int) -> None:
     t.start()
 
 
+def _dispatch_product_task(event_id: str, bling_product_id: int, event_kind: str) -> None:
+    """Dispatch product/stock webhook processing with Windows fallback."""
+    if platform.system() != "Windows":
+        try:
+            from app.workers.tasks import process_webhook_product_task
+            process_webhook_product_task.delay(event_id, bling_product_id, event_kind)
+            return
+        except Exception as exc:
+            logger.warning("celery_dispatch_product_failed fallback_to_thread error=%s", str(exc))
+
+    def _run():
+        from app.repositories.webhook_repo import WebhookEventRepository as WHR
+        from app.repositories.bling_token_repo import BlingTokenRepository
+        from app.infra.bling_client import BlingClient
+        from app.domain.product_sync import sync_single_product
+
+        db = SessionLocal()
+        client = None
+        try:
+            WHR.set_processing(db, _uuid.UUID(event_id))
+            token_row = BlingTokenRepository.get_by_tenant(db, DEFAULT_TENANT_ID)
+            if not token_row:
+                raise RuntimeError("no_bling_token")
+
+            def _save(at, rt, ea):
+                from app.repositories.bling_token_repo import BlingTokenRepository as TR
+                TR.create_or_update(db, DEFAULT_TENANT_ID, at, rt, ea)
+
+            client = BlingClient(
+                access_token=token_row.access_token,
+                refresh_token=token_row.refresh_token,
+                token_expires_at=token_row.expires_at,
+                on_token_refresh=_save,
+            )
+            result = asyncio.run(sync_single_product(db, DEFAULT_TENANT_ID, client, bling_product_id))
+            if result.get("ok"):
+                WHR.mark_processed(db, _uuid.UUID(event_id))
+            else:
+                WHR.mark_failed(db, _uuid.UUID(event_id), result.get("error", "unknown"))
+        except Exception as exc:
+            WHR.mark_failed(db, _uuid.UUID(event_id), str(exc))
+            logger.error("webhook_%s_thread_failed event_id=%s error=%s", event_kind, event_id, str(exc))
+        finally:
+            if client:
+                try:
+                    asyncio.run(client.client.aclose())
+                except Exception:
+                    pass
+            db.close()
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+
+async def _receive_product_like_webhook(
+    request: Request,
+    db: Session,
+    authorization: Optional[str],
+    default_event: str,
+    event_kind: str,
+):
+    if not settings.WEBHOOKS_ENABLED:
+        raise HTTPException(status_code=503, detail="Webhooks desabilitados no momento.")
+
+    if not _verify_secret(authorization):
+        logger.warning(
+            "webhook_unauthorized remote=%s",
+            request.client.host if request.client else "unknown",
+        )
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        payload: Dict[str, Any] = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Payload inválido - esperado JSON.")
+
+    event_type = payload.get("event") or payload.get("topic") or default_event
+    bling_product_id = _extract_product_id(payload)
+    if not bling_product_id:
+        logger.warning("webhook_%s_product_id_missing payload_keys=%s", event_kind, list(payload.keys()))
+        raise HTTPException(status_code=400, detail="Campo 'id' do produto não encontrado no payload.")
+
+    idempotency_key = _build_idempotency_key(event_type, bling_product_id, payload)
+    event = WebhookEventRepository.create_if_new(
+        db=db,
+        tenant_id=DEFAULT_TENANT_ID,
+        idempotency_key=idempotency_key,
+        event_type=event_type,
+        bling_order_id=bling_product_id,
+        raw_payload=payload,
+    )
+
+    if event is None:
+        logger.info(
+            "webhook_%s_duplicate_skipped idempotency_key=%s bling_product_id=%s",
+            event_kind,
+            idempotency_key,
+            bling_product_id,
+        )
+        return {"ok": True, "status": "duplicate_skipped", "bling_product_id": bling_product_id}
+
+    _dispatch_product_task(str(event.id), bling_product_id, event_kind)
+    logger.info(
+        "webhook_%s_accepted event_id=%s event_type=%s bling_product_id=%s",
+        event_kind,
+        str(event.id),
+        event_type,
+        bling_product_id,
+    )
+    return {
+        "ok": True,
+        "status": "accepted",
+        "event_id": str(event.id),
+        "bling_product_id": bling_product_id,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -252,6 +396,40 @@ async def receive_bling_order_webhook(
         "event_id": str(event.id),
         "bling_order_id": bling_order_id,
     }
+
+
+@router.post("/bling/products", status_code=202)
+@router.post("/bling/products/updated", status_code=202)
+async def receive_bling_product_webhook(
+    request: Request,
+    db: Session = Depends(get_db),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Receive product webhook events and refresh product snapshot."""
+    return await _receive_product_like_webhook(
+        request=request,
+        db=db,
+        authorization=authorization,
+        default_event="product.updated",
+        event_kind="product",
+    )
+
+
+@router.post("/bling/stock", status_code=202)
+@router.post("/bling/stock/updated", status_code=202)
+async def receive_bling_stock_webhook(
+    request: Request,
+    db: Session = Depends(get_db),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Receive stock webhook events and refresh product stock snapshot."""
+    return await _receive_product_like_webhook(
+        request=request,
+        db=db,
+        authorization=authorization,
+        default_event="stock.updated",
+        event_kind="stock",
+    )
 
 
 @router.get("/health")
