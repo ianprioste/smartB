@@ -112,6 +112,44 @@ async def sync_orders(
     }
 
 
+async def sync_single_order(
+    db: Session,
+    tenant_id: UUID,
+    client,
+    bling_order_id: int,
+) -> Dict[str, Any]:
+    """Fetch and upsert a single order by Bling ID.  Used by webhook processing."""
+    list_payload: Dict[str, Any] = {"id": bling_order_id}
+    try:
+        detail = await client.get(f"/pedidos/vendas/{bling_order_id}")
+    except Exception as exc:
+        return {"ok": False, "bling_order_id": bling_order_id, "error": str(exc)}
+
+    if not detail:
+        return {"ok": False, "bling_order_id": bling_order_id, "error": "empty_detail"}
+
+    # Merge top-level fields from detail into list payload so upsert_order
+    # receives both required arguments with correct data.
+    list_payload.update({
+        "numero": detail.get("numero"),
+        "situacao": detail.get("situacao"),
+        "data": detail.get("data"),
+        "contato": detail.get("contato"),
+        "totalVenda": detail.get("totalVenda"),
+    })
+
+    OrderSnapshotRepository.upsert_order(db, tenant_id, list_payload, detail)
+    SyncScopeVersionRepository.bump_scope(db, tenant_id, SCOPE_ORDERS_GLOBAL)
+    db.commit()
+
+    logger.info(
+        "webhook_single_order_synced tenant_id=%s bling_order_id=%s",
+        str(tenant_id),
+        bling_order_id,
+    )
+    return {"ok": True, "bling_order_id": bling_order_id}
+
+
 async def _fetch_all_orders(client) -> List[Dict[str, Any]]:
     page = 1
     limit = 100

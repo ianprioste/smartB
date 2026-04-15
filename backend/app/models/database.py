@@ -413,3 +413,36 @@ class PasswordResetCodeModel(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+
+class BlingWebhookEventStatusEnum(str, enum.Enum):
+    """Processing state of a received Bling webhook event."""
+    received = "received"
+    processing = "processing"
+    processed = "processed"
+    failed = "failed"
+    dead = "dead"
+
+
+class BlingWebhookEventModel(Base):
+    """Persisted log of Bling webhook events for idempotency and retry tracking."""
+    __tablename__ = "bling_webhook_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    # Stable deduplication key: constructed from event_type + bling_order_id + timestamp minute bucket
+    idempotency_key = Column(String(255), nullable=False)
+    event_type = Column(String(100), nullable=False)        # e.g. "order.created", "order.updated"
+    bling_order_id = Column(BigInteger, nullable=True)
+    raw_payload = Column(JSON, nullable=True)
+    status = Column(Enum(BlingWebhookEventStatusEnum), nullable=False, default=BlingWebhookEventStatusEnum.received)
+    attempts = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text, nullable=True)
+    received_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    processed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_bling_webhook_events_tenant_idempotency"),
+    )
+

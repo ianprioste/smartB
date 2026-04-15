@@ -10,7 +10,7 @@ from app.infra.logging import get_logger, RequestIdMiddleware
 from app.models.database import Base
 from app.infra.db import engine, SessionLocal
 from app.models.schemas import HealthResponse
-from app.api import auth, access_control, jobs, config_models, config_colors, config_templates, bling_products, plans, plan_execution, dashboard, events, orders
+from app.api import auth, access_control, jobs, config_models, config_colors, config_templates, bling_products, plans, plan_execution, dashboard, events, orders, webhooks
 from app.repositories.access_repo import AccessRepository
 
 logger = get_logger(__name__)
@@ -27,6 +27,8 @@ PUBLIC_PATHS = {
     "/auth/access/forgot-password/verify",
     "/auth/access/forgot-password/reset",
 }
+# Webhook paths are authenticated by shared secret, not by session cookie.
+WEBHOOK_PATH_PREFIXES = {"/webhooks/bling/"}
 
 
 # Create database tables
@@ -117,7 +119,7 @@ def create_app() -> FastAPI:
     async def access_guard(request, call_next):
         path = request.url.path
 
-        if path in PUBLIC_PATHS or path.startswith("/auth/bling"):
+        if path in PUBLIC_PATHS or path.startswith("/auth/bling") or any(path.startswith(p) for p in WEBHOOK_PATH_PREFIXES):
             return await call_next(request)
 
         token = request.cookies.get(SESSION_COOKIE)
@@ -148,6 +150,7 @@ def create_app() -> FastAPI:
     app.include_router(dashboard.router)
     app.include_router(events.router)
     app.include_router(orders.router)
+    app.include_router(webhooks.router)
     
     # Health check endpoint
     @app.get("/health", response_model=HealthResponse)

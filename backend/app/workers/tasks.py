@@ -15,7 +15,7 @@ from app.models.database import JobStatusEnum, JobItemStatusEnum
 from app.repositories.job_repo import JobRepository, JobItemRepository
 from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.order_snapshot_repo import OrderSnapshotRepository
-from app.domain.order_sync import sync_orders
+from app.domain.order_sync import sync_orders, sync_single_order
 
 logger = get_logger(__name__)
 DEFAULT_TENANT_ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -254,6 +254,60 @@ def sync_orders_incremental_task(self):
         )
         db.commit()
         return {"ok": False, "error": str(exc)}
+    finally:
+        if client is not None:
+            try:
+                asyncio.run(client.client.aclose())
+            except Exception:
+                pass
+        db.close()
+
+
+@celery_app.task(bind=True, name="process_webhook_order_task", max_retries=5)
+def process_webhook_order_task(self, event_id: str, bling_order_id: int):
+    """Process a Bling webhook order event: fetch detail and upsert snapshot."""
+    from app.repositories.webhook_repo import WebhookEventRepository
+
+    event_uuid = UUID(event_id)
+    db = SessionLocal()
+    client = None
+    try:
+        WebhookEventRepository.set_processing(db, event_uuid)
+
+        client = _make_bling_client(db)
+        if not client:
+            raise RuntimeError("Bling nao autenticado - token ausente")
+
+        result = asyncio.run(
+            sync_single_order(db, DEFAULT_TENANT_ID, client, bling_order_id)
+        )
+
+        if not result.get("ok"):
+            raise RuntimeError(result.get("error", "sync_single_order returned not ok"))
+
+        WebhookEventRepository.mark_processed(db, event_uuid)
+        logger.info(
+            "webhook_order_processed event_id=%s bling_order_id=%s",
+            event_id,
+            bling_order_id,
+        )
+        return {"ok": True, "bling_order_id": bling_order_id}
+
+    except Exception as exc:
+        error_str = str(exc)
+        logger.warning(
+            "webhook_order_processing_failed event_id=%s bling_order_id=%s attempt=%s error=%s",
+            event_id,
+            bling_order_id,
+            self.request.retries + 1,
+            error_str,
+        )
+        WebhookEventRepository.mark_failed(
+            db, event_uuid, error_str, max_retries=settings.WEBHOOK_MAX_RETRIES
+        )
+        delay = settings.WEBHOOK_RETRY_BASE_DELAY_S * (2 ** self.request.retries)
+        raise self.retry(exc=exc, countdown=delay, max_retries=settings.WEBHOOK_MAX_RETRIES)
+
     finally:
         if client is not None:
             try:
