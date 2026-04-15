@@ -60,26 +60,26 @@ def _get_retry_delay_seconds(response: httpx.Response, attempt: int) -> float:
     except Exception:
         pass
 
-        return min(1.5 * (2 ** attempt), 20.0)
+    return min(1.5 * (2 ** attempt), 20.0)
 
 
-    async def _wait_token_exchange_cooldown() -> None:
-        """Shared wait window to avoid token-exchange bursts across callbacks."""
-        global _token_exchange_cooldown_until
-        wait_seconds = max(0.0, _token_exchange_cooldown_until - time.monotonic())
-        if wait_seconds > 0:
-            await asyncio.sleep(wait_seconds)
+async def _wait_token_exchange_cooldown() -> None:
+    """Shared wait window to avoid token-exchange bursts across callbacks."""
+    global _token_exchange_cooldown_until
+    wait_seconds = max(0.0, _token_exchange_cooldown_until - time.monotonic())
+    if wait_seconds > 0:
+        await asyncio.sleep(wait_seconds)
 
 
-    def _set_token_exchange_cooldown(delay_seconds: float) -> None:
-        """Extend shared cooldown window after upstream 429."""
-        global _token_exchange_cooldown_until
-        if delay_seconds <= 0:
-            return
-        _token_exchange_cooldown_until = max(
-            _token_exchange_cooldown_until,
-            time.monotonic() + float(delay_seconds),
-        )
+def _set_token_exchange_cooldown(delay_seconds: float) -> None:
+    """Extend shared cooldown window after upstream 429."""
+    global _token_exchange_cooldown_until
+    if delay_seconds <= 0:
+        return
+    _token_exchange_cooldown_until = max(
+        _token_exchange_cooldown_until,
+        time.monotonic() + float(delay_seconds),
+    )
 
 
 def _resolve_redirect_uri(request: Request) -> str:
