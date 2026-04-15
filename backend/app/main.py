@@ -26,6 +26,7 @@ PUBLIC_PATHS = {
     "/auth/access/forgot-password/request",
     "/auth/access/forgot-password/verify",
     "/auth/access/forgot-password/reset",
+    "/webhooks/health",
 }
 # Webhook paths are authenticated by shared secret, not by session cookie.
 WEBHOOK_PATH_PREFIXES = {"/webhooks/bling/"}
