@@ -1,5 +1,6 @@
 """Authentication endpoints for Bling OAuth2."""
 import asyncio
+import time
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
@@ -13,7 +14,7 @@ from typing import Dict, Any
 
 from app.infra.db import get_db
 from app.infra.logging import get_logger
-from app.models.schemas import BlingAuthUrlResponse, BlingCallbackRequest, TokenAuthResponse
+from app.models.schemas import BlingAuthUrlResponse, TokenAuthResponse
 from app.repositories.bling_token_repo import BlingTokenRepository
 from app.settings import settings
 
@@ -22,6 +23,8 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 # Store state for CSRF protection (in production, use secure session storage)
 _oauth_states = {}
+_token_exchange_lock = asyncio.Lock()
+_token_exchange_cooldown_until = 0.0
 
 
 def _get_retry_delay_seconds(response: httpx.Response, attempt: int) -> float:
@@ -53,11 +56,30 @@ def _get_retry_delay_seconds(response: httpx.Response, attempt: int) -> float:
             if payload_retry is not None:
                 delay = float(payload_retry)
                 if delay > 0:
-                    return min(delay, 8.0)
+                    return min(delay, 20.0)
     except Exception:
         pass
 
-    return min(1.5 * (attempt + 1), 5.0)
+        return min(1.5 * (2 ** attempt), 20.0)
+
+
+    async def _wait_token_exchange_cooldown() -> None:
+        """Shared wait window to avoid token-exchange bursts across callbacks."""
+        global _token_exchange_cooldown_until
+        wait_seconds = max(0.0, _token_exchange_cooldown_until - time.monotonic())
+        if wait_seconds > 0:
+            await asyncio.sleep(wait_seconds)
+
+
+    def _set_token_exchange_cooldown(delay_seconds: float) -> None:
+        """Extend shared cooldown window after upstream 429."""
+        global _token_exchange_cooldown_until
+        if delay_seconds <= 0:
+            return
+        _token_exchange_cooldown_until = max(
+            _token_exchange_cooldown_until,
+            time.monotonic() + float(delay_seconds),
+        )
 
 
 def _resolve_redirect_uri(request: Request) -> str:
@@ -192,44 +214,61 @@ async def bling_callback(
             redirect_uri,
         )
 
-        max_attempts = 3
+        max_attempts = 5
         token_response: httpx.Response | None = None
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            for attempt in range(max_attempts):
-                token_response = await client.post(
-                    settings.BLING_TOKEN_URL,
-                    headers={
-                        "Authorization": f"Basic {encoded_credentials}",
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "Accept": "application/json",
-                    },
-                    data={
-                        "grant_type": "authorization_code",
-                        "code": code,
-                        "redirect_uri": redirect_uri,
-                    },
-                )
+        async with _token_exchange_lock:
+            await _wait_token_exchange_cooldown()
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                for attempt in range(max_attempts):
+                    token_response = await client.post(
+                        settings.BLING_TOKEN_URL,
+                        headers={
+                            "Authorization": f"Basic {encoded_credentials}",
+                            "Content-Type": "application/x-www-form-urlencoded",
+                            "Accept": "application/json",
+                        },
+                        data={
+                            "grant_type": "authorization_code",
+                            "code": code,
+                            "redirect_uri": redirect_uri,
+                        },
+                    )
 
-                logger.info(
-                    "oauth_token_response status_code=%s attempt=%s body=%s",
-                    token_response.status_code,
-                    attempt + 1,
-                    token_response.text[:500],
-                )
+                    logger.info(
+                        "oauth_token_response status_code=%s attempt=%s body=%s",
+                        token_response.status_code,
+                        attempt + 1,
+                        token_response.text[:500],
+                    )
 
-                if token_response.status_code != 429 or attempt >= (max_attempts - 1):
-                    break
+                    if token_response.status_code != 429 or attempt >= (max_attempts - 1):
+                        break
 
-                retry_delay = _get_retry_delay_seconds(token_response, attempt)
-                logger.warning(
-                    "oauth_token_rate_limited status=429 attempt=%s retry_in=%ss",
-                    attempt + 1,
-                    round(retry_delay, 2),
-                )
-                await asyncio.sleep(retry_delay)
+                    retry_delay = _get_retry_delay_seconds(token_response, attempt)
+                    _set_token_exchange_cooldown(retry_delay)
+                    logger.warning(
+                        "oauth_token_rate_limited status=429 attempt=%s retry_in=%ss",
+                        attempt + 1,
+                        round(retry_delay, 2),
+                    )
+                    await asyncio.sleep(retry_delay)
 
         if token_response is None:
             raise HTTPException(status_code=502, detail="No response from Bling token endpoint")
+
+        if token_response.status_code == 429:
+            retry_delay = _get_retry_delay_seconds(token_response, max_attempts - 1)
+            _set_token_exchange_cooldown(retry_delay)
+            logger.warning(
+                "oauth_token_rate_limited_exhausted attempts=%s retry_in=%ss",
+                max_attempts,
+                round(retry_delay, 2),
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Bling está limitando a troca de token. Aguarde alguns segundos e tente novamente.",
+                headers={"Retry-After": str(max(1, int(round(retry_delay))))},
+            )
 
         token_response.raise_for_status()
         token_data = token_response.json()
@@ -294,6 +333,11 @@ async def bling_callback(
             bling_body,
             redirect_uri,
         )
+        if bling_status == 429:
+            raise HTTPException(
+                status_code=503,
+                detail="Bling está limitando temporariamente a autenticação. Tente novamente em instantes.",
+            )
         raise HTTPException(
             status_code=400,
             detail=f"Failed to exchange code for tokens (Bling status={bling_status}): {bling_body}",
