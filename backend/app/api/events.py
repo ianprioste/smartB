@@ -1,4 +1,5 @@
 """Sales events API: create events and view sales filtered by event products."""
+import asyncio
 from typing import Any, Dict, List
 from uuid import UUID
 import re
@@ -42,6 +43,7 @@ router = APIRouter(prefix="/events", tags=["events"])
 logger = get_logger(__name__)
 
 DEFAULT_TENANT_ID = UUID("00000000-0000-0000-0000-000000000001")
+CONTACT_EMAIL_CACHE: dict[int, str] = {}
 
 # Unified sales-order status labels used across Orders and Event Sales pages.
 # Bling situacao.valor categories: 0=Em aberto, 1=Atendido, 2=Cancelado.
@@ -172,28 +174,54 @@ def _extract_total_with_discount(primary_payload: Dict[str, Any] | None, fallbac
     return 0.0
 
 
+def _find_first_email_anywhere(node: Any) -> str | None:
+    if isinstance(node, dict):
+        preferred_keys = ("email", "emailContato", "email_contato", "e_mail")
+        for key in preferred_keys:
+            value = node.get(key)
+            text = str(value or "").strip()
+            if text and "@" in text and "." in text.split("@")[-1]:
+                return text
+
+        for value in node.values():
+            found = _find_first_email_anywhere(value)
+            if found:
+                return found
+
+    elif isinstance(node, list):
+        for item in node:
+            found = _find_first_email_anywhere(item)
+            if found:
+                return found
+
+    return None
+
+
 def _extract_customer_email(primary_payload: Dict[str, Any] | None, fallback_payload: Dict[str, Any] | None = None) -> str | None:
     for payload in (primary_payload, fallback_payload):
         if not isinstance(payload, dict):
             continue
-        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-        if not isinstance(data, dict):
-            continue
+        data = payload.get("data") if payload.get("data") is not None else payload
 
-        contato = data.get("contato") if isinstance(data.get("contato"), dict) else {}
-        cliente = data.get("cliente") if isinstance(data.get("cliente"), dict) else {}
+        if isinstance(data, dict):
+            contato = data.get("contato") if isinstance(data.get("contato"), dict) else {}
+            cliente = data.get("cliente") if isinstance(data.get("cliente"), dict) else {}
 
-        candidates = [
-            contato.get("email"),
-            cliente.get("email"),
-            data.get("email"),
-            data.get("emailContato"),
-        ]
+            candidates = [
+                contato.get("email"),
+                cliente.get("email"),
+                data.get("email"),
+                data.get("emailContato"),
+            ]
 
-        for candidate in candidates:
-            text = str(candidate or "").strip()
-            if text and "@" in text:
-                return text
+            for candidate in candidates:
+                text = str(candidate or "").strip()
+                if text and "@" in text:
+                    return text
+
+        deep_email = _find_first_email_anywhere(data)
+        if deep_email:
+            return deep_email
 
     return None
 
@@ -224,6 +252,90 @@ def _to_optional_int(value: Any) -> int | None:
             return None
 
     return None
+
+
+def _extract_contact_id(primary_payload: Dict[str, Any] | None, fallback_payload: Dict[str, Any] | None = None) -> int | None:
+    for payload in (primary_payload, fallback_payload):
+        if not isinstance(payload, dict):
+            continue
+
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        if not isinstance(data, dict):
+            continue
+
+        contato = data.get("contato") if isinstance(data.get("contato"), dict) else {}
+        candidates = [
+            contato.get("id"),
+            data.get("idContato"),
+            data.get("contatoId"),
+        ]
+        for candidate in candidates:
+            contact_id = _to_optional_int(candidate)
+            if contact_id is not None:
+                return contact_id
+
+    return None
+
+
+async def _fetch_contact_emails(client: BlingClient | None, contact_ids: set[int]) -> dict[int, str]:
+    if not client or not contact_ids:
+        return {}
+
+    cached = {cid: CONTACT_EMAIL_CACHE[cid] for cid in contact_ids if cid in CONTACT_EMAIL_CACHE and CONTACT_EMAIL_CACHE[cid]}
+    missing_ids = [cid for cid in sorted(contact_ids) if cid not in cached]
+    if not missing_ids:
+        return cached
+
+    # Conservative throttling to avoid burst token refresh/rate-limit issues.
+    semaphore = asyncio.Semaphore(1)
+
+    async def _fetch_one(contact_id: int) -> tuple[int, str | None]:
+        async with semaphore:
+            try:
+                payload = await client.get(f"/contatos/{contact_id}")
+                email = _extract_customer_email(payload, payload) or _find_first_email_anywhere(payload)
+                return contact_id, (email.strip() if isinstance(email, str) else None)
+            except Exception as exc:
+                logger.warning("event_sales_contact_email_fetch_failed contact_id=%s error=%s", str(contact_id), str(exc))
+                return contact_id, None
+
+    # Keep each request bounded: fetch at most 20 unknown contacts and reuse cache on next calls.
+    limited_ids = missing_ids[:20]
+    results = await asyncio.gather(*[_fetch_one(contact_id) for contact_id in limited_ids])
+    resolved = {contact_id: email for contact_id, email in results if email}
+    CONTACT_EMAIL_CACHE.update(resolved)
+    return {**cached, **resolved}
+
+
+async def _enrich_orders_email_from_contacts(
+    client: BlingClient | None,
+    orders: List[EventOrderResponse],
+    order_contact_ids: dict[Any, int],
+) -> None:
+    missing_contact_ids = {
+        int(contact_id)
+        for order in orders
+        if not str(order.email or "").strip()
+        for key, contact_id in order_contact_ids.items()
+        if str(order.id or order.numero or "") == str(key)
+    }
+    if not missing_contact_ids:
+        return
+
+    email_map = await _fetch_contact_emails(client, missing_contact_ids)
+    if not email_map:
+        return
+
+    for order in orders:
+        if str(order.email or "").strip():
+            continue
+        key = order.id or order.numero
+        contact_id = order_contact_ids.get(key)
+        if contact_id is None:
+            continue
+        resolved = email_map.get(int(contact_id))
+        if resolved:
+            order.email = resolved
 
 
 def _normalize_status_label(text: Any) -> str:
@@ -762,7 +874,7 @@ async def get_event(event_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/{event_id}/sales", response_model=EventSalesResponse)
-async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
+async def get_event_sales(event_id: UUID, enrich_emails: bool = False, db: Session = Depends(get_db)):
     event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
     if not event:
         raise HTTPException(status_code=404, detail="Evento não encontrado")
@@ -781,6 +893,8 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
         if pid is not None
     }
 
+    client = _make_client(db)
+
     # Primary source: local persistent DB snapshots.
     start_dt = datetime.combine(event.start_date, time.min)
     end_dt = datetime.combine(event.end_date, time.max)
@@ -797,6 +911,7 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
         )
 
         filtered_order_map: dict[Any, EventOrderResponse] = {}
+        order_contact_ids: dict[Any, int] = {}
         matched_items_count = 0
         total_matched = 0.0
 
@@ -845,6 +960,9 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
             total_matched += order_total_matched
 
             key = row.bling_order_id or row.numero
+            contact_id = _extract_contact_id(detail_payload, order_payload)
+            if contact_id is not None:
+                order_contact_ids[key] = contact_id
             # Priorize status persistido localmente no snapshot quando disponível.
             situacao_text = _status_to_text(row.status_name, row.status_id)
 
@@ -857,7 +975,7 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
                 numero_loja=row.numero_loja,
                 data=row.order_date.isoformat() if row.order_date else None,
                 cliente=row.customer_name or "—",
-                email=_extract_customer_email(detail_payload, order_payload),
+                email=row.customer_email or _extract_customer_email(detail_payload, order_payload),
                 situacao=situacao_text,
                 total_order=total_order_final,
                 total_matched=order_total_matched,
@@ -866,6 +984,8 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
             )
 
         filtered_orders = list(filtered_order_map.values())
+        if enrich_emails:
+            await _enrich_orders_email_from_contacts(client, filtered_orders, order_contact_ids)
         _inject_production_data(db, event_id, filtered_orders)
         try:
             _inject_event_tags(db, event_id, filtered_orders)
@@ -890,7 +1010,6 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
             orders=filtered_orders,
         )
 
-    client = _make_client(db)
     if not client:
         raise HTTPException(status_code=401, detail="Bling não autenticado")
 
@@ -914,6 +1033,7 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
         matched_items_count = 0
         total_matched = 0.0
         local_fallback_used = 0
+        order_contact_ids: dict[Any, int] = {}
 
         # Local-first strategy:
         # 1) Warm missing details once.
@@ -985,6 +1105,9 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
 
             situacao = order.get("situacao") if isinstance(order.get("situacao"), dict) else {}
             key = order.get("id") or order.get("numero")
+            contact_id = _extract_contact_id(detail, order)
+            if contact_id is not None:
+                order_contact_ids[key] = contact_id
             situacao_text = _status_to_text(situacao if isinstance(situacao, dict) else order.get("situacao"))
 
             if situacao_text == "Cancelado":
@@ -1005,6 +1128,8 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
             )
 
         filtered_orders = list(filtered_order_map.values())
+        if enrich_emails:
+            await _enrich_orders_email_from_contacts(client, filtered_orders, order_contact_ids)
         _inject_production_data(db, event_id, filtered_orders)
         _inject_event_tags(db, event_id, filtered_orders)
 

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import * as XLSX from 'xlsx';
 import { Layout } from '../../components/Layout';
 import { ProductionStatusBadge, ProductionNotesInput } from '../../components/ProductionControls';
 import useIsMobile from '../../hooks/useIsMobile';
@@ -112,6 +113,13 @@ function downloadCsvFile(filename, content) {
   anchor.click();
   document.body.removeChild(anchor);
   window.URL.revokeObjectURL(url);
+}
+
+function downloadXlsxFile(filename, headers, rows) {
+  const worksheet = XLSX.utils.json_to_sheet(rows, { header: headers });
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Pedidos Campanha');
+  XLSX.writeFile(workbook, filename);
 }
 
 function StatusBadge({ text }) {
@@ -246,6 +254,7 @@ export function EventSalesPage() {
   const [selectedItemStatusFilter, setSelectedItemStatusFilter] = useState(null);
   const [availableTags, setAvailableTags] = useState([]);
   const [selectedTagFilter, setSelectedTagFilter] = useState('');
+  const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
   const [draftTagsByOrder, setDraftTagsByOrder] = useState({});
   const [tagSavingByOrder, setTagSavingByOrder] = useState({});
   const [tagErrorByOrder, setTagErrorByOrder] = useState({});
@@ -253,6 +262,7 @@ export function EventSalesPage() {
   const suppressDeltaUntilRef = useRef(0);
   const initialScrollYRef = useRef(savedUiState?.scrollY || 0);
   const hasRestoredScrollRef = useRef(false);
+  const exportMenuRef = useRef(null);
 
   const markLocalMutation = useCallback(() => {
     suppressDeltaUntilRef.current = Date.now() + 4000;
@@ -635,6 +645,19 @@ export function EventSalesPage() {
     }
   }, [loadEventTags, loadSales, selectedEventId]);
 
+  useEffect(() => {
+    if (!isExportMenuOpen) return undefined;
+
+    const handleOutsideClick = (event) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(event.target)) {
+        setIsExportMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, [isExportMenuOpen]);
+
   useVersionPolling({
     enabled: Boolean(selectedEventId) && !loadingSales,
     pollKey: selectedEventId ? `event_sales:${selectedEventId}` : 'event_sales:none',
@@ -869,16 +892,39 @@ export function EventSalesPage() {
     { key: 'blocked', label: 'Itens com Impedimentos', value: itemStatusSummary.blocked },
   ];
 
-  const exportCampaignOrders = useCallback((excelFriendly = false) => {
-    const orders = Array.isArray(filteredOrdersByItemStatus) ? filteredOrdersByItemStatus : [];
-    if (orders.length === 0) {
+  const exportCampaignOrders = useCallback(async (format = 'csv') => {
+    if (!selectedEventId) return;
+    const baseOrders = Array.isArray(filteredOrdersByItemStatus) ? filteredOrdersByItemStatus : [];
+    if (baseOrders.length === 0) {
       window.alert('Não há pedidos para exportar com os filtros atuais.');
       return;
     }
 
+    // Fetch fresh data with email enrichment for export only
+    let enrichedMap = {};
+    try {
+      const resp = await fetch(`${API_BASE}/events/${selectedEventId}/sales?enrich_emails=true`);
+      if (resp.ok) {
+        const enrichedData = await resp.json();
+        const enrichedOrders = enrichedData?.orders || [];
+        enrichedOrders.forEach((o) => {
+          const key = String(o.id || o.numero || '');
+          if (key) enrichedMap[key] = o.email || '';
+        });
+      }
+    } catch {
+      // Non-fatal: export proceeds without enriched emails
+    }
+
+    const orders = baseOrders.map((o) => {
+      const key = String(o.id || o.numero || '');
+      const email = enrichedMap[key] || o.email || '';
+      return { ...o, email };
+    });
+
     const currentEvent = events.find((event) => String(event.id) === String(selectedEventId));
     const eventName = currentEvent?.name || salesData?.event?.name || 'campanha';
-    const delimiter = excelFriendly ? ';' : ',';
+    const delimiter = ',';
 
     const headers = [
       'Campanha',
@@ -898,12 +944,12 @@ export function EventSalesPage() {
       'Valor Unitario Pago',
       'Total Pago Item',
       'Status Producao',
-      'Notas Producao',
       'Resumo Producao',
       'Total Pedido',
       'Total Itens Campanha no Pedido',
     ];
 
+    const rowsForExport = [];
     const lines = [headers.map((header) => toCsvCell(header, delimiter)).join(delimiter)];
 
     orders.forEach((order) => {
@@ -931,21 +977,28 @@ export function EventSalesPage() {
           'Valor Unitario Pago': item.paid_unit_price ?? 0,
           'Total Pago Item': item.paid_total ?? 0,
           'Status Producao': item.production_status || 'Pendente',
-          'Notas Producao': item.notes || '',
           'Resumo Producao': order.production_summary || '',
           'Total Pedido': order.total_order ?? 0,
           'Total Itens Campanha no Pedido': order.total_matched ?? 0,
         };
+        rowsForExport.push(row);
         lines.push(headers.map((header) => toCsvCell(row[header], delimiter)).join(delimiter));
       });
     });
 
     const dateStamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
     const baseName = slugifyText(eventName) || 'campanha';
-    const suffix = excelFriendly ? 'excel' : 'csv';
-    const filename = `pedidos-campanha-${baseName}-${suffix}-${dateStamp}.csv`;
+    if (format === 'xlsx') {
+      const filename = `pedidos-campanha-${baseName}-excel-${dateStamp}.xlsx`;
+      downloadXlsxFile(filename, headers, rowsForExport);
+      return;
+    }
+
+    const filename = `pedidos-campanha-${baseName}-csv-${dateStamp}.csv`;
     downloadCsvFile(filename, lines.join('\n'));
   }, [events, filteredOrdersByItemStatus, salesData?.event?.name, selectedEventId]);
+
+  const canExport = Boolean(selectedEventId) && !loadingSales && filteredOrdersByItemStatus.length > 0;
 
   return (
     <Layout>
@@ -959,22 +1012,73 @@ export function EventSalesPage() {
             <button className="btn-secondary" disabled={!selectedEventId || loadingSales} onClick={() => loadSales(selectedEventId)}>
               {loadingSales ? 'Atualizando...' : 'Atualizar'}
             </button>
-            <button
-              className="btn-secondary"
-              disabled={!selectedEventId || loadingSales || filteredOrdersByItemStatus.length === 0}
-              onClick={() => exportCampaignOrders(false)}
-              title="Exporta em CSV padrão"
-            >
-              Exportar CSV
-            </button>
-            <button
-              className="btn-secondary"
-              disabled={!selectedEventId || loadingSales || filteredOrdersByItemStatus.length === 0}
-              onClick={() => exportCampaignOrders(true)}
-              title="Exporta em formato compatível com Excel"
-            >
-              Exportar Excel
-            </button>
+            <div ref={exportMenuRef} style={{ position: 'relative' }}>
+              <button
+                className="btn-secondary"
+                disabled={!canExport}
+                onClick={() => setIsExportMenuOpen((prev) => !prev)}
+                title="Exportar pedidos filtrados"
+              >
+                Exportar ▼
+              </button>
+              {isExportMenuOpen && canExport && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    right: 0,
+                    top: 'calc(100% + 6px)',
+                    minWidth: 180,
+                    background: '#ffffff',
+                    border: '1px solid #cbd5e1',
+                    borderRadius: 10,
+                    boxShadow: '0 10px 24px rgba(15, 23, 42, 0.15)',
+                    zIndex: 20,
+                    padding: 6,
+                    display: 'grid',
+                    gap: 4,
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      exportCampaignOrders('csv');
+                      setIsExportMenuOpen(false);
+                    }}
+                    style={{
+                      border: 'none',
+                      background: '#ffffff',
+                      textAlign: 'left',
+                      padding: '8px 10px',
+                      borderRadius: 8,
+                      cursor: 'pointer',
+                      color: '#1f2937',
+                      fontSize: 13,
+                    }}
+                  >
+                    CSV (.csv)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      exportCampaignOrders('xlsx');
+                      setIsExportMenuOpen(false);
+                    }}
+                    style={{
+                      border: 'none',
+                      background: '#ffffff',
+                      textAlign: 'left',
+                      padding: '8px 10px',
+                      borderRadius: 8,
+                      cursor: 'pointer',
+                      color: '#1f2937',
+                      fontSize: 13,
+                    }}
+                  >
+                    Excel (.xlsx)
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
