@@ -1456,12 +1456,6 @@ async def _check_and_update_bling_orders(db: Session, event, event_id: UUID):
                 snapshot.status_name = target_name
                 db.commit()
             logger.info("bling_order_status_updated order_id=%s new_status_id=%s", row.bling_order_id, target_id)
-
-            # Fire-and-forget: mirror to Nuvemshop.
-            from app.services.nuvemshop_sync import sync_order_status_to_nuvemshop
-            _ns_num = snapshot.numero_loja if snapshot else None
-            await sync_order_status_to_nuvemshop(_ns_num, target_name)
-
         except Exception as exc:
             if snapshot:
                 snapshot.status_name = target_name
@@ -1530,10 +1524,5 @@ async def update_order_status(
     SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, scope_event_sales(event_id))
     SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
     db.commit()
-
-    # Fire-and-forget: mirror status to Nuvemshop.
-    from app.services.nuvemshop_sync import sync_order_status_to_nuvemshop
-    _ns_numero = snapshot.numero_loja if snapshot else None
-    await sync_order_status_to_nuvemshop(_ns_numero, body.situacao)
 
     return {"ok": True, "order_id": order_id, "new_status": body.situacao, "local_only": local_only}
