@@ -122,7 +122,7 @@ def _inject_production_data(db: Session, event_id: UUID, filtered_orders: list) 
 
 
 def _inject_event_tags(db: Session, event_id: UUID, filtered_orders: List[EventOrderResponse]) -> None:
-    order_ids = [int(order.id) for order in filtered_orders if order.id is not None]
+    order_ids = [oid for oid in (_to_optional_int(order.id) for order in filtered_orders) if oid is not None]
     tag_map = OrderTagRepository.get_assignments_map(
         db=db,
         tenant_id=DEFAULT_TENANT_ID,
@@ -131,7 +131,8 @@ def _inject_event_tags(db: Session, event_id: UUID, filtered_orders: List[EventO
         bling_order_ids=order_ids,
     )
     for order in filtered_orders:
-        tags = tag_map.get(int(order.id), []) if order.id is not None else []
+        oid = _to_optional_int(order.id)
+        tags = tag_map.get(oid, []) if oid is not None else []
         order.tags = tags
         order.tag = tags[0] if tags else None
 
@@ -386,9 +387,9 @@ async def _expand_selected_products_for_sales(
     expanded = await _expand_products_with_children(db, base_products)
     skus = {_normalize_sku(p.get("sku")) for p in expanded if _normalize_sku(p.get("sku"))}
     ids = {
-        int(p.get("bling_product_id"))
-        for p in expanded
-        if p.get("bling_product_id") is not None
+        pid
+        for pid in (_to_optional_int(p.get("bling_product_id")) for p in expanded)
+        if pid is not None
     }
     return skus, ids
 
@@ -802,75 +803,84 @@ async def get_event_sales(event_id: UUID, enrich_emails: bool = Query(default=Fa
         total_matched = 0.0
 
         for row in snapshot_rows:
-            detail_payload = row.raw_detail if isinstance(row.raw_detail, dict) else {}
-            order_payload = row.raw_order if isinstance(row.raw_order, dict) else {}
+            try:
+                detail_payload = row.raw_detail if isinstance(row.raw_detail, dict) else {}
+                order_payload = row.raw_order if isinstance(row.raw_order, dict) else {}
 
-            order_items = _extract_order_items(detail_payload)
-            if not order_items:
-                order_items = _extract_order_items(order_payload)
+                order_items = _extract_order_items(detail_payload)
+                if not order_items:
+                    order_items = _extract_order_items(order_payload)
 
-            matched = _match_event_items(order_items, selected_skus_canonical, selected_product_ids)
-            if not matched:
-                continue
+                matched = _match_event_items(order_items, selected_skus_canonical, selected_product_ids)
+                if not matched:
+                    continue
 
-            # Calculate value with discount consideration
-            total_items_sum = sum(item.get("total", 0) for item in order_items)
-            total_matched_items_sum = sum(item.get("total", 0) for item in matched)
-            total_order_final = _extract_total_with_discount(detail_payload, order_payload) or _to_float(row.total_value)
-            
-            # Calculate the overall discount factor to apply to each matched item
-            discount_factor = (total_order_final / total_items_sum) if total_items_sum > 0 else 1.0
-            
-            # Create matched_items with paid values calculated
-            matched_items = []
-            for item in matched:
-                paid_total = _to_float(item.get("total", 0)) * discount_factor
-                paid_unit_price = _to_float(item.get("unit_price", 0)) * discount_factor
-                matched_items.append(EventMatchedItemResponse(
-                    sku=item.get("sku", ""),
-                    product_name=item.get("product_name", ""),
-                    quantity=_to_float(item.get("quantity", 0)),
-                    unit_price=_to_float(item.get("unit_price", 0)),
-                    total=_to_float(item.get("total", 0)),
-                    paid_unit_price=paid_unit_price,
-                    paid_total=paid_total,
-                ))
-            
-            order_total_matched = _calculate_proportional_value(
-                total_matched_items_sum,
-                total_items_sum,
-                total_order_final
-            )
+                # Calculate value with discount consideration
+                total_items_sum = sum(item.get("total", 0) for item in order_items)
+                total_matched_items_sum = sum(item.get("total", 0) for item in matched)
+                total_order_final = _extract_total_with_discount(detail_payload, order_payload) or _to_float(row.total_value)
+                
+                # Calculate the overall discount factor to apply to each matched item
+                discount_factor = (total_order_final / total_items_sum) if total_items_sum > 0 else 1.0
+                
+                # Create matched_items with paid values calculated
+                matched_items = []
+                for item in matched:
+                    paid_total = _to_float(item.get("total", 0)) * discount_factor
+                    paid_unit_price = _to_float(item.get("unit_price", 0)) * discount_factor
+                    matched_items.append(EventMatchedItemResponse(
+                        sku=item.get("sku", ""),
+                        product_name=item.get("product_name", ""),
+                        quantity=_to_float(item.get("quantity", 0)),
+                        unit_price=_to_float(item.get("unit_price", 0)),
+                        total=_to_float(item.get("total", 0)),
+                        paid_unit_price=paid_unit_price,
+                        paid_total=paid_total,
+                    ))
+                
+                order_total_matched = _calculate_proportional_value(
+                    total_matched_items_sum,
+                    total_items_sum,
+                    total_order_final
+                )
 
-            matched_items_count += len(matched_items)
-            total_matched += order_total_matched
+                matched_items_count += len(matched_items)
+                total_matched += order_total_matched
 
-            key = row.bling_order_id or row.numero
-            # Priorize status persistido localmente no snapshot quando disponível.
-            situacao_text = _status_to_text(row.status_name, row.status_id)
+                key = row.bling_order_id or row.numero
+                # Priorize status persistido localmente no snapshot quando disponível.
+                situacao_text = _status_to_text(row.status_name, row.status_id)
 
-            if situacao_text == "Cancelado":
-                continue
+                if situacao_text == "Cancelado":
+                    continue
 
-            filtered_order_map[key] = EventOrderResponse(
-                id=_to_optional_int(row.bling_order_id),
-                numero=row.numero,
-                numero_loja=row.numero_loja,
-                data=row.order_date.isoformat() if row.order_date else None,
-                cliente=row.customer_name or "—",
-                email=row.customer_email or _extract_customer_email(detail_payload, order_payload),
-                situacao=situacao_text,
-                total_order=total_order_final,
-                total_matched=order_total_matched,
-                has_frete=_has_frete(detail_payload, order_payload),
-                matched_items=matched_items,
-            )
-            parsed_contact_id = _to_optional_int(row.customer_contact_id)
-            if parsed_contact_id is not None:
-                order_contact_id_map[str(key)] = parsed_contact_id
+                filtered_order_map[key] = EventOrderResponse(
+                    id=_to_optional_int(row.bling_order_id),
+                    numero=row.numero,
+                    numero_loja=row.numero_loja,
+                    data=row.order_date.isoformat() if row.order_date else None,
+                    cliente=row.customer_name or "—",
+                    email=row.customer_email or _extract_customer_email(detail_payload, order_payload),
+                    situacao=situacao_text,
+                    total_order=total_order_final,
+                    total_matched=order_total_matched,
+                    has_frete=_has_frete(detail_payload, order_payload),
+                    matched_items=matched_items,
+                )
+                parsed_contact_id = _to_optional_int(row.customer_contact_id)
+                if parsed_contact_id is not None:
+                    order_contact_id_map[str(key)] = parsed_contact_id
+            except Exception as exc:
+                logger.warning(
+                    "event_sales_row_processing_failed event_id=%s bling_order_id=%s error=%s",
+                    str(event_id), getattr(row, 'bling_order_id', '?'), str(exc),
+                )
 
         filtered_orders = list(filtered_order_map.values())
-        _inject_production_data(db, event_id, filtered_orders)
+        try:
+            _inject_production_data(db, event_id, filtered_orders)
+        except Exception as exc:
+            logger.warning("event_production_data_injection_failed event_id=%s error=%s", str(event_id), str(exc))
         try:
             _inject_event_tags(db, event_id, filtered_orders)
         except Exception as exc:
