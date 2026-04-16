@@ -86,6 +86,34 @@ function formatDate(value) {
   return new Date(value).toLocaleDateString('pt-BR');
 }
 
+function toCsvCell(value, delimiter) {
+  const normalized = value == null ? '' : String(value);
+  const escaped = normalized.replace(/"/g, '""');
+  const needsQuotes = escaped.includes('"') || escaped.includes('\n') || escaped.includes('\r') || escaped.includes(delimiter);
+  return needsQuotes ? `"${escaped}"` : escaped;
+}
+
+function slugifyText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase();
+}
+
+function downloadCsvFile(filename, content) {
+  const blob = new Blob([`\uFEFF${content}`], { type: 'text/csv;charset=utf-8;' });
+  const url = window.URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  window.URL.revokeObjectURL(url);
+}
+
 function StatusBadge({ text }) {
   const lower = (text || '').toLowerCase();
   const cls = lower.includes('atendido') ? 'badge badge--green' : 'badge badge--yellow';
@@ -841,6 +869,84 @@ export function EventSalesPage() {
     { key: 'blocked', label: 'Itens com Impedimentos', value: itemStatusSummary.blocked },
   ];
 
+  const exportCampaignOrders = useCallback((excelFriendly = false) => {
+    const orders = Array.isArray(filteredOrdersByItemStatus) ? filteredOrdersByItemStatus : [];
+    if (orders.length === 0) {
+      window.alert('Não há pedidos para exportar com os filtros atuais.');
+      return;
+    }
+
+    const currentEvent = events.find((event) => String(event.id) === String(selectedEventId));
+    const eventName = currentEvent?.name || salesData?.event?.name || 'campanha';
+    const delimiter = excelFriendly ? ';' : ',';
+
+    const headers = [
+      'Campanha',
+      'Pedido Bling',
+      'Pedido Nuvemshop',
+      'Data Pedido',
+      'Cliente',
+      'Email Cliente',
+      'Situacao Pedido',
+      'Tag(s)',
+      'Tipo Entrega',
+      'SKU',
+      'Produto',
+      'Quantidade',
+      'Valor Unitario Original',
+      'Total Original Item',
+      'Valor Unitario Pago',
+      'Total Pago Item',
+      'Status Producao',
+      'Notas Producao',
+      'Resumo Producao',
+      'Total Pedido',
+      'Total Itens Campanha no Pedido',
+    ];
+
+    const lines = [headers.map((header) => toCsvCell(header, delimiter)).join(delimiter)];
+
+    orders.forEach((order) => {
+      const items = Array.isArray(order.matched_items) ? order.matched_items : [];
+      const tags = Array.isArray(order.tags)
+        ? order.tags.filter(Boolean).join(' | ')
+        : (order.tag || '');
+
+      items.forEach((item) => {
+        const row = {
+          'Campanha': eventName,
+          'Pedido Bling': order.numero || order.id || '',
+          'Pedido Nuvemshop': order.numero_loja || '',
+          'Data Pedido': formatDate(order.data),
+          'Cliente': order.cliente || '',
+          'Email Cliente': order.email || '',
+          'Situacao Pedido': order.situacao || '',
+          'Tag(s)': tags,
+          'Tipo Entrega': order.has_frete ? 'Envio' : 'Retirada',
+          'SKU': item.sku || '',
+          'Produto': item.product_name || '',
+          'Quantidade': item.quantity ?? 0,
+          'Valor Unitario Original': item.unit_price ?? 0,
+          'Total Original Item': item.total ?? 0,
+          'Valor Unitario Pago': item.paid_unit_price ?? 0,
+          'Total Pago Item': item.paid_total ?? 0,
+          'Status Producao': item.production_status || 'Pendente',
+          'Notas Producao': item.notes || '',
+          'Resumo Producao': order.production_summary || '',
+          'Total Pedido': order.total_order ?? 0,
+          'Total Itens Campanha no Pedido': order.total_matched ?? 0,
+        };
+        lines.push(headers.map((header) => toCsvCell(row[header], delimiter)).join(delimiter));
+      });
+    });
+
+    const dateStamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    const baseName = slugifyText(eventName) || 'campanha';
+    const suffix = excelFriendly ? 'excel' : 'csv';
+    const filename = `pedidos-campanha-${baseName}-${suffix}-${dateStamp}.csv`;
+    downloadCsvFile(filename, lines.join('\n'));
+  }, [events, filteredOrdersByItemStatus, salesData?.event?.name, selectedEventId]);
+
   return (
     <Layout>
       <div className="page-inner">
@@ -849,9 +955,27 @@ export function EventSalesPage() {
             <h2>Pedidos por Campanha</h2>
             <p className="page-subtitle">Pedidos de venda filtrados pelos produtos selecionados na campanha</p>
           </div>
-          <button className="btn-secondary" disabled={!selectedEventId || loadingSales} onClick={() => loadSales(selectedEventId)}>
-            {loadingSales ? 'Atualizando...' : 'Atualizar'}
-          </button>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button className="btn-secondary" disabled={!selectedEventId || loadingSales} onClick={() => loadSales(selectedEventId)}>
+              {loadingSales ? 'Atualizando...' : 'Atualizar'}
+            </button>
+            <button
+              className="btn-secondary"
+              disabled={!selectedEventId || loadingSales || filteredOrdersByItemStatus.length === 0}
+              onClick={() => exportCampaignOrders(false)}
+              title="Exporta em CSV padrão"
+            >
+              Exportar CSV
+            </button>
+            <button
+              className="btn-secondary"
+              disabled={!selectedEventId || loadingSales || filteredOrdersByItemStatus.length === 0}
+              onClick={() => exportCampaignOrders(true)}
+              title="Exporta em formato compatível com Excel"
+            >
+              Exportar Excel
+            </button>
+          </div>
         </div>
 
         {error && <div className="error">{error}</div>}

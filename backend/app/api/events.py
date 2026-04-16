@@ -172,6 +172,32 @@ def _extract_total_with_discount(primary_payload: Dict[str, Any] | None, fallbac
     return 0.0
 
 
+def _extract_customer_email(primary_payload: Dict[str, Any] | None, fallback_payload: Dict[str, Any] | None = None) -> str | None:
+    for payload in (primary_payload, fallback_payload):
+        if not isinstance(payload, dict):
+            continue
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        if not isinstance(data, dict):
+            continue
+
+        contato = data.get("contato") if isinstance(data.get("contato"), dict) else {}
+        cliente = data.get("cliente") if isinstance(data.get("cliente"), dict) else {}
+
+        candidates = [
+            contato.get("email"),
+            cliente.get("email"),
+            data.get("email"),
+            data.get("emailContato"),
+        ]
+
+        for candidate in candidates:
+            text = str(candidate or "").strip()
+            if text and "@" in text:
+                return text
+
+    return None
+
+
 def _to_optional_int(value: Any) -> int | None:
     """Best-effort integer conversion for inconsistent Bling payloads."""
     if value is None or isinstance(value, bool):
@@ -831,6 +857,7 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
                 numero_loja=row.numero_loja,
                 data=row.order_date.isoformat() if row.order_date else None,
                 cliente=row.customer_name or "—",
+                email=_extract_customer_email(detail_payload, order_payload),
                 situacao=situacao_text,
                 total_order=total_order_final,
                 total_matched=order_total_matched,
@@ -969,6 +996,7 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
                 numero_loja=order.get("numeroLoja"),
                 data=order.get("data"),
                 cliente=(order.get("contato", {}) or {}).get("nome") or order.get("nomeCliente") or "—",
+                email=_extract_customer_email(detail, order),
                 situacao=situacao_text,
                 total_order=total_order_final,
                 total_matched=order_total_matched,

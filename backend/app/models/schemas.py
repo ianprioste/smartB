@@ -585,6 +585,7 @@ class EventOrderResponse(BaseModel):
     numero_loja: Optional[str] = None
     data: Optional[str] = None
     cliente: str = "—"
+    email: Optional[str] = None
     situacao: str = "—"
     total_order: float = 0.0
     total_matched: float = 0.0
