@@ -865,8 +865,9 @@ async def get_event_sales(event_id: UUID, enrich_emails: bool = Query(default=Fa
                 has_frete=_has_frete(detail_payload, order_payload),
                 matched_items=matched_items,
             )
-            if row.customer_contact_id is not None:
-                order_contact_id_map[str(key)] = int(row.customer_contact_id)
+            parsed_contact_id = _to_optional_int(row.customer_contact_id)
+            if parsed_contact_id is not None:
+                order_contact_id_map[str(key)] = parsed_contact_id
 
         filtered_orders = list(filtered_order_map.values())
         _inject_production_data(db, event_id, filtered_orders)
