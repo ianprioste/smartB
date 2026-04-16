@@ -877,7 +877,7 @@ async def get_event_sales(event_id: UUID, enrich_emails: bool = Query(default=Fa
             client = _make_client(db)
             if client:
                 missing = [o for o in filtered_orders if not o.email]
-                contact_ids = {}
+                contact_ids: dict[int | None, int] = {}
                 for o in missing:
                     row_match = next(
                         (r for r in snapshot_rows if r.bling_order_id == o.id),
@@ -886,6 +886,7 @@ async def get_event_sales(event_id: UUID, enrich_emails: bool = Query(default=Fa
                     if row_match and row_match.customer_contact_id:
                         contact_ids[o.id] = row_match.customer_contact_id
                 seen_contacts: dict[int, str] = {}
+                newly_resolved: dict[int, str] = {}
                 for order in missing:
                     cid = contact_ids.get(order.id)
                     if not cid:
@@ -894,23 +895,33 @@ async def get_event_sales(event_id: UUID, enrich_emails: bool = Query(default=Fa
                         order.email = seen_contacts[cid]
                         continue
                     try:
-                        resp = await client.get(f"/contatos/{cid}")
+                        payload = await client.get(f"/contatos/{cid}")
+                        data = payload.get("data") or {}
+                        contato = data.get("contato") if isinstance(data.get("contato"), dict) else {}
                         email = (
-                            (resp.get("data") or {}).get("email")
-                            or (resp.get("data") or {}).get("emailContato")
-                        ) or None
+                            contato.get("email")
+                            or data.get("email")
+                            or data.get("emailContato")
+                        )
+                        email = str(email or "").strip() or None
                         if email:
                             seen_contacts[cid] = email
+                            newly_resolved[cid] = email
                             order.email = email
-                            # Persist for future requests (no-await: fire and forget)
-                            OrderSnapshotRepository.apply_customer_emails_by_contact_id(
-                                db, str(DEFAULT_TENANT_ID), {cid: email}
-                            )
                     except Exception as exc:
                         logger.warning(
                             "enrich_email_failed order_id=%s contact_id=%s error=%s",
                             order.id, cid, str(exc)
                         )
+                if newly_resolved:
+                    try:
+                        OrderSnapshotRepository.apply_customer_emails_by_contact_id(
+                            db, DEFAULT_TENANT_ID, newly_resolved
+                        )
+                        db.commit()
+                    except Exception as exc:
+                        logger.warning("enrich_email_persist_failed error=%s", str(exc))
+                        db.rollback()
 
         logger.info(
             "event_sales_local_db_done event_id=%s matched_orders=%s matched_items=%s total_matched=%.2f",
