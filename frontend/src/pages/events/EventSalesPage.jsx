@@ -651,7 +651,7 @@ export function EventSalesPage() {
 
   useEffect(() => {
     if (selectedEventId) {
-      loadSales(selectedEventId);
+      loadSales(selectedEventId, true);
       loadEventTags(selectedEventId);
     }
   }, [loadEventTags, loadSales, selectedEventId]);
