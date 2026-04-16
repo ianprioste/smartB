@@ -1042,6 +1042,9 @@ export function EventSalesPage() {
                       padding: '10px 12px',
                       border: 'none',
                       background: '#fff',
+                      color: '#0f172a',
+                      fontSize: 14,
+                      fontWeight: 600,
                       cursor: 'pointer',
                     }}
                   >
@@ -1057,6 +1060,9 @@ export function EventSalesPage() {
                       border: 'none',
                       borderTop: '1px solid #f1f5f9',
                       background: '#fff',
+                      color: '#0f172a',
+                      fontSize: 14,
+                      fontWeight: 600,
                       cursor: 'pointer',
                     }}
                   >

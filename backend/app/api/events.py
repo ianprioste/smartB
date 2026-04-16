@@ -877,23 +877,29 @@ async def get_event_sales(event_id: UUID, enrich_emails: bool = Query(default=Fa
             client = _make_client(db)
             if client:
                 missing = [o for o in filtered_orders if not o.email]
-                contact_ids: dict[int | None, int] = {}
+                rows_by_id = {
+                    str(r.bling_order_id): r
+                    for r in snapshot_rows
+                    if r.bling_order_id is not None
+                }
+                rows_by_numero = {
+                    str(r.numero): r
+                    for r in snapshot_rows
+                    if r.numero is not None
+                }
+                contact_ids: dict[str, int] = {}
                 for o in missing:
-                    order_key = str(o.id) if o.id is not None else None
-                    row_match = next(
-                        (
-                            r
-                            for r in snapshot_rows
-                            if order_key is not None and str(r.bling_order_id) == order_key
-                        ),
-                        None,
-                    )
+                    order_key = str(o.id) if o.id is not None else ""
+                    numero_key = str(o.numero) if o.numero is not None else ""
+                    row_match = rows_by_id.get(order_key) or rows_by_numero.get(numero_key)
                     if row_match and row_match.customer_contact_id:
-                        contact_ids[o.id] = row_match.customer_contact_id
+                        contact_ids[f"{order_key}|{numero_key}"] = row_match.customer_contact_id
                 seen_contacts: dict[int, str] = {}
                 newly_resolved: dict[int, str] = {}
                 for order in missing:
-                    cid = contact_ids.get(order.id)
+                    order_key = str(order.id) if order.id is not None else ""
+                    numero_key = str(order.numero) if order.numero is not None else ""
+                    cid = contact_ids.get(f"{order_key}|{numero_key}")
                     if not cid:
                         continue
                     if cid in seen_contacts:
