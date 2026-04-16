@@ -15,7 +15,7 @@ from app.infra.logging import get_logger
 from app.domain.order_sync import sync_orders
 from app.domain.bling_situacoes import get_bling_status_ids
 from app.repositories.bling_token_repo import BlingTokenRepository
-from app.repositories.order_snapshot_repo import OrderSnapshotRepository, parse_progress_from_sync_message
+from app.repositories.order_snapshot_repo import OrderSnapshotRepository, parse_progress_from_sync_message, _try_parse_datetime
 from app.repositories.item_production_note_repo import ItemProductionNoteRepository
 from app.repositories.order_tag_repo import OrderTagRepository, OrderTagSchemaError
 from app.repositories.sales_event_repo import SalesEventRepository
@@ -495,8 +495,8 @@ def _inject_global_tags(db: Session, orders: List[Dict[str, Any]]) -> None:
         logger.warning("orders_global_tags_injection_failed error=%s", str(exc))
         tag_map = {}
     for order in orders:
-        oid = order.get("id")
-        tags = tag_map.get(int(oid), []) if oid is not None else []
+        oid = _to_optional_int(order.get("id"))
+        tags = tag_map.get(oid, []) if oid is not None else []
         order["tags"] = tags
         order["tag"] = tags[0] if tags else None
 
@@ -560,8 +560,16 @@ async def list_orders(
     tag: str = Query("", description="Filter by exact global tag name"),
 ):
     """List orders from local persistent snapshot with search and status filter."""
-    campaign_order_ids = ItemProductionNoteRepository.list_campaign_order_ids(db, DEFAULT_TENANT_ID)
-    campaign_filters = _build_active_campaign_filters(db)
+    try:
+        campaign_order_ids = ItemProductionNoteRepository.list_campaign_order_ids(db, DEFAULT_TENANT_ID)
+    except Exception as exc:
+        logger.warning("orders.list_campaign_order_ids_failed error=%s", str(exc))
+        campaign_order_ids = set()
+    try:
+        campaign_filters = _build_active_campaign_filters(db)
+    except Exception as exc:
+        logger.warning("orders.build_campaign_filters_failed error=%s", str(exc))
+        campaign_filters = []
     client = _make_client(db)
     snapshot_repo_available = True
     snapshot_count = 0
@@ -642,7 +650,10 @@ async def list_orders(
         start = (page - 1) * limit
         end = start + limit
         page_data = formatted[start:end]
-        _inject_global_tags(db, page_data)
+        try:
+            _inject_global_tags(db, page_data)
+        except Exception as exc:
+            logger.warning("orders.inject_global_tags_fallback_failed error=%s", str(exc))
 
         return {
             "has_bling_auth": True,
@@ -681,7 +692,12 @@ async def list_orders(
                 continue
             filtered_rows.append(row)
         rows = filtered_rows
-    formatted = [_format_snapshot_order(row) for row in rows]
+    formatted = []
+    for row in rows:
+        try:
+            formatted.append(_format_snapshot_order(row))
+        except Exception as exc:
+            logger.warning("orders.format_snapshot_order_failed bling_order_id=%s error=%s", getattr(row, 'bling_order_id', '?'), str(exc))
     if requested_labels:
         formatted = [o for o in formatted if (o.get("situacao") or "") in requested_labels]
     formatted = _filter_global_orders_by_tag(db, formatted, tag)
@@ -696,8 +712,14 @@ async def list_orders(
     end = start + limit
     page_data = formatted[start:end]
 
-    _inject_production_data_orders(db, page_data)
-    _inject_global_tags(db, page_data)
+    try:
+        _inject_production_data_orders(db, page_data)
+    except Exception as exc:
+        logger.warning("orders.inject_production_data_failed error=%s", str(exc))
+    try:
+        _inject_global_tags(db, page_data)
+    except Exception as exc:
+        logger.warning("orders.inject_global_tags_failed error=%s", str(exc))
 
     return {
         "has_bling_auth": client is not None,
