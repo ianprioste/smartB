@@ -113,13 +113,40 @@ jobs:
           PUBLIC_HOST: ${{ env.PUBLIC_HOST }}
         run: |
           set -Eeuo pipefail
+
+          # Pack all deploy secrets into a base64 blob to avoid SSH quoting issues
+          # (secrets with single quotes would break inline VAR='value' in SSH command).
+          DEPLOY_VARS_B64="$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
+            "DEPLOY_SECRET_KEY=$DEPLOY_SECRET_KEY" \
+            "DEPLOY_DATABASE_URL=$DEPLOY_DATABASE_URL" \
+            "DEPLOY_CORS_ORIGINS=$DEPLOY_CORS_ORIGINS" \
+            "DEPLOY_BLING_CLIENT_ID=$DEPLOY_BLING_CLIENT_ID" \
+            "DEPLOY_BLING_CLIENT_SECRET=$DEPLOY_BLING_CLIENT_SECRET" \
+            "DEPLOY_BLING_REDIRECT_URI=$DEPLOY_BLING_REDIRECT_URI" \
+            "DEPLOY_SMTP_HOST=$DEPLOY_SMTP_HOST" \
+            "DEPLOY_SMTP_PORT=$DEPLOY_SMTP_PORT" \
+            "DEPLOY_SMTP_USERNAME=$DEPLOY_SMTP_USERNAME" \
+            "DEPLOY_SMTP_PASSWORD=$DEPLOY_SMTP_PASSWORD" \
+            "DEPLOY_SMTP_FROM_EMAIL=$DEPLOY_SMTP_FROM_EMAIL" \
+            "DEPLOY_SMTP_FROM_NAME=$DEPLOY_SMTP_FROM_NAME" \
+            "DEPLOY_BLING_WEBHOOK_SECRET=$DEPLOY_BLING_WEBHOOK_SECRET" \
+            | base64 -w0)"
+
           ssh -i ~/.ssh/deploy_key -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-            "VPS_APP_DIR='$VPS_APP_DIR' VPS_BACKEND_SERVICE='$VPS_BACKEND_SERVICE' VPS_FRONTEND_DIR='$VPS_FRONTEND_DIR' VPS_REPO_URL='$VPS_REPO_URL' BACKEND_ENV_B64='$BACKEND_ENV_B64' GITHUB_REPOSITORY='$GITHUB_REPOSITORY' GIT_COMMIT='$GITHUB_SHA' BUILD_ID='$BUILD_ID' BUILD_TIMESTAMP='$(date -u '+%Y-%m-%dT%H:%M:%SZ')' PUBLIC_HOST='$PUBLIC_HOST' DEPLOY_SECRET_KEY='$DEPLOY_SECRET_KEY' DEPLOY_DATABASE_URL='$DEPLOY_DATABASE_URL' DEPLOY_CORS_ORIGINS='$DEPLOY_CORS_ORIGINS' DEPLOY_BLING_CLIENT_ID='$DEPLOY_BLING_CLIENT_ID' DEPLOY_BLING_CLIENT_SECRET='$DEPLOY_BLING_CLIENT_SECRET' DEPLOY_BLING_REDIRECT_URI='$DEPLOY_BLING_REDIRECT_URI' DEPLOY_SMTP_HOST='$DEPLOY_SMTP_HOST' DEPLOY_SMTP_PORT='$DEPLOY_SMTP_PORT' DEPLOY_SMTP_USERNAME='$DEPLOY_SMTP_USERNAME' DEPLOY_SMTP_PASSWORD='$DEPLOY_SMTP_PASSWORD' DEPLOY_SMTP_FROM_EMAIL='$DEPLOY_SMTP_FROM_EMAIL' DEPLOY_SMTP_FROM_NAME='$DEPLOY_SMTP_FROM_NAME' DEPLOY_BLING_WEBHOOK_SECRET='$DEPLOY_BLING_WEBHOOK_SECRET' bash -se" <<'REMOTE_SCRIPT'
+            "VPS_APP_DIR='$VPS_APP_DIR' VPS_BACKEND_SERVICE='$VPS_BACKEND_SERVICE' VPS_FRONTEND_DIR='$VPS_FRONTEND_DIR' VPS_REPO_URL='$VPS_REPO_URL' BACKEND_ENV_B64='$BACKEND_ENV_B64' GITHUB_REPOSITORY='$GITHUB_REPOSITORY' GIT_COMMIT='$GITHUB_SHA' BUILD_ID='$BUILD_ID' BUILD_TIMESTAMP='$(date -u '+%Y-%m-%dT%H:%M:%SZ')' PUBLIC_HOST='$PUBLIC_HOST' DEPLOY_VARS_B64='$DEPLOY_VARS_B64' bash -se" <<'REMOTE_SCRIPT'
           set -Eeuo pipefail
           echo "[deploy-remote] user=$(whoami) uid=$(id -u) home=$HOME"
           echo "[deploy-remote] sudo test..."
           sudo -n true 2>/dev/null || { echo "FATAL: sudo sem senha nao configurado para $(whoami)"; exit 1; }
           echo "[deploy-remote] sudo OK"
+
+          # Unpack deploy secrets from base64 blob.
+          if [ -n "${DEPLOY_VARS_B64:-}" ]; then
+            while IFS='=' read -r _key _val; do
+              [ -n "$_key" ] && export "$_key=$_val"
+            done < <(printf '%s' "$DEPLOY_VARS_B64" | base64 -d)
+          fi
+
           APP_DIR="${VPS_APP_DIR:-/opt/smartB}"
           BACKEND_SERVICE="${VPS_BACKEND_SERVICE:-smartbling-backend}"
           FRONTEND_TARGET_DIR="${VPS_FRONTEND_DIR:-/usr/share/nginx/html}"
