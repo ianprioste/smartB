@@ -853,7 +853,7 @@ async def get_event_sales(event_id: UUID, enrich_emails: bool = Query(default=Fa
                 continue
 
             filtered_order_map[key] = EventOrderResponse(
-                id=int(row.bling_order_id) if row.bling_order_id is not None else None,
+                id=_to_optional_int(row.bling_order_id),
                 numero=row.numero,
                 numero_loja=row.numero_loja,
                 data=row.order_date.isoformat() if row.order_date else None,
@@ -1268,16 +1268,17 @@ async def get_event_sync_updates(
         "server_time": datetime.utcnow().isoformat(),
         "order_status_updates": [
             {
-                "order_id": int(row.bling_order_id),
+                "order_id": _to_optional_int(row.bling_order_id),
                 "situacao": row.status_name,
                 "updated_at": row.updated_at.isoformat() if row.updated_at else None,
             }
             for row in status_rows
+            if _to_optional_int(row.bling_order_id) is not None
         ],
         "production_updates": [
             {
                 "sku": row.sku,
-                "bling_order_id": int(row.bling_order_id) if row.bling_order_id is not None else None,
+                "bling_order_id": _to_optional_int(row.bling_order_id),
                 "production_status": row.production_status,
                 "notes": row.notes,
                 "updated_at": row.updated_at.isoformat() if row.updated_at else None,

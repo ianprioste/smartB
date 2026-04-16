@@ -184,6 +184,18 @@ def _to_float(value: Any) -> float:
         return 0.0
 
 
+def _to_optional_int(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        return int(text)
+    except Exception:
+        return None
+
+
 def _requested_status_labels(status_ids: List[int]) -> set[str]:
     labels = set()
     for sid in status_ids:
@@ -471,7 +483,7 @@ def _inject_production_data_orders(db: Session, orders: List[Dict[str, Any]]) ->
 
 def _inject_global_tags(db: Session, orders: List[Dict[str, Any]]) -> None:
     try:
-        order_ids = [int(order.get("id")) for order in orders if order.get("id") is not None]
+        order_ids = [oid for oid in (_to_optional_int(order.get("id")) for order in orders) if oid is not None]
         tag_map = OrderTagRepository.get_assignments_map(
             db=db,
             tenant_id=DEFAULT_TENANT_ID,
@@ -495,7 +507,7 @@ def _filter_global_orders_by_tag(db: Session, orders: List[Dict[str, Any]], tag_
         return orders
 
     try:
-        order_ids = [int(order.get("id")) for order in orders if order.get("id") is not None]
+        order_ids = [oid for oid in (_to_optional_int(order.get("id")) for order in orders) if oid is not None]
         tag_map = OrderTagRepository.get_assignments_map(
             db=db,
             tenant_id=DEFAULT_TENANT_ID,
@@ -511,7 +523,7 @@ def _filter_global_orders_by_tag(db: Session, orders: List[Dict[str, Any]], tag_
         order
         for order in orders
         if order.get("id") is not None
-        and wanted in {(name or "").strip().casefold() for name in tag_map.get(int(order.get("id")), [])}
+        and (lambda _oid: _oid is not None and wanted in {(name or "").strip().casefold() for name in tag_map.get(_oid, [])})(_to_optional_int(order.get("id")))
     ]
 
 
@@ -525,7 +537,7 @@ def _format_snapshot_order(row) -> Dict[str, Any]:
         status_name = _resolve_status_name(raw_detail.get("data", {}).get("situacao") if isinstance(raw_detail.get("data"), dict) else None, row.status_id, row.status_name)
     
     return {
-        "id": int(row.bling_order_id) if row.bling_order_id is not None else None,
+        "id": _to_optional_int(row.bling_order_id),
         "numero": row.numero,
         "numeroLoja": row.numero_loja,
         "data": row.order_date.isoformat() if row.order_date else None,
@@ -613,7 +625,7 @@ async def list_orders(
         formatted = []
         for raw_order in filtered:
             order = _format_order(raw_order)
-            order_id = int(order.get("id") or 0)
+            order_id = _to_optional_int(order.get("id")) or 0
             order_dt = _try_parse_datetime(order.get("data"))
             if order_id in campaign_order_ids:
                 continue
@@ -659,7 +671,7 @@ async def list_orders(
     if campaign_order_ids or campaign_filters:
         filtered_rows = []
         for row in rows:
-            order_id = int(row.bling_order_id or 0)
+            order_id = _to_optional_int(row.bling_order_id) or 0
             if order_id in campaign_order_ids:
                 continue
             raw_detail = row.raw_detail if isinstance(row.raw_detail, dict) else {}
@@ -958,16 +970,17 @@ async def sync_orders_updates(since: str | None = Query(default=None), db: Sessi
         "server_time": now_local().isoformat(),
         "order_status_updates": [
             {
-                "order_id": int(row.bling_order_id),
+                "order_id": _to_optional_int(row.bling_order_id),
                 "situacao": row.status_name,
                 "updated_at": row.updated_at.isoformat() if row.updated_at else None,
             }
             for row in status_rows
+            if _to_optional_int(row.bling_order_id) is not None
         ],
         "production_updates": [
             {
                 "sku": row.sku,
-                "bling_order_id": int(row.bling_order_id) if row.bling_order_id is not None else None,
+                "bling_order_id": _to_optional_int(row.bling_order_id),
                 "production_status": row.production_status,
                 "notes": row.notes,
                 "updated_at": row.updated_at.isoformat() if row.updated_at else None,
