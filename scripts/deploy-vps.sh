@@ -657,6 +657,8 @@ checks = [
     ("order_tags", "updated_at", "ALTER TABLE order_tags ADD COLUMN updated_at DATETIME"),
     ("order_tag_assignments", "created_at", "ALTER TABLE order_tag_assignments ADD COLUMN created_at DATETIME"),
     ("order_tag_assignments", "updated_at", "ALTER TABLE order_tag_assignments ADD COLUMN updated_at DATETIME"),
+    ("bling_order_snapshots", "customer_email", "ALTER TABLE bling_order_snapshots ADD COLUMN customer_email VARCHAR(500)"),
+    ("bling_order_snapshots", "customer_contact_id", "ALTER TABLE bling_order_snapshots ADD COLUMN customer_contact_id BIGINT"),
 ]
 
 for table, column, ddl in checks:

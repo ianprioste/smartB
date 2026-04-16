@@ -35,6 +35,19 @@ WEBHOOK_PATH_PREFIXES = {"/webhooks/bling/"}
 # Create database tables
 Base.metadata.create_all(bind=engine)
 
+# Ensure critical columns exist on SQLite (handles cases where
+# Alembic migrations fail but create_all built the table without them).
+if settings.DATABASE_URL.startswith("sqlite"):
+    from sqlalchemy import text as _text, inspect as _sa_inspect
+    with engine.connect() as _conn:
+        _cols = {c["name"] for c in _sa_inspect(engine).get_columns("bling_order_snapshots")}
+        if "customer_email" not in _cols:
+            _conn.execute(_text("ALTER TABLE bling_order_snapshots ADD COLUMN customer_email VARCHAR(500)"))
+            _conn.commit()
+        if "customer_contact_id" not in _cols:
+            _conn.execute(_text("ALTER TABLE bling_order_snapshots ADD COLUMN customer_contact_id BIGINT"))
+            _conn.commit()
+
 # Ensure default tenant exists
 def _ensure_default_tenant():
     from app.models.database import TenantModel
