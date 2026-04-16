@@ -910,8 +910,10 @@ async def _get_event_sales_impl(event_id: UUID, enrich_emails: bool, db: Session
             client = _make_client(db)
             if client:
                 missing = [o for o in filtered_orders if not o.email]
+                max_api_calls = settings.ORDERS_EMAIL_ENRICHMENT_MAX_CONTACTS
                 seen_contacts: dict[int, str] = {}
                 newly_resolved: dict[int, str] = {}
+                api_calls = 0
                 for order in missing:
                     lookup_key = str(order.id or order.numero or "")
                     cid = order_contact_id_map.get(lookup_key)
@@ -920,7 +922,14 @@ async def _get_event_sales_impl(event_id: UUID, enrich_emails: bool, db: Session
                     if cid in seen_contacts:
                         order.email = seen_contacts[cid]
                         continue
+                    if api_calls >= max_api_calls:
+                        logger.info(
+                            "enrich_email_cap_reached event_id=%s cap=%s remaining=%s",
+                            str(event_id), max_api_calls, len(missing) - api_calls,
+                        )
+                        break
                     try:
+                        api_calls += 1
                         payload = await client.get(f"/contatos/{cid}")
                         data = payload.get("data") or {}
                         contato = data.get("contato") if isinstance(data.get("contato"), dict) else {}
