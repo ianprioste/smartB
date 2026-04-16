@@ -764,6 +764,19 @@ async def get_event(event_id: UUID, db: Session = Depends(get_db)):
 
 @router.get("/{event_id}/sales", response_model=EventSalesResponse)
 async def get_event_sales(event_id: UUID, enrich_emails: bool = Query(default=False), db: Session = Depends(get_db)):
+    try:
+        return await _get_event_sales_impl(event_id, enrich_emails, db)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(
+            "get_event_sales_unhandled_crash event_id=%s error=%s",
+            str(event_id), str(exc), exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail=f"Erro inesperado ao carregar campanha: {exc}")
+
+
+async def _get_event_sales_impl(event_id: UUID, enrich_emails: bool, db: Session):
     event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
     if not event:
         raise HTTPException(status_code=404, detail="Evento não encontrado")
@@ -1063,8 +1076,14 @@ async def get_event_sales(event_id: UUID, enrich_emails: bool = Query(default=Fa
             )
 
         filtered_orders = list(filtered_order_map.values())
-        _inject_production_data(db, event_id, filtered_orders)
-        _inject_event_tags(db, event_id, filtered_orders)
+        try:
+            _inject_production_data(db, event_id, filtered_orders)
+        except Exception as exc:
+            logger.warning("event_bling_fallback_production_data_failed event_id=%s error=%s", str(event_id), str(exc))
+        try:
+            _inject_event_tags(db, event_id, filtered_orders)
+        except Exception as exc:
+            logger.warning("event_bling_fallback_tags_failed event_id=%s error=%s", str(event_id), str(exc))
 
         logger.info(
             "event_sales_filter_done event_id=%s matched_orders=%s matched_items=%s total_matched=%.2f list_api_calls=1 detail_cache_hits=%s detail_api_fetched=%s detail_api_failed=%s local_fallback_used=%s total_api_calls=%s",
