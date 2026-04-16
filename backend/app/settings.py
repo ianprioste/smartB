@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     SMTP_USE_TLS: bool = os.getenv("SMTP_USE_TLS", "true").strip().lower() in {"1", "true", "yes", "on"}
     SMTP_USE_SSL: bool = os.getenv("SMTP_USE_SSL", "false").strip().lower() in {"1", "true", "yes", "on"}
 
+    # Nuvemshop
+    NUVEMSHOP_ACCESS_TOKEN: str = os.getenv("NUVEMSHOP_ACCESS_TOKEN", "")
+    NUVEMSHOP_STORE_ID: str = os.getenv("NUVEMSHOP_STORE_ID", "")
+
     # Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "DEBUG")
     

@@ -1162,4 +1162,9 @@ async def update_order_bling_status(
     SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
     db.commit()
 
+    # Fire-and-forget: mirror status to Nuvemshop.
+    from app.services.nuvemshop_sync import sync_order_status_to_nuvemshop
+    _ns_numero = snapshot.numero_loja if snapshot else None
+    await sync_order_status_to_nuvemshop(_ns_numero, body.situacao)
+
     return {"ok": True, "order_id": order_id, "new_status": body.situacao}
