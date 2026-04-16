@@ -853,6 +853,7 @@ export function EventSalesPage() {
           numero_loja: order.numero_loja,
           data: order.data,
           cliente: order.cliente,
+          email: order.email,
           situacao: order.situacao,
           quantity: item.quantity,
           paid_unit_price: item.paid_unit_price,
@@ -1298,6 +1299,7 @@ export function EventSalesPage() {
                                       <div style={{ fontWeight: 700, color: '#1e293b' }}>{formatBRL(o.paid_total)}</div>
                                     </div>
                                     <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}><strong>Cliente:</strong> {o.cliente || '—'}</div>
+                                    <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}><strong>Email:</strong> {o.email || '—'}</div>
                                     <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}><strong>Nuvemshop:</strong> {o.numero_loja || '—'}</div>
                                     <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}><strong>Data:</strong> {formatDate(o.data)}</div>
                                     <div style={{ marginBottom: 8 }}><StatusBadge text={o.situacao} /></div>
@@ -1378,7 +1380,10 @@ export function EventSalesPage() {
                                             <td style={{ padding: '8px', fontWeight: 600 }}>{o.numero}</td>
                                             <td style={{ padding: '8px', color: '#64748b' }}>{o.numero_loja || '—'}</td>
                                             <td style={{ padding: '8px', color: '#64748b' }}>{formatDate(o.data)}</td>
-                                            <td style={{ padding: '8px', color: '#334155' }}>{o.cliente || '—'}</td>
+                                            <td style={{ padding: '8px', color: '#334155' }}>
+                                              <div style={{ fontWeight: 600 }}>{o.cliente || '—'}</div>
+                                              <div style={{ fontSize: 12, color: '#64748b' }}>{o.email || '—'}</div>
+                                            </td>
                                             <td style={{ padding: '8px' }}><StatusBadge text={o.situacao} /></td>
                                             <td style={{ padding: '8px' }}>
                                               <ProductionStatusBadge
@@ -1428,9 +1433,11 @@ export function EventSalesPage() {
                           style={{ width: '100%', border: 'none', textAlign: 'left', background: isExpanded ? '#f0f9ff' : '#fff', padding: 14, cursor: 'pointer' }}
                         >
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                            <div style={{ fontWeight: 700, color: '#1e293b' }}>Pedido {order.numero || order.id} • {order.cliente || '—'}</div>
+                            <div style={{ fontWeight: 700, color: '#1e293b' }}>Pedido {order.numero || order.id}</div>
                             <div style={{ fontWeight: 700, color: '#1e293b' }}>{formatBRL(order.total_matched)}</div>
                           </div>
+                          <div style={{ fontSize: 13, color: '#334155', marginBottom: 2 }}>{order.cliente || '—'}</div>
+                          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>{order.email || '—'}</div>
                           <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}><strong>Data:</strong> {formatDate(order.data)}</div>
                           <div style={{ fontSize: 12, color: '#475569', marginBottom: 8 }}><strong>Código:</strong> {order.numero_loja || '—'}</div>
                           <div style={{ fontSize: 12, color: '#475569', marginBottom: 8, display: 'grid', gap: 4 }}>
@@ -1533,7 +1540,10 @@ export function EventSalesPage() {
                             <td style={{ fontWeight: 600 }}>{order.numero || order.id}</td>
                             <td style={{ color: '#64748b' }}>{order.numero_loja || '—'}</td>
                             <td>{formatDate(order.data)}</td>
-                            <td>{order.cliente || '—'}</td>
+                            <td>
+                              <div style={{ fontWeight: 600 }}>{order.cliente || '—'}</div>
+                              <div style={{ fontSize: 12, color: '#64748b' }}>{order.email || '—'}</div>
+                            </td>
                             <td>
                               <EventOrderTagEditor
                                 orderId={order.id}
