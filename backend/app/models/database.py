@@ -242,7 +242,6 @@ class BlingOrderSnapshotModel(Base):
     numero_loja = Column(String(255), nullable=True)
     order_date = Column(DateTime, nullable=True)
     customer_name = Column(String(500), nullable=True)
-    customer_email = Column(String(500), nullable=True)
     status_id = Column(Integer, nullable=True)
     status_name = Column(String(255), nullable=True)
     total_value = Column(Float, nullable=True)

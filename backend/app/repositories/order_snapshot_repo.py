@@ -114,14 +114,6 @@ class OrderSnapshotRepository:
         row.customer_name = contato.get("nome") if isinstance(contato, dict) else None
 
         detail_data = order_detail_payload.get("data") if isinstance(order_detail_payload.get("data"), dict) else {}
-        detail_contato = detail_data.get("contato") if isinstance(detail_data.get("contato"), dict) else {}
-        # Email is only available in the detail payload contato field
-        email_raw = (
-            detail_contato.get("email")
-            or contato.get("email")
-            or None
-        )
-        row.customer_email = email_raw.strip() if isinstance(email_raw, str) and email_raw.strip() else None
         detail_situacao = detail_data.get("situacao") if isinstance(detail_data.get("situacao"), dict) else {}
         effective_situacao = situacao if isinstance(situacao, dict) and situacao else detail_situacao
         
@@ -177,7 +169,7 @@ class OrderSnapshotRepository:
                 )
             # numeric match on numero can be checked in python for portability
 
-        rows = query.order_by(BlingOrderSnapshotModel.order_date.desc()).all()
+        rows = query.order_by(BlingOrderSnapshotModel.order_date.desc().nullslast()).all()
 
         if term and term.isdigit():
             rows = [
@@ -196,7 +188,7 @@ class OrderSnapshotRepository:
                 BlingOrderSnapshotModel.order_date >= start_dt,
                 BlingOrderSnapshotModel.order_date <= end_dt,
             )
-            .order_by(BlingOrderSnapshotModel.order_date.desc())
+            .order_by(BlingOrderSnapshotModel.order_date.desc().nullslast())
             .all()
         )
 
