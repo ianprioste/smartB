@@ -13,6 +13,19 @@ celery_app = Celery(
 # Use solo pool on Windows (prefork doesn't work well on Windows)
 pool_type = "solo" if platform.system() == "Windows" else "prefork"
 
+beat_schedule = {
+    "orders-incremental-sync": {
+        "task": "sync_orders_incremental_task",
+        "schedule": max(60, int(settings.ORDERS_INCREMENTAL_SYNC_MINUTES) * 60),
+    }
+}
+
+if int(settings.ORDERS_EMAIL_ENRICHMENT_MINUTES) > 0:
+    beat_schedule["orders-email-enrichment"] = {
+        "task": "hydrate_missing_order_emails_task",
+        "schedule": max(300, int(settings.ORDERS_EMAIL_ENRICHMENT_MINUTES) * 60),
+    }
+
 celery_app.conf.update(
     task_serializer="json",
     accept_content=["json"],
@@ -23,12 +36,7 @@ celery_app.conf.update(
     task_time_limit=30 * 60,  # 30 minutes hard limit
     task_soft_time_limit=25 * 60,  # 25 minutes soft limit
     worker_pool=pool_type,  # solo on Windows, prefork on Unix
-    beat_schedule={
-        "orders-incremental-sync": {
-            "task": "sync_orders_incremental_task",
-            "schedule": max(60, int(settings.ORDERS_INCREMENTAL_SYNC_MINUTES) * 60),
-        }
-    },
+    beat_schedule=beat_schedule,
 )
 
 # Ensure task decorators are evaluated at import time.

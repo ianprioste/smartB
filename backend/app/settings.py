@@ -56,6 +56,9 @@ class Settings(BaseSettings):
         "redis://localhost:6379/2"
     )
     ORDERS_INCREMENTAL_SYNC_MINUTES: int = int(os.getenv("ORDERS_INCREMENTAL_SYNC_MINUTES", "15"))
+    ORDERS_EMAIL_ENRICHMENT_MINUTES: int = int(os.getenv("ORDERS_EMAIL_ENRICHMENT_MINUTES", "0"))
+    ORDERS_EMAIL_ENRICHMENT_BATCH_SIZE: int = int(os.getenv("ORDERS_EMAIL_ENRICHMENT_BATCH_SIZE", "20"))
+    ORDERS_EMAIL_ENRICHMENT_MAX_CONTACTS: int = int(os.getenv("ORDERS_EMAIL_ENRICHMENT_MAX_CONTACTS", "20"))
     MASTER_ADMIN_EMAIL: str = os.getenv("MASTER_ADMIN_EMAIL", "ian.prioste@useruach.com.br").strip().lower()
 
     # Bling Webhooks

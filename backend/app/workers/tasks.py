@@ -18,6 +18,28 @@ from app.repositories.order_snapshot_repo import OrderSnapshotRepository
 from app.domain.order_sync import sync_orders, sync_single_order
 from app.domain.product_sync import sync_single_product
 
+
+def _extract_contact_email(payload):
+    if not isinstance(payload, dict):
+        return None
+
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    if not isinstance(data, dict):
+        return None
+
+    contato = data.get("contato") if isinstance(data.get("contato"), dict) else {}
+    candidates = [
+        contato.get("email"),
+        data.get("email"),
+        data.get("emailContato"),
+    ]
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text and "@" in text:
+            return text
+
+    return None
+
 logger = get_logger(__name__)
 DEFAULT_TENANT_ID = UUID("00000000-0000-0000-0000-000000000001")
 
@@ -254,6 +276,86 @@ def sync_orders_incremental_task(self):
             f"sync incremental failed: {exc}",
         )
         db.commit()
+        return {"ok": False, "error": str(exc)}
+    finally:
+        if client is not None:
+            try:
+                asyncio.run(client.client.aclose())
+            except Exception:
+                pass
+        db.close()
+
+
+@celery_app.task(bind=True, name="hydrate_missing_order_emails_task")
+def hydrate_missing_order_emails_task(self, batch_size: int | None = None, max_contacts: int | None = None):
+    """Fill missing customer emails by unique contact id outside the request path."""
+    db = SessionLocal()
+    client = None
+    try:
+        batch_size = max(1, int(batch_size or settings.ORDERS_EMAIL_ENRICHMENT_BATCH_SIZE))
+        max_contacts = max(1, int(max_contacts or settings.ORDERS_EMAIL_ENRICHMENT_MAX_CONTACTS))
+
+        rows = OrderSnapshotRepository.list_missing_customer_email(
+            db,
+            DEFAULT_TENANT_ID,
+            limit=batch_size,
+        )
+        if not rows:
+            return {"ok": True, "updated": 0, "contacts_considered": 0, "reason": "no_missing_emails"}
+
+        unique_contact_ids = []
+        seen = set()
+        for row in rows:
+            contact_id = getattr(row, "customer_contact_id", None)
+            if contact_id is None or contact_id in seen:
+                continue
+            seen.add(contact_id)
+            unique_contact_ids.append(int(contact_id))
+            if len(unique_contact_ids) >= max_contacts:
+                break
+
+        if not unique_contact_ids:
+            return {"ok": True, "updated": 0, "contacts_considered": 0, "reason": "no_contact_ids"}
+
+        client = _make_bling_client(db)
+        if not client:
+            return {"ok": False, "updated": 0, "contacts_considered": 0, "reason": "no_bling_token"}
+
+        resolved = {}
+        for contact_id in unique_contact_ids:
+            try:
+                payload = asyncio.run(client.get(f"/contatos/{contact_id}"))
+                email = _extract_contact_email(payload)
+                if email:
+                    resolved[contact_id] = email
+            except Exception as exc:
+                logger.warning(
+                    "orders_email_hydration_contact_failed contact_id=%s error=%s",
+                    contact_id,
+                    str(exc),
+                )
+
+        updated = OrderSnapshotRepository.apply_customer_emails_by_contact_id(
+            db,
+            DEFAULT_TENANT_ID,
+            resolved,
+        )
+        db.commit()
+        logger.info(
+            "orders_email_hydration_done contacts_considered=%s contacts_resolved=%s rows_updated=%s",
+            len(unique_contact_ids),
+            len(resolved),
+            updated,
+        )
+        return {
+            "ok": True,
+            "updated": updated,
+            "contacts_considered": len(unique_contact_ids),
+            "contacts_resolved": len(resolved),
+        }
+    except Exception as exc:
+        db.rollback()
+        logger.error("orders_email_hydration_failed error=%s", str(exc), exc_info=True)
         return {"ok": False, "error": str(exc)}
     finally:
         if client is not None:

@@ -74,6 +74,54 @@ def _resolve_status_name(situacao: Dict[str, Any], status_id: Optional[int], per
     return None
 
 
+def _extract_customer_email(order_list_payload: Dict[str, Any], order_detail_payload: Dict[str, Any]) -> Optional[str]:
+    detail_data = order_detail_payload.get("data") if isinstance(order_detail_payload.get("data"), dict) else {}
+    detail_contato = detail_data.get("contato") if isinstance(detail_data.get("contato"), dict) else {}
+    detail_cliente = detail_data.get("cliente") if isinstance(detail_data.get("cliente"), dict) else {}
+    list_contato = order_list_payload.get("contato") if isinstance(order_list_payload.get("contato"), dict) else {}
+    list_cliente = order_list_payload.get("cliente") if isinstance(order_list_payload.get("cliente"), dict) else {}
+
+    candidates = [
+        detail_contato.get("email"),
+        detail_cliente.get("email"),
+        detail_data.get("email"),
+        detail_data.get("emailContato"),
+        list_contato.get("email"),
+        list_cliente.get("email"),
+        order_list_payload.get("email"),
+        order_list_payload.get("emailContato"),
+    ]
+
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text and "@" in text:
+            return text
+
+    return None
+
+
+def _extract_customer_contact_id(order_list_payload: Dict[str, Any], order_detail_payload: Dict[str, Any]) -> Optional[int]:
+    detail_data = order_detail_payload.get("data") if isinstance(order_detail_payload.get("data"), dict) else {}
+    detail_contato = detail_data.get("contato") if isinstance(detail_data.get("contato"), dict) else {}
+    list_contato = order_list_payload.get("contato") if isinstance(order_list_payload.get("contato"), dict) else {}
+
+    candidates = [
+        detail_contato.get("id"),
+        detail_data.get("idContato"),
+        detail_data.get("contatoId"),
+        list_contato.get("id"),
+        order_list_payload.get("idContato"),
+        order_list_payload.get("contatoId"),
+    ]
+
+    for candidate in candidates:
+        contact_id = _try_int(candidate)
+        if contact_id is not None:
+            return contact_id
+
+    return None
+
+
 class OrderSnapshotRepository:
     @staticmethod
     def count_by_tenant(db: Session, tenant_id: UUID) -> int:
@@ -112,6 +160,8 @@ class OrderSnapshotRepository:
         row.numero_loja = order_list_payload.get("numeroLoja")
         row.order_date = _try_parse_datetime(order_list_payload.get("data"))
         row.customer_name = contato.get("nome") if isinstance(contato, dict) else None
+        row.customer_email = _extract_customer_email(order_list_payload, order_detail_payload)
+        row.customer_contact_id = _extract_customer_contact_id(order_list_payload, order_detail_payload)
 
         detail_data = order_detail_payload.get("data") if isinstance(order_detail_payload.get("data"), dict) else {}
         detail_situacao = detail_data.get("situacao") if isinstance(detail_data.get("situacao"), dict) else {}
@@ -248,6 +298,57 @@ class OrderSnapshotRepository:
             "latest_imported_at": latest_imported_at,
             "latest_updated_at": latest_updated_at,
         }
+
+    @staticmethod
+    def list_missing_customer_email(
+        db: Session,
+        tenant_id: UUID,
+        limit: int = 20,
+    ) -> List[BlingOrderSnapshotModel]:
+        safe_limit = max(1, int(limit))
+        return (
+            db.query(BlingOrderSnapshotModel)
+            .filter(
+                BlingOrderSnapshotModel.tenant_id == tenant_id,
+                BlingOrderSnapshotModel.customer_contact_id.isnot(None),
+                or_(
+                    BlingOrderSnapshotModel.customer_email.is_(None),
+                    BlingOrderSnapshotModel.customer_email == "",
+                ),
+            )
+            .order_by(BlingOrderSnapshotModel.updated_at.asc())
+            .limit(safe_limit)
+            .all()
+        )
+
+    @staticmethod
+    def apply_customer_emails_by_contact_id(
+        db: Session,
+        tenant_id: UUID,
+        email_map: Dict[int, str],
+    ) -> int:
+        updated = 0
+        for contact_id, email in email_map.items():
+            normalized = str(email or "").strip()
+            if not normalized:
+                continue
+            rows = (
+                db.query(BlingOrderSnapshotModel)
+                .filter(
+                    BlingOrderSnapshotModel.tenant_id == tenant_id,
+                    BlingOrderSnapshotModel.customer_contact_id == int(contact_id),
+                    or_(
+                        BlingOrderSnapshotModel.customer_email.is_(None),
+                        BlingOrderSnapshotModel.customer_email == "",
+                    ),
+                )
+                .all()
+            )
+            for row in rows:
+                row.customer_email = normalized
+                row.updated_at = datetime.utcnow()
+                updated += 1
+        return updated
 
     @staticmethod
     def get_or_create_sync_state(db: Session, tenant_id: UUID) -> BlingOrdersSyncStateModel:
