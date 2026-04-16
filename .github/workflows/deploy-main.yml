@@ -132,7 +132,11 @@ jobs:
             "DEPLOY_BLING_WEBHOOK_SECRET=$DEPLOY_BLING_WEBHOOK_SECRET" \
             | base64 -w0)"
 
-          ssh -i ~/.ssh/deploy_key -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+          echo "[deploy] SSH target: ${VPS_USER}@${VPS_HOST}:${VPS_PORT}"
+          echo "[deploy] VPS_APP_DIR=${VPS_APP_DIR:-'(empty)'}"
+          echo "[deploy] DEPLOY_VARS_B64 length: ${#DEPLOY_VARS_B64}"
+          echo "[deploy] BACKEND_ENV_B64 length: ${#BACKEND_ENV_B64}"
+          ssh -v -i ~/.ssh/deploy_key -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
             "VPS_APP_DIR='$VPS_APP_DIR' VPS_BACKEND_SERVICE='$VPS_BACKEND_SERVICE' VPS_FRONTEND_DIR='$VPS_FRONTEND_DIR' VPS_REPO_URL='$VPS_REPO_URL' BACKEND_ENV_B64='$BACKEND_ENV_B64' GITHUB_REPOSITORY='$GITHUB_REPOSITORY' GIT_COMMIT='$GITHUB_SHA' BUILD_ID='$BUILD_ID' BUILD_TIMESTAMP='$(date -u '+%Y-%m-%dT%H:%M:%SZ')' PUBLIC_HOST='$PUBLIC_HOST' DEPLOY_VARS_B64='$DEPLOY_VARS_B64' bash -se" <<'REMOTE_SCRIPT'
           set -Eeuo pipefail
           echo "[deploy-remote] user=$(whoami) uid=$(id -u) home=$HOME"
