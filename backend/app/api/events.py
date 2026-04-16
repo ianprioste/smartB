@@ -797,6 +797,7 @@ async def get_event_sales(event_id: UUID, enrich_emails: bool = Query(default=Fa
         )
 
         filtered_order_map: dict[Any, EventOrderResponse] = {}
+        order_contact_id_map: dict[str, int] = {}
         matched_items_count = 0
         total_matched = 0.0
 
@@ -864,6 +865,8 @@ async def get_event_sales(event_id: UUID, enrich_emails: bool = Query(default=Fa
                 has_frete=_has_frete(detail_payload, order_payload),
                 matched_items=matched_items,
             )
+            if row.customer_contact_id is not None:
+                order_contact_id_map[str(key)] = int(row.customer_contact_id)
 
         filtered_orders = list(filtered_order_map.values())
         _inject_production_data(db, event_id, filtered_orders)
@@ -877,29 +880,11 @@ async def get_event_sales(event_id: UUID, enrich_emails: bool = Query(default=Fa
             client = _make_client(db)
             if client:
                 missing = [o for o in filtered_orders if not o.email]
-                rows_by_id = {
-                    str(r.bling_order_id): r
-                    for r in snapshot_rows
-                    if r.bling_order_id is not None
-                }
-                rows_by_numero = {
-                    str(r.numero): r
-                    for r in snapshot_rows
-                    if r.numero is not None
-                }
-                contact_ids: dict[str, int] = {}
-                for o in missing:
-                    order_key = str(o.id) if o.id is not None else ""
-                    numero_key = str(o.numero) if o.numero is not None else ""
-                    row_match = rows_by_id.get(order_key) or rows_by_numero.get(numero_key)
-                    if row_match and row_match.customer_contact_id:
-                        contact_ids[f"{order_key}|{numero_key}"] = row_match.customer_contact_id
                 seen_contacts: dict[int, str] = {}
                 newly_resolved: dict[int, str] = {}
                 for order in missing:
-                    order_key = str(order.id) if order.id is not None else ""
-                    numero_key = str(order.numero) if order.numero is not None else ""
-                    cid = contact_ids.get(f"{order_key}|{numero_key}")
+                    lookup_key = str(order.id or order.numero or "")
+                    cid = order_contact_id_map.get(lookup_key)
                     if not cid:
                         continue
                     if cid in seen_contacts:
