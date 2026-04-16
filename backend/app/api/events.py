@@ -259,6 +259,12 @@ def _status_to_text(raw_status: Any, fallback_status_id: Any = None) -> str:
         if status_id is not None:
             return STATUS_ID_NAME_MAP.get(status_id, "Em aberto")
 
+    # Prefer name-based normalization when raw_status is a non-empty string,
+    # so names like "Em Andamento" are correctly mapped to "Em aberto"
+    # instead of relying on possibly stale numeric IDs.
+    if isinstance(raw_status, str) and raw_status.strip():
+        return _normalize_status_label(raw_status)
+
     status_id = _to_optional_int(fallback_status_id if fallback_status_id is not None else raw_status)
     if status_id is not None:
         return STATUS_ID_NAME_MAP.get(status_id, "Em aberto")
