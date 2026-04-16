@@ -116,6 +116,10 @@ jobs:
           ssh -i ~/.ssh/deploy_key -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
             "VPS_APP_DIR='$VPS_APP_DIR' VPS_BACKEND_SERVICE='$VPS_BACKEND_SERVICE' VPS_FRONTEND_DIR='$VPS_FRONTEND_DIR' VPS_REPO_URL='$VPS_REPO_URL' BACKEND_ENV_B64='$BACKEND_ENV_B64' GITHUB_REPOSITORY='$GITHUB_REPOSITORY' GIT_COMMIT='$GITHUB_SHA' BUILD_ID='$BUILD_ID' BUILD_TIMESTAMP='$(date -u '+%Y-%m-%dT%H:%M:%SZ')' PUBLIC_HOST='$PUBLIC_HOST' DEPLOY_SECRET_KEY='$DEPLOY_SECRET_KEY' DEPLOY_DATABASE_URL='$DEPLOY_DATABASE_URL' DEPLOY_CORS_ORIGINS='$DEPLOY_CORS_ORIGINS' DEPLOY_BLING_CLIENT_ID='$DEPLOY_BLING_CLIENT_ID' DEPLOY_BLING_CLIENT_SECRET='$DEPLOY_BLING_CLIENT_SECRET' DEPLOY_BLING_REDIRECT_URI='$DEPLOY_BLING_REDIRECT_URI' DEPLOY_SMTP_HOST='$DEPLOY_SMTP_HOST' DEPLOY_SMTP_PORT='$DEPLOY_SMTP_PORT' DEPLOY_SMTP_USERNAME='$DEPLOY_SMTP_USERNAME' DEPLOY_SMTP_PASSWORD='$DEPLOY_SMTP_PASSWORD' DEPLOY_SMTP_FROM_EMAIL='$DEPLOY_SMTP_FROM_EMAIL' DEPLOY_SMTP_FROM_NAME='$DEPLOY_SMTP_FROM_NAME' DEPLOY_BLING_WEBHOOK_SECRET='$DEPLOY_BLING_WEBHOOK_SECRET' bash -se" <<'REMOTE_SCRIPT'
           set -Eeuo pipefail
+          echo "[deploy-remote] user=$(whoami) uid=$(id -u) home=$HOME"
+          echo "[deploy-remote] sudo test..."
+          sudo -n true 2>/dev/null || { echo "FATAL: sudo sem senha nao configurado para $(whoami)"; exit 1; }
+          echo "[deploy-remote] sudo OK"
           APP_DIR="${VPS_APP_DIR:-/opt/smartB}"
           BACKEND_SERVICE="${VPS_BACKEND_SERVICE:-smartbling-backend}"
           FRONTEND_TARGET_DIR="${VPS_FRONTEND_DIR:-/usr/share/nginx/html}"
@@ -125,9 +129,16 @@ jobs:
           # Secrets can accidentally contain leading/trailing spaces.
           APP_DIR="$(printf '%s' "$APP_DIR" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
 
+          # Fix ownership if app dir was created by root (pre-hardening).
+          if [ -d "$APP_DIR" ] && [ "$(stat -c '%U' "$APP_DIR" 2>/dev/null)" != "$(whoami)" ]; then
+            echo "Fixing ownership of $APP_DIR for $(whoami)"
+            sudo chown -R "$(whoami):$(whoami)" "$APP_DIR"
+          fi
+
           if [ ! -d "$APP_DIR/.git" ]; then
             echo "Diretorio nao encontrado. Clonando repositorio..."
-            mkdir -p "$APP_DIR"
+            sudo mkdir -p "$APP_DIR"
+            sudo chown "$(whoami):$(whoami)" "$APP_DIR"
             git clone --branch "$DEPLOY_BRANCH" "$REPO_URL" "$APP_DIR"
           fi
 
