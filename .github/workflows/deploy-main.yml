@@ -245,10 +245,10 @@ jobs:
           getent hosts "${PUBLIC_HOST:-}" || true
 
           echo "--- systemd status ---"
-          systemctl status "$BACKEND_SERVICE" --no-pager -n 40 || true
+          sudo systemctl status "$BACKEND_SERVICE" --no-pager -n 40 || true
 
           echo "--- systemd unit ---"
-          systemctl cat "$BACKEND_SERVICE" || true
+          sudo systemctl cat "$BACKEND_SERVICE" || true
 
           echo "--- backend env summary ---"
           if [ -f "$APP_DIR/backend/.env" ]; then
@@ -271,13 +271,13 @@ jobs:
           fi
 
           echo "--- nginx roots ---"
-          nginx -T 2>/dev/null | sed -n 's/^[[:space:]]*root[[:space:]]\+\([^;][^;]*\);/root: \1/p' | sort -u || true
+          sudo nginx -T 2>/dev/null | sed -n 's/^[[:space:]]*root[[:space:]]\+\([^;][^;]*\);/root: \1/p' | sort -u || true
 
           echo "--- nginx active server blocks (listen/server_name/root/proxy_pass) ---"
-          nginx -T 2>/dev/null | grep -E 'listen|server_name|root|proxy_pass' | sed -n '1,200p' || true
+          sudo nginx -T 2>/dev/null | grep -E 'listen|server_name|root|proxy_pass' | sed -n '1,200p' || true
 
           echo "--- smartbling-public.conf ---"
-          cat /etc/nginx/conf.d/smartbling-public.conf 2>/dev/null || echo "smartbling-public.conf not found"
+          sudo cat /etc/nginx/conf.d/smartbling-public.conf 2>/dev/null || echo "smartbling-public.conf not found"
 
           echo "--- localhost nginx build-info ---"
           curl -i --max-time 8 "http://127.0.0.1/build-info.json" | sed -n '1,25p' || true

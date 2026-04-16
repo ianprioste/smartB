@@ -43,6 +43,13 @@ DEPLOY_BLING_WEBHOOK_SECRET="${DEPLOY_BLING_WEBHOOK_SECRET:-}"
 
 cd "${REPO_ROOT}"
 
+# Use sudo when not running as root (non-root deploy user).
+if [ "$(id -u)" -eq 0 ]; then
+  SUDO=""
+else
+  SUDO="sudo"
+fi
+
 trim() {
   printf '%s' "$1" | sed 's/\r$//;s/^[[:space:]]*//;s/[[:space:]]*$//'
 }
@@ -250,22 +257,22 @@ validate_backend_env() {
 fix_nginx_backend_proxy() {
   [ "$AUTO_FIX_NGINX_PROXY" = "true" ] || return 0
   local files
-  files="$(find /etc/nginx/sites-enabled /etc/nginx/sites-available /etc/nginx/conf.d -maxdepth 1 -type f 2>/dev/null || true)"
+  files="$($SUDO find /etc/nginx/sites-enabled /etc/nginx/sites-available /etc/nginx/conf.d -maxdepth 1 -type f 2>/dev/null || true)"
   [ -n "$files" ] || return 0
 
   local changed=0
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     if grep -qE 'proxy_pass[[:space:]]+http://backend:8000/?' "$f" 2>/dev/null; then
-      sed -i -E 's#proxy_pass[[:space:]]+http://backend:8000/?#proxy_pass http://127.0.0.1:8000/#g' "$f"
+      $SUDO sed -i -E 's#proxy_pass[[:space:]]+http://backend:8000/?#proxy_pass http://127.0.0.1:8000/#g' "$f"
       changed=1
       log "Ajustado proxy nginx em $f"
     fi
   done <<< "$files"
 
   if [ "$changed" -eq 1 ]; then
-    nginx -t || fail "nginx invalido apos ajuste automatico de proxy"
-    systemctl reload nginx || fail "Falha ao recarregar nginx apos ajuste automatico"
+    $SUDO nginx -t || fail "nginx invalido apos ajuste automatico de proxy"
+    $SUDO systemctl reload nginx || fail "Falha ao recarregar nginx apos ajuste automatico"
   fi
 }
 
@@ -326,7 +333,7 @@ enforce_nginx_public_server() {
   if [ "$is_ip" = "false" ] && [ -f "$cert_path" ]; then
     # ── HTTPS mode ────────────────────────────────────────────────
     log "Certificado SSL detectado; configurando nginx com HTTPS"
-    cat > "$conf_path" <<EOF
+    $SUDO tee "$conf_path" > /dev/null <<EOF
 server {
     listen 80;
     listen [::]:80;
@@ -390,12 +397,12 @@ EOF
     listen_v4="listen 80;"
     listen_v6="listen [::]:80;"
 
-    if ! nginx -T 2>/dev/null | grep -qE 'listen[[:space:]]+80[[:space:]]+default_server'; then
+    if ! $SUDO nginx -T 2>/dev/null | grep -qE 'listen[[:space:]]+80[[:space:]]+default_server'; then
       listen_v4="listen 80 default_server;"
       listen_v6="listen [::]:80 default_server;"
     fi
 
-    cat > "$conf_path" <<EOF
+    $SUDO tee "$conf_path" > /dev/null <<EOF
 server {
     ${listen_v4}
     ${listen_v6}
@@ -438,11 +445,11 @@ EOF
   fi
 
   if [ -f /etc/nginx/sites-enabled/default ]; then
-    rm -f /etc/nginx/sites-enabled/default
+    $SUDO rm -f /etc/nginx/sites-enabled/default
   fi
 
-  nginx -t || fail "nginx invalido apos instalar smartbling-public.conf"
-  systemctl reload nginx || fail "Falha ao recarregar nginx apos instalar smartbling-public.conf"
+  $SUDO nginx -t || fail "nginx invalido apos instalar smartbling-public.conf"
+  $SUDO systemctl reload nginx || fail "Falha ao recarregar nginx apos instalar smartbling-public.conf"
   log "Configuracao nginx publica reforcada em $conf_path"
 }
 
@@ -471,7 +478,7 @@ provision_ssl_cert() {
   email="${email:-ian.prioste@useruach.com.br}"
 
   log "Obtendo certificado Let's Encrypt para ${PUBLIC_HOST} (email: ${email})"
-  if certbot certonly --nginx \
+  if $SUDO certbot certonly --nginx \
       -d "$PUBLIC_HOST" \
       --non-interactive \
       --agree-tos \
@@ -491,23 +498,23 @@ publish_frontend_atomic() {
   tmp_target="${target}.next"
   prev_target="${target}.prev"
 
-  mkdir -p "$(dirname "$target")"
-  rm -rf "$tmp_target"
-  mkdir -p "$tmp_target"
-  cp -a frontend/dist/. "$tmp_target/"
+  $SUDO mkdir -p "$(dirname "$target")"
+  $SUDO rm -rf "$tmp_target"
+  $SUDO mkdir -p "$tmp_target"
+  $SUDO cp -a frontend/dist/. "$tmp_target/"
   [ -f "$tmp_target/index.html" ] || fail "index.html ausente no build frontend"
 
-  rm -rf "$prev_target"
+  $SUDO rm -rf "$prev_target"
   if [ -e "$target" ] || [ -L "$target" ]; then
-    mv "$target" "$prev_target"
+    $SUDO mv "$target" "$prev_target"
   fi
-  mv "$tmp_target" "$target"
+  $SUDO mv "$tmp_target" "$target"
   log "Frontend publicado atomicamente em $target"
 }
 
 sync_frontend_to_nginx_roots() {
   local roots root
-  roots="$(nginx -T 2>/dev/null | sed -n 's/^[[:space:]]*root[[:space:]]\+\([^;][^;]*\);/\1/p' | sed 's/[[:space:]]*$//' | sort -u || true)"
+  roots="$($SUDO nginx -T 2>/dev/null | sed -n 's/^[[:space:]]*root[[:space:]]\+\([^;][^;]*\);/\1/p' | sed 's/[[:space:]]*$//' | sort -u || true)"
 
   # Add common roots defensively to avoid stale serving path drift.
   roots="$(printf '%s\n%s\n%s\n' "$roots" '/usr/share/nginx/html' '/var/www/html' | sed '/^$/d' | sort -u)"
@@ -531,12 +538,12 @@ install_backend_systemd_unit() {
   template_path="${REPO_ROOT}/deploy/systemd/smartbling-backend.service"
 
   if [ -f "$template_path" ]; then
-    cp "$template_path" "$unit_path"
-    sed -i "s#^User=.*#User=${SYSTEMD_USER}#" "$unit_path"
-    sed -i "s#^WorkingDirectory=.*#WorkingDirectory=${REPO_ROOT}#" "$unit_path"
-    sed -i "s#^ExecStart=.*#ExecStart=/usr/bin/env bash ${REPO_ROOT}/scripts/run-backend-prod.sh#" "$unit_path"
+    $SUDO cp "$template_path" "$unit_path"
+    $SUDO sed -i "s#^User=.*#User=${SYSTEMD_USER}#" "$unit_path"
+    $SUDO sed -i "s#^WorkingDirectory=.*#WorkingDirectory=${REPO_ROOT}#" "$unit_path"
+    $SUDO sed -i "s#^ExecStart=.*#ExecStart=/usr/bin/env bash ${REPO_ROOT}/scripts/run-backend-prod.sh#" "$unit_path"
   else
-    cat > "$unit_path" <<EOF
+    $SUDO tee "$unit_path" > /dev/null <<EOF
 [Unit]
 Description=smartBling FastAPI backend
 After=network.target
@@ -557,8 +564,8 @@ WantedBy=multi-user.target
 EOF
   fi
 
-  systemctl daemon-reload
-  systemctl enable "${BACKEND_SERVICE}" >/dev/null 2>&1 || true
+  $SUDO systemctl daemon-reload
+  $SUDO systemctl enable "${BACKEND_SERVICE}" >/dev/null 2>&1 || true
 }
 
 backend_unit_exists() {
@@ -570,13 +577,13 @@ backend_unit_exists() {
     return 0
   fi
 
-  systemctl cat "${BACKEND_SERVICE}" >/dev/null 2>&1
+  $SUDO systemctl cat "${BACKEND_SERVICE}" >/dev/null 2>&1
 }
 
 free_backend_port_conflicts() {
   local service_pid listener_pid
 
-  service_pid="$(systemctl show -p MainPID --value "${BACKEND_SERVICE}" 2>/dev/null || echo 0)"
+  service_pid="$($SUDO systemctl show -p MainPID --value "${BACKEND_SERVICE}" 2>/dev/null || echo 0)"
   service_pid="${service_pid:-0}"
 
   listener_pid=""
@@ -719,27 +726,27 @@ provision_ssl_cert
 
 log "Reiniciando backend via systemd (${BACKEND_SERVICE})"
 free_backend_port_conflicts
-systemctl daemon-reload || true
-systemctl restart "${BACKEND_SERVICE}" || {
-  systemctl status "${BACKEND_SERVICE}" --no-pager || true
-  journalctl -u "${BACKEND_SERVICE}" -n 150 --no-pager || true
+$SUDO systemctl daemon-reload || true
+$SUDO systemctl restart "${BACKEND_SERVICE}" || {
+  $SUDO systemctl status "${BACKEND_SERVICE}" --no-pager || true
+  $SUDO journalctl -u "${BACKEND_SERVICE}" -n 150 --no-pager || true
   fail "Falha ao reiniciar ${BACKEND_SERVICE}"
 }
-systemctl is-active --quiet "${BACKEND_SERVICE}" || fail "${BACKEND_SERVICE} nao ficou ativo apos restart"
+$SUDO systemctl is-active --quiet "${BACKEND_SERVICE}" || fail "${BACKEND_SERVICE} nao ficou ativo apos restart"
 
 fix_nginx_backend_proxy
 
 if [ "${REQUIRE_NGINX}" = "true" ]; then
-  systemctl is-active --quiet nginx || fail "Nginx precisa estar ativo em producao"
-  nginx -t || fail "Configuracao nginx invalida"
+  $SUDO systemctl is-active --quiet nginx || fail "Nginx precisa estar ativo em producao"
+  $SUDO nginx -t || fail "Configuracao nginx invalida"
   log "Recarregando nginx"
-  systemctl reload nginx || fail "Falha ao recarregar nginx"
+  $SUDO systemctl reload nginx || fail "Falha ao recarregar nginx"
 fi
 
 log "Validando health-check ${HEALTH_URL}"
 if ! curl --fail --silent --show-error --retry 20 --retry-delay 3 --retry-connrefused --max-time 5 "${HEALTH_URL}"; then
-  systemctl status "${BACKEND_SERVICE}" --no-pager || true
-  journalctl -u "${BACKEND_SERVICE}" -n 150 --no-pager || true
+  $SUDO systemctl status "${BACKEND_SERVICE}" --no-pager || true
+  $SUDO journalctl -u "${BACKEND_SERVICE}" -n 150 --no-pager || true
   fail "Health-check falhou"
 fi
 
