@@ -492,7 +492,7 @@ export function EventSalesPage() {
     }
   }
 
-  const loadSales = useCallback(async (eventId) => {
+  const loadSales = useCallback(async (eventId, enrichEmails = false) => {
     if (!eventId) {
       setSalesData(null);
       return;
@@ -501,7 +501,8 @@ export function EventSalesPage() {
     try {
       setLoadingSales(true);
       setError(null);
-      const resp = await fetch(`${API_BASE}/events/${eventId}/sales`);
+      const query = enrichEmails ? '?enrich_emails=true' : '';
+      const resp = await fetch(`${API_BASE}/events/${eventId}/sales${query}`);
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
         const message = errData.detail || 'Falha ao carregar pedidos da campanha';
@@ -1007,7 +1008,7 @@ export function EventSalesPage() {
             <p className="page-subtitle">Pedidos de venda filtrados pelos produtos selecionados na campanha</p>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button className="btn-secondary" disabled={!selectedEventId || loadingSales} onClick={() => loadSales(selectedEventId)}>
+            <button className="btn-secondary" disabled={!selectedEventId || loadingSales} onClick={() => loadSales(selectedEventId, true)}>
               {loadingSales ? 'Atualizando...' : 'Atualizar'}
             </button>
             <div style={{ position: 'relative' }}>
