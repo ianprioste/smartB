@@ -879,8 +879,13 @@ async def get_event_sales(event_id: UUID, enrich_emails: bool = Query(default=Fa
                 missing = [o for o in filtered_orders if not o.email]
                 contact_ids: dict[int | None, int] = {}
                 for o in missing:
+                    order_key = str(o.id) if o.id is not None else None
                     row_match = next(
-                        (r for r in snapshot_rows if r.bling_order_id == o.id),
+                        (
+                            r
+                            for r in snapshot_rows
+                            if order_key is not None and str(r.bling_order_id) == order_key
+                        ),
                         None,
                     )
                     if row_match and row_match.customer_contact_id:
