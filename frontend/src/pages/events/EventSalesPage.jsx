@@ -237,6 +237,7 @@ export function EventSalesPage() {
   const [salesData, setSalesData] = useState(null);
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [loadingSales, setLoadingSales] = useState(false);
+  const [loadingExport, setLoadingExport] = useState(false);
   const [eventOrdersCount, setEventOrdersCount] = useState({});
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState(savedUiState?.searchTerm || '');
@@ -869,12 +870,35 @@ export function EventSalesPage() {
     { key: 'blocked', label: 'Itens com Impedimentos', value: itemStatusSummary.blocked },
   ];
 
-  const exportCampaignOrders = useCallback((excelFriendly = false) => {
-    const orders = Array.isArray(filteredOrdersByItemStatus) ? filteredOrdersByItemStatus : [];
-    if (orders.length === 0) {
+  const exportCampaignOrders = useCallback(async (excelFriendly = false) => {
+    const baseOrders = Array.isArray(filteredOrdersByItemStatus) ? filteredOrdersByItemStatus : [];
+    if (baseOrders.length === 0) {
       window.alert('Não há pedidos para exportar com os filtros atuais.');
       return;
     }
+
+    // Fetch enriched emails for export (only on explicit export action)
+    let emailMap = {};
+    try {
+      setLoadingExport(true);
+      const resp = await fetch(`${API_BASE}/events/${selectedEventId}/sales?enrich_emails=true`);
+      if (resp.ok) {
+        const enrichedData = await resp.json();
+        const enrichedOrders = enrichedData?.orders ?? [];
+        enrichedOrders.forEach((o) => {
+          if (o.email) emailMap[String(o.id || o.numero)] = o.email;
+        });
+      }
+    } catch (_) {
+      // Non-critical: export proceeds without enriched emails
+    } finally {
+      setLoadingExport(false);
+    }
+
+    const orders = baseOrders.map((o) => {
+      const key = String(o.id || o.numero);
+      return emailMap[key] ? { ...o, email: emailMap[key] } : o;
+    });
 
     const currentEvent = events.find((event) => String(event.id) === String(selectedEventId));
     const eventName = currentEvent?.name || salesData?.event?.name || 'campanha';
@@ -961,19 +985,19 @@ export function EventSalesPage() {
             </button>
             <button
               className="btn-secondary"
-              disabled={!selectedEventId || loadingSales || filteredOrdersByItemStatus.length === 0}
+              disabled={!selectedEventId || loadingSales || loadingExport || filteredOrdersByItemStatus.length === 0}
               onClick={() => exportCampaignOrders(false)}
               title="Exporta em CSV padrão"
             >
-              Exportar CSV
+              {loadingExport ? 'Preparando...' : 'Exportar CSV'}
             </button>
             <button
               className="btn-secondary"
-              disabled={!selectedEventId || loadingSales || filteredOrdersByItemStatus.length === 0}
+              disabled={!selectedEventId || loadingSales || loadingExport || filteredOrdersByItemStatus.length === 0}
               onClick={() => exportCampaignOrders(true)}
               title="Exporta em formato compatível com Excel"
             >
-              Exportar Excel
+              {loadingExport ? 'Preparando...' : 'Exportar Excel'}
             </button>
           </div>
         </div>

@@ -762,7 +762,7 @@ async def get_event(event_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/{event_id}/sales", response_model=EventSalesResponse)
-async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
+async def get_event_sales(event_id: UUID, enrich_emails: bool = Query(default=False), db: Session = Depends(get_db)):
     event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
     if not event:
         raise HTTPException(status_code=404, detail="Evento não encontrado")
@@ -871,6 +871,46 @@ async def get_event_sales(event_id: UUID, db: Session = Depends(get_db)):
             _inject_event_tags(db, event_id, filtered_orders)
         except Exception as exc:
             logger.warning("event_tags_injection_failed event_id=%s error=%s", str(event_id), str(exc))
+
+        # On-demand email enrichment: fetch contact emails for orders still missing them.
+        if enrich_emails:
+            client = _make_client(db)
+            if client:
+                missing = [o for o in filtered_orders if not o.email]
+                contact_ids = {}
+                for o in missing:
+                    row_match = next(
+                        (r for r in snapshot_rows if r.bling_order_id == o.id),
+                        None,
+                    )
+                    if row_match and row_match.customer_contact_id:
+                        contact_ids[o.id] = row_match.customer_contact_id
+                seen_contacts: dict[int, str] = {}
+                for order in missing:
+                    cid = contact_ids.get(order.id)
+                    if not cid:
+                        continue
+                    if cid in seen_contacts:
+                        order.email = seen_contacts[cid]
+                        continue
+                    try:
+                        resp = await client.get(f"/contatos/{cid}")
+                        email = (
+                            (resp.get("data") or {}).get("email")
+                            or (resp.get("data") or {}).get("emailContato")
+                        ) or None
+                        if email:
+                            seen_contacts[cid] = email
+                            order.email = email
+                            # Persist for future requests (no-await: fire and forget)
+                            OrderSnapshotRepository.apply_customer_emails_by_contact_id(
+                                db, str(DEFAULT_TENANT_ID), {cid: email}
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "enrich_email_failed order_id=%s contact_id=%s error=%s",
+                            order.id, cid, str(exc)
+                        )
 
         logger.info(
             "event_sales_local_db_done event_id=%s matched_orders=%s matched_items=%s total_matched=%.2f",
