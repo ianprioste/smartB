@@ -11,6 +11,7 @@ import { EventSalesPage } from './pages/events/EventSalesPage';
 import { AccessControlPage } from './pages/admin/AccessControlPage';
 import { LoginPage } from './pages/auth/LoginPage';
 import { ForgotPasswordPage } from './pages/auth/ForgotPasswordPage';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import './styles/admin.css';
 
 const API_BASE = '/api';
@@ -57,6 +58,7 @@ function App() {
 
   return (
     <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <ErrorBoundary>
       <Routes>
         <Route path="/login" element={<LoginPage onLoginSuccess={setUser} />} />
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
@@ -74,6 +76,7 @@ function App() {
         <Route path="/events/sales" element={<ProtectedRoute user={user} loading={loading}><EventSalesPage /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      </ErrorBoundary>
     </BrowserRouter>
   );
 }

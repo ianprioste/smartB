@@ -239,6 +239,7 @@ function EventOrderTagEditor({
 }
 
 export function EventSalesPage() {
+  console.log('[EventSalesPage] Component rendering');
   const savedUiState = readSavedUiState();
   const isMobile = useIsMobile(1024);
   const [events, setEvents] = useState([]);
@@ -472,7 +473,9 @@ export function EventSalesPage() {
     try {
       setLoadingEvents(true);
       setError(null);
+      console.log('[EventSalesPage] loadEvents: fetching /api/events');
       const resp = await fetch(`${API_BASE}/events`);
+      console.log('[EventSalesPage] loadEvents: response status', resp.status);
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
         throw new Error(errData.detail || 'Falha ao carregar campanhas');
@@ -480,12 +483,14 @@ export function EventSalesPage() {
       const data = await resp.json();
       const list = Array.isArray(data) ? data : [];
       const activeList = list.filter((event) => event.is_active !== false);
+      console.log('[EventSalesPage] loadEvents: got', list.length, 'events,', activeList.length, 'active');
       setEvents(activeList);
       void loadEventOrdersCount(activeList);
       if (!selectedEventId && activeList.length > 0) {
         setSelectedEventId(String(activeList[0].id));
       }
     } catch (err) {
+      console.error('[EventSalesPage] loadEvents error:', err);
       setError(err.message);
     } finally {
       setLoadingEvents(false);
@@ -502,13 +507,17 @@ export function EventSalesPage() {
       setLoadingSales(true);
       setError(null);
       const query = enrichEmails ? '?enrich_emails=true' : '';
+      console.log('[EventSalesPage] loadSales: fetching /api/events/' + eventId + '/sales' + query);
       const resp = await fetch(`${API_BASE}/events/${eventId}/sales${query}`);
+      console.log('[EventSalesPage] loadSales: response status', resp.status);
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
         const message = errData.detail || 'Falha ao carregar pedidos da campanha';
         throw new Error(message);
       }
-      setSalesData(await resp.json());
+      const salesJson = await resp.json();
+      console.log('[EventSalesPage] loadSales: got', salesJson?.summary?.orders_count, 'orders');
+      setSalesData(salesJson);
       deltaCursorRef.current = new Date().toISOString();
     } catch (err) {
       setError(err.message);
