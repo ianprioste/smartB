@@ -755,13 +755,13 @@ export function EventSalesPage() {
     }
   }
 
-  const loadSales = useCallback(async (eventId, enrichEmails = false) => {
+  const loadSales = useCallback(async (eventId) => {
     if (!eventId) {
       setSalesData(null);
       return;
     }
 
-    const requestKey = `${String(eventId)}:${enrichEmails ? '1' : '0'}`;
+    const requestKey = String(eventId);
     if (salesInFlightRef.current.has(requestKey)) {
       return;
     }
@@ -770,7 +770,7 @@ export function EventSalesPage() {
     try {
       setLoadingSales(true);
       setError(null);
-      const query = enrichEmails ? '?enrich_emails=true' : '';
+      const query = '';
       console.log('[EventSalesPage] loadSales: fetching /api/events/' + eventId + '/sales' + query);
       const resp = await fetch(`${API_BASE}/events/${eventId}/sales${query}`);
       console.log('[EventSalesPage] loadSales: response status', resp.status);
@@ -1181,44 +1181,16 @@ export function EventSalesPage() {
       return;
     }
 
-    // Fetch enriched emails for export (only on explicit export action)
-    let emailMap = {};
+    setLoadingExport(true);
+    setExportMenuOpen(false);
+
     try {
-      setLoadingExport(true);
-      const resp = await fetch(`${API_BASE}/events/${selectedEventId}/sales?enrich_emails=true`);
-      if (resp.ok) {
-        const enrichedData = await resp.json();
-        const enrichedOrders = enrichedData?.orders ?? [];
-        enrichedOrders.forEach((o) => {
-          if (!o.email) return;
-          const keys = [o.id, o.numero, o.numero_loja]
-            .map((value) => (value == null ? '' : String(value).trim()))
-            .filter(Boolean);
-          keys.forEach((key) => {
-            emailMap[key] = o.email;
-          });
-        });
-      }
-    } catch (_) {
-      // Non-critical: export proceeds without enriched emails
-    } finally {
-      setLoadingExport(false);
-      setExportMenuOpen(false);
-    }
+      const orders = baseOrders;
+      const currentEvent = events.find((event) => String(event.id) === String(selectedEventId));
+      const eventName = currentEvent?.name || salesData?.event?.name || 'campanha';
+      const delimiter = ',';
 
-    const orders = baseOrders.map((o) => {
-      const keys = [o.id, o.numero, o.numero_loja]
-        .map((value) => (value == null ? '' : String(value).trim()))
-        .filter(Boolean);
-      const resolvedEmail = keys.map((key) => emailMap[key]).find(Boolean);
-      return resolvedEmail ? { ...o, email: resolvedEmail } : o;
-    });
-
-    const currentEvent = events.find((event) => String(event.id) === String(selectedEventId));
-    const eventName = currentEvent?.name || salesData?.event?.name || 'campanha';
-    const delimiter = ',';
-
-    const headers = [
+      const headers = [
       'Campanha',
       'Pedido Bling',
       'Pedido Nuvemshop',
@@ -1240,18 +1212,18 @@ export function EventSalesPage() {
       'Resumo Producao',
       'Total Pedido',
       'Total Itens Campanha no Pedido',
-    ];
+      ];
 
-    const lines = [headers.map((header) => toCsvCell(header, delimiter)).join(delimiter)];
-    const rowsForXlsx = [];
+      const lines = [headers.map((header) => toCsvCell(header, delimiter)).join(delimiter)];
+      const rowsForXlsx = [];
 
-    orders.forEach((order) => {
+      orders.forEach((order) => {
       const items = Array.isArray(order.matched_items) ? order.matched_items : [];
       const tags = Array.isArray(order.tags)
         ? order.tags.filter(Boolean).join(' | ')
         : (order.tag || '');
 
-      items.forEach((item) => {
+        items.forEach((item) => {
         const row = {
           'Campanha': eventName,
           'Pedido Bling': order.numero || order.id || '',
@@ -1277,18 +1249,21 @@ export function EventSalesPage() {
         };
         lines.push(headers.map((header) => toCsvCell(row[header], delimiter)).join(delimiter));
         rowsForXlsx.push(row);
+        });
       });
-    });
 
-    const dateStamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-    const baseName = slugifyText(eventName) || 'campanha';
-    if (format === 'xlsx') {
-      const filename = `pedidos-campanha-${baseName}-${dateStamp}.xlsx`;
-      downloadXlsxFile(filename, headers, rowsForXlsx);
-      return;
+      const dateStamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      const baseName = slugifyText(eventName) || 'campanha';
+      if (format === 'xlsx') {
+        const filename = `pedidos-campanha-${baseName}-${dateStamp}.xlsx`;
+        downloadXlsxFile(filename, headers, rowsForXlsx);
+        return;
+      }
+      const filename = `pedidos-campanha-${baseName}-${dateStamp}.csv`;
+      downloadCsvFile(filename, lines.join('\n'));
+    } finally {
+      setLoadingExport(false);
     }
-    const filename = `pedidos-campanha-${baseName}-${dateStamp}.csv`;
-    downloadCsvFile(filename, lines.join('\n'));
   }, [events, filteredOrdersByItemStatus, salesData?.event?.name, selectedEventId]);
 
   const printCampaignLabels = useCallback(() => {
@@ -1331,7 +1306,7 @@ export function EventSalesPage() {
             <p className="page-subtitle">Pedidos de venda filtrados pelos produtos selecionados na campanha</p>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button className="btn-secondary" disabled={!selectedEventId || loadingSales} onClick={() => loadSales(selectedEventId, true)}>
+            <button className="btn-secondary" disabled={!selectedEventId || loadingSales} onClick={() => loadSales(selectedEventId)}>
               {loadingSales ? 'Atualizando...' : 'Atualizar'}
             </button>
             <div style={{ position: 'relative' }}>
