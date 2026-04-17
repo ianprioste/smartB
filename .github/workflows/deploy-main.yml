@@ -276,10 +276,10 @@ jobs:
             ssh -i ~/.ssh/deploy_key -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
               "FRONTEND_DIR='${VPS_FRONTEND_DIR:-/usr/share/nginx/html}' bash -se" <<PUBLISH_DIAG
           sudo tee "\$FRONTEND_DIR/deploy-diag.txt" > /dev/null <<'DIAGEOF'
-deploy_exit=${DEPLOY_EXIT}
-${DEPLOY_ERR_TEXT}
-DIAGEOF
-PUBLISH_DIAG
+          deploy_exit=${DEPLOY_EXIT}
+          ${DEPLOY_ERR_TEXT}
+          DIAGEOF
+          PUBLISH_DIAG
           fi
 
           echo "=== PUBLIC ENDPOINTS ==="
