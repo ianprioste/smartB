@@ -448,6 +448,17 @@ EOF
     $SUDO rm -f /etc/nginx/sites-enabled/default
   fi
 
+  # Remove any conflicting third-party site configs that claim default_server on :80
+  for _conflict_file in /etc/nginx/sites-enabled/*; do
+    [ -f "$_conflict_file" ] || continue
+    _fname="$(basename "$_conflict_file")"
+    [ "$_fname" != "smartbling" ] || continue
+    if grep -qE 'default_server' "$_conflict_file" 2>/dev/null; then
+      log "Removendo config nginx conflitante (default_server): $_conflict_file"
+      $SUDO rm -f "$_conflict_file"
+    fi
+  done
+
   $SUDO nginx -t || fail "nginx invalido apos instalar smartbling-public.conf"
   $SUDO systemctl reload nginx || fail "Falha ao recarregar nginx apos instalar smartbling-public.conf"
   log "Configuracao nginx publica reforcada em $conf_path"
