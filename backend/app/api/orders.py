@@ -46,6 +46,20 @@ STATUS_NAME_MAP = {
 }
 VALID_STATUS_NAMES = {"Em aberto", "Atendido", "Cancelado"}
 
+# Status display mappings: map Bling status names to app display names
+DISPLAY_STATUS_MAP = {
+    "Pronto para retirada": "Pronto para envio",  # Map "Pronto para retirada" -> "Pronto para envio"
+    "Pronto para envio": "Pronto para envio",      # Keep "Pronto para envio" as-is
+}
+
+
+def _get_display_status_name(status_name: str | None) -> str | None:
+    """Apply display-level status name mappings (e.g., unify pickup/delivery statuses)."""
+    if not status_name:
+        return status_name
+    trimmed = str(status_name).strip()
+    return DISPLAY_STATUS_MAP.get(trimmed, trimmed)
+
 
 def _field_was_provided(model, field_name: str) -> bool:
     fields_set = getattr(model, "model_fields_set", None)
@@ -60,11 +74,56 @@ def _normalize_status_name(name: str | None) -> str | None:
     lower = name.strip().lower()
     if "atendid" in lower or "entreg" in lower:
         return "Atendido"
-    if "cancel" in lower or "conclu" in lower or "devolv" in lower:
+    if "cancel" in lower or "devolv" in lower:
         return "Cancelado"
     if "pendente" in lower:
         return "Em aberto"
     return name
+
+
+def _resolve_status_filter_label(raw_status: Any, fallback_status_id: Any = None, persisted_status_name: str | None = None) -> str | None:
+    """Resolve canonical category label used only for filtering.
+
+    Categories are constrained to Em aberto/Atendido/Cancelado.
+    """
+    if isinstance(raw_status, dict):
+        valor = raw_status.get("valor")
+        if valor is not None:
+            try:
+                label = _VALOR_LABEL.get(int(valor))
+                if label in VALID_STATUS_NAMES:
+                    return label
+            except (TypeError, ValueError):
+                pass
+
+        status_name = raw_status.get("nome")
+        normalized = _normalize_status_name(status_name) if status_name else None
+        if normalized in VALID_STATUS_NAMES:
+            return normalized
+
+        status_id = raw_status.get("id") or fallback_status_id
+        if status_id is not None:
+            try:
+                label = STATUS_NAME_MAP.get(int(status_id))
+                if label in VALID_STATUS_NAMES:
+                    return label
+            except (TypeError, ValueError):
+                pass
+        return None
+
+    normalized = _normalize_status_name(persisted_status_name) if persisted_status_name else None
+    if normalized in VALID_STATUS_NAMES:
+        return normalized
+
+    if fallback_status_id is not None:
+        try:
+            label = STATUS_NAME_MAP.get(int(fallback_status_id))
+            if label in VALID_STATUS_NAMES:
+                return label
+        except (TypeError, ValueError):
+            pass
+
+    return None
 
 
 def _parse_since_cursor(since: str | None) -> datetime:
@@ -362,11 +421,18 @@ def _order_matches_active_campaign(order_date: datetime | None, order_payload: D
 def _resolve_status_name(raw_status: Any, fallback_status_id: Any = None, persisted_status_name: str | None = None) -> str:
     """Resolve a displayable order status.
 
-    Prefers the `valor` category (0=Em aberto, 1=Atendido, 2=Cancelado)
-    which is semantically reliable even when `nome` is absent.
+    For display, prefer the exact status name coming from Bling.
+    Apply any display-level status name mappings (e.g., unifying pickup/delivery statuses).
+    Category/id fallbacks are used only when a readable name is unavailable.
     """
     if isinstance(raw_status, dict):
-        # Prefer valor (category) — always semantically correct.
+        # Prefer the original Bling status name for UI fidelity.
+        status_name = raw_status.get("nome")
+        if status_name:
+            display_name = _get_display_status_name(status_name)
+            return str(display_name).strip() or "—"
+
+        # Fallback to category when name is missing.
         valor = raw_status.get("valor")
         if valor is not None:
             try:
@@ -375,10 +441,6 @@ def _resolve_status_name(raw_status: Any, fallback_status_id: Any = None, persis
                     return label
             except (TypeError, ValueError):
                 pass
-
-        status_name = raw_status.get("nome")
-        if status_name:
-            return _normalize_status_name(status_name) or status_name
 
         status_id = raw_status.get("id") or fallback_status_id
         if status_id is not None:
@@ -389,9 +451,8 @@ def _resolve_status_name(raw_status: Any, fallback_status_id: Any = None, persis
         return "—"
 
     if persisted_status_name:
-        normalized = _normalize_status_name(persisted_status_name) or persisted_status_name
-        if normalized in VALID_STATUS_NAMES:
-            return normalized
+        display_name = _get_display_status_name(persisted_status_name)
+        return str(display_name).strip() or "—"
 
     if fallback_status_id is not None:
         try:
@@ -421,6 +482,8 @@ def _format_order(o: Dict) -> Dict:
         except (ValueError, TypeError):
             pass
 
+    filter_label = _resolve_status_filter_label(situacao, sit_id)
+
     # Extract items from the detail payload
     total_final = _extract_total_with_discount(o)
     itens = _apply_paid_values(_extract_order_items(o), total_final)
@@ -434,6 +497,7 @@ def _format_order(o: Dict) -> Dict:
         "total": total_final,
         "situacao": sit_nome,
         "situacaoId": sit_id,
+        "_status_filter_label": filter_label,
         "itens": itens,
     }
 
@@ -535,6 +599,13 @@ def _format_snapshot_order(row) -> Dict[str, Any]:
     status_name = _resolve_status_name(raw_order.get("situacao"), row.status_id, row.status_name)
     if status_name == "—":
         status_name = _resolve_status_name(raw_detail.get("data", {}).get("situacao") if isinstance(raw_detail.get("data"), dict) else None, row.status_id, row.status_name)
+    filter_label = _resolve_status_filter_label(raw_order.get("situacao"), row.status_id, row.status_name)
+    if not filter_label:
+        filter_label = _resolve_status_filter_label(
+            raw_detail.get("data", {}).get("situacao") if isinstance(raw_detail.get("data"), dict) else None,
+            row.status_id,
+            row.status_name,
+        )
     
     return {
         "id": _to_optional_int(row.bling_order_id),
@@ -545,6 +616,7 @@ def _format_snapshot_order(row) -> Dict[str, Any]:
         "total": total_final,
         "situacao": status_name or "—",
         "situacaoId": row.status_id,
+        "_status_filter_label": filter_label,
         "has_frete": _has_frete(raw_detail, raw_order),
         "itens": itens,
     }
@@ -641,7 +713,11 @@ async def list_orders(
                 continue
             formatted.append(order)
         if requested_labels:
-            formatted = [o for o in formatted if (o.get("situacao") or "") in requested_labels]
+            formatted = [
+                o
+                for o in formatted
+                if ((o.get("_status_filter_label") or o.get("situacao") or "") in requested_labels)
+            ]
         formatted = _filter_global_orders_by_tag(db, formatted, tag)
         formatted.sort(key=lambda x: x.get("data") or "", reverse=True)
 
@@ -654,6 +730,9 @@ async def list_orders(
             _inject_global_tags(db, page_data)
         except Exception as exc:
             logger.warning("orders.inject_global_tags_fallback_failed error=%s", str(exc))
+
+        for order in page_data:
+            order.pop("_status_filter_label", None)
 
         return {
             "has_bling_auth": True,
@@ -699,7 +778,11 @@ async def list_orders(
         except Exception as exc:
             logger.warning("orders.format_snapshot_order_failed bling_order_id=%s error=%s", getattr(row, 'bling_order_id', '?'), str(exc))
     if requested_labels:
-        formatted = [o for o in formatted if (o.get("situacao") or "") in requested_labels]
+        formatted = [
+            o
+            for o in formatted
+            if ((o.get("_status_filter_label") or o.get("situacao") or "") in requested_labels)
+        ]
     formatted = _filter_global_orders_by_tag(db, formatted, tag)
 
     # Sort by date descending
@@ -720,6 +803,9 @@ async def list_orders(
         _inject_global_tags(db, page_data)
     except Exception as exc:
         logger.warning("orders.inject_global_tags_failed error=%s", str(exc))
+
+    for order in page_data:
+        order.pop("_status_filter_label", None)
 
     return {
         "has_bling_auth": client is not None,
