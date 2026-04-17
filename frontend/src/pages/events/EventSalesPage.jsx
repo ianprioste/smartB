@@ -262,6 +262,7 @@ export function EventSalesPage() {
   const [tagSavingByOrder, setTagSavingByOrder] = useState({});
   const [tagErrorByOrder, setTagErrorByOrder] = useState({});
   const deltaCursorRef = useRef(null);
+  const salesInFlightRef = useRef(new Set());
   const suppressDeltaUntilRef = useRef(0);
   const initialScrollYRef = useRef(savedUiState?.scrollY || 0);
   const hasRestoredScrollRef = useRef(false);
@@ -446,29 +447,6 @@ export function EventSalesPage() {
     }
   }, [loadEventTags, markLocalMutation, selectedEventId]);
 
-  const loadEventOrdersCount = useCallback(async (eventList) => {
-    const entries = await Promise.all(
-      eventList.map(async (event) => {
-        try {
-          const resp = await fetch(`${API_BASE}/events/${event.id}/sales`);
-          if (!resp.ok) return [String(event.id), null];
-          const data = await resp.json();
-          return [String(event.id), Number(data?.summary?.orders_count || 0)];
-        } catch {
-          return [String(event.id), null];
-        }
-      }),
-    );
-
-    const next = {};
-    entries.forEach(([eventId, count]) => {
-      if (Number.isFinite(count)) {
-        next[eventId] = count;
-      }
-    });
-    setEventOrdersCount(next);
-  }, []);
-
   async function loadEvents() {
     try {
       setLoadingEvents(true);
@@ -485,7 +463,6 @@ export function EventSalesPage() {
       const activeList = list.filter((event) => event.is_active !== false);
       console.log('[EventSalesPage] loadEvents: got', list.length, 'events,', activeList.length, 'active');
       setEvents(activeList);
-      void loadEventOrdersCount(activeList);
       if (!selectedEventId && activeList.length > 0) {
         setSelectedEventId(String(activeList[0].id));
       }
@@ -503,6 +480,12 @@ export function EventSalesPage() {
       return;
     }
 
+    const requestKey = `${String(eventId)}:${enrichEmails ? '1' : '0'}`;
+    if (salesInFlightRef.current.has(requestKey)) {
+      return;
+    }
+    salesInFlightRef.current.add(requestKey);
+
     try {
       setLoadingSales(true);
       setError(null);
@@ -518,11 +501,16 @@ export function EventSalesPage() {
       const salesJson = await resp.json();
       console.log('[EventSalesPage] loadSales: got', salesJson?.summary?.orders_count, 'orders');
       setSalesData(salesJson);
+      setEventOrdersCount((prev) => ({
+        ...prev,
+        [String(eventId)]: Number(salesJson?.summary?.orders_count || 0),
+      }));
       deltaCursorRef.current = new Date().toISOString();
     } catch (err) {
       setError(err.message);
       setSalesData(null);
     } finally {
+      salesInFlightRef.current.delete(requestKey);
       setLoadingSales(false);
     }
   }, []);
@@ -651,7 +639,7 @@ export function EventSalesPage() {
 
   useEffect(() => {
     if (selectedEventId) {
-      loadSales(selectedEventId, true);
+      loadSales(selectedEventId);
       loadEventTags(selectedEventId);
     }
   }, [loadEventTags, loadSales, selectedEventId]);

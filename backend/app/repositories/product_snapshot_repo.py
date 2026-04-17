@@ -98,6 +98,26 @@ class ProductSnapshotRepository:
             .all()
         )
 
+    @staticmethod
+    def list_children_by_parent_ids(
+        db: Session,
+        tenant_id: UUID,
+        parent_ids: List[int],
+    ) -> List[BlingProductSnapshotModel]:
+        normalized_ids = [int(pid) for pid in parent_ids if pid is not None]
+        if not normalized_ids:
+            return []
+
+        return (
+            db.query(BlingProductSnapshotModel)
+            .filter(
+                BlingProductSnapshotModel.tenant_id == tenant_id,
+                BlingProductSnapshotModel.parent_product_id.in_(normalized_ids),
+            )
+            .order_by(BlingProductSnapshotModel.parent_product_id.asc(), BlingProductSnapshotModel.nome.asc())
+            .all()
+        )
+
 
 def _extract_parent_id(product_data: Dict[str, Any]) -> Optional[int]:
     variacao = product_data.get("variacao") if isinstance(product_data.get("variacao"), dict) else {}

@@ -215,6 +215,31 @@ def _list_from_snapshot(db: Session, q: Optional[str], page: int, limit: int) ->
         )
 
 
+def _search_from_snapshot(
+    db: Session,
+    q: str,
+    page: int,
+    limit: int,
+    include_children: bool,
+) -> BlingProductSearchResponse:
+    """Fast local search for campaign product picker using persisted snapshot."""
+    rows = ProductSnapshotRepository.list_by_query(db, DEFAULT_TENANT_ID, q or "")
+    items = _sort_catalog_items([_build_snapshot_item(row) for row in rows])
+
+    if not include_children:
+        items = [item for item in items if not item.pai]
+
+    start = (page - 1) * limit
+    end = start + limit
+    return BlingProductSearchResponse(
+        total=len(items),
+        page=page,
+        limit=limit,
+        items=items[start:end],
+        total_items=len(items),
+    )
+
+
 def _can_use_raw_hierarchy(items: list[BlingProductSearchItem]) -> bool:
     """Return True when list payload already has enough parent-child links.
 
@@ -537,6 +562,18 @@ async def search_products(
         "include_children": include_children,
         "search_by": search_by,
     })
+
+    # Prefer local snapshot for predictable low-latency campaign search.
+    try:
+        snapshot_response = _search_from_snapshot(db, q, page, limit, include_children)
+        if snapshot_response.total_items and snapshot_response.total_items > 0:
+            logger.info(
+                "search_products_snapshot_hit",
+                extra={"query": q, "total_items": snapshot_response.total_items},
+            )
+            return snapshot_response
+    except Exception as exc:
+        logger.warning("search_products_snapshot_failed", extra={"query": q, "error": str(exc)})
     
     # Get Bling OAuth2 token from database
     bling_token = BlingTokenRepository.get_by_tenant(db, DEFAULT_TENANT_ID)

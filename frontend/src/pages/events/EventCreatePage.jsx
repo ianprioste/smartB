@@ -2,10 +2,44 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Layout } from '../../components/Layout';
 
 const API_BASE = '/api';
+const PRODUCTS_CACHE_KEY = 'smartb_products_catalog_v3';
 
 function formatDate(value) {
   if (!value) return '—';
   return new Date(value).toLocaleDateString('pt-BR');
+}
+
+function loadCachedCatalog() {
+  try {
+    const raw = localStorage.getItem(PRODUCTS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function matchesProductQuery(product, query) {
+  const normalized = (query || '').trim().toLowerCase();
+  if (!normalized) return true;
+
+  const codigo = String(product?.codigo || '').toLowerCase();
+  const nome = String(product?.nome || '').toLowerCase();
+  const id = String(product?.id || '').toLowerCase();
+  return codigo.includes(normalized) || nome.includes(normalized) || id.includes(normalized);
+}
+
+function searchFromCachedCatalog(query, includeChildren, limit = 20) {
+  const catalog = loadCachedCatalog();
+  if (!catalog || catalog.length === 0) return null;
+
+  const filtered = catalog
+    .filter((item) => (includeChildren ? true : !item?.pai))
+    .filter((item) => matchesProductQuery(item, query))
+    .slice(0, limit);
+
+  return filtered;
 }
 
 export function EventCreatePage() {
@@ -59,8 +93,14 @@ export function EventCreatePage() {
 
     try {
       setSearchingProducts(true);
+      const cachedResults = searchFromCachedCatalog(q, includeChildren, 20);
+      if (cachedResults) {
+        setProductResults(cachedResults);
+        return;
+      }
+
       const resp = await fetch(
-        `${API_BASE}/bling/products/search?q=${encodeURIComponent(q)}&page=1&limit=20&include_children=${includeChildren}`
+        `${API_BASE}/bling/products/list/all?q=${encodeURIComponent(q)}&page=1&limit=20&include_hierarchy=${includeChildren}`
       );
       if (!resp.ok) throw new Error('Falha ao buscar produtos');
       const data = await resp.json();

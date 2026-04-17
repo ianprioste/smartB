@@ -5,7 +5,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from app.models.database import ItemProductionNoteModel
+from app.models.database import ItemProductionNoteModel, SalesEventModel
 
 
 class ItemProductionNoteRepository:
@@ -106,12 +106,14 @@ class ItemProductionNoteRepository:
 
     @staticmethod
     def list_campaign_order_ids(db: Session, tenant_id: UUID) -> set[int]:
-        """Return Bling order IDs that are already linked to campaigns."""
+        """Return Bling order IDs linked to *active* campaigns only."""
         rows = (
             db.query(ItemProductionNoteModel.bling_order_id)
+            .join(SalesEventModel, ItemProductionNoteModel.event_id == SalesEventModel.id)
             .filter(
                 ItemProductionNoteModel.tenant_id == tenant_id,
                 ItemProductionNoteModel.bling_order_id.isnot(None),
+                SalesEventModel.is_active == True,
             )
             .distinct()
             .all()
