@@ -112,10 +112,8 @@ jobs:
           BUILD_ID: ${{ env.BUILD_ID }}
           PUBLIC_HOST: ${{ env.PUBLIC_HOST }}
         run: |
-          set -Eeuo pipefail
-
-          # Pack all deploy secrets into a base64 blob to avoid SSH quoting issues
-          # (secrets with single quotes would break inline VAR='value' in SSH command).
+          # Capture deploy output so diagnostics step can publish error details.
+          set +e
           DEPLOY_VARS_B64="$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
             "DEPLOY_SECRET_KEY=$DEPLOY_SECRET_KEY" \
             "DEPLOY_DATABASE_URL=$DEPLOY_DATABASE_URL" \
@@ -130,13 +128,14 @@ jobs:
             "DEPLOY_SMTP_FROM_EMAIL=$DEPLOY_SMTP_FROM_EMAIL" \
             "DEPLOY_SMTP_FROM_NAME=$DEPLOY_SMTP_FROM_NAME" \
             "DEPLOY_BLING_WEBHOOK_SECRET=$DEPLOY_BLING_WEBHOOK_SECRET" \
-            | base64 -w0)"
+            | base64 -w0)" || true
 
           echo "[deploy] SSH target: ${VPS_USER}@${VPS_HOST}:${VPS_PORT}"
           echo "[deploy] VPS_APP_DIR=${VPS_APP_DIR:-'(empty)'}"
           echo "[deploy] DEPLOY_VARS_B64 length: ${#DEPLOY_VARS_B64}"
           echo "[deploy] BACKEND_ENV_B64 length: ${#BACKEND_ENV_B64}"
-          ssh -v -i ~/.ssh/deploy_key -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+
+          DEPLOY_OUTPUT="$(ssh -v -i ~/.ssh/deploy_key -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
             "VPS_APP_DIR='$VPS_APP_DIR' VPS_BACKEND_SERVICE='$VPS_BACKEND_SERVICE' VPS_FRONTEND_DIR='$VPS_FRONTEND_DIR' VPS_REPO_URL='$VPS_REPO_URL' BACKEND_ENV_B64='$BACKEND_ENV_B64' GITHUB_REPOSITORY='$GITHUB_REPOSITORY' GIT_COMMIT='$GITHUB_SHA' BUILD_ID='$BUILD_ID' BUILD_TIMESTAMP='$(date -u '+%Y-%m-%dT%H:%M:%SZ')' PUBLIC_HOST='$PUBLIC_HOST' DEPLOY_VARS_B64='$DEPLOY_VARS_B64' bash -se" <<'REMOTE_SCRIPT'
           set -Eeuo pipefail
           echo "[deploy-remote] user=$(whoami) uid=$(id -u) home=$HOME"
@@ -190,8 +189,14 @@ jobs:
           APP_DIR="$APP_DIR" BACKEND_SERVICE="$BACKEND_SERVICE" FRONTEND_TARGET_DIR="$FRONTEND_TARGET_DIR" GIT_COMMIT="$GIT_COMMIT" BUILD_ID="$BUILD_ID" BUILD_TIMESTAMP="$BUILD_TIMESTAMP" PUBLIC_HOST="$PUBLIC_HOST" DEPLOY_SECRET_KEY="$DEPLOY_SECRET_KEY" DEPLOY_DATABASE_URL="$DEPLOY_DATABASE_URL" DEPLOY_CORS_ORIGINS="$DEPLOY_CORS_ORIGINS" DEPLOY_BLING_CLIENT_ID="$DEPLOY_BLING_CLIENT_ID" DEPLOY_BLING_CLIENT_SECRET="$DEPLOY_BLING_CLIENT_SECRET" DEPLOY_BLING_REDIRECT_URI="$DEPLOY_BLING_REDIRECT_URI" DEPLOY_SMTP_HOST="$DEPLOY_SMTP_HOST" DEPLOY_SMTP_PORT="$DEPLOY_SMTP_PORT" DEPLOY_SMTP_USERNAME="$DEPLOY_SMTP_USERNAME" DEPLOY_SMTP_PASSWORD="$DEPLOY_SMTP_PASSWORD" DEPLOY_SMTP_FROM_EMAIL="$DEPLOY_SMTP_FROM_EMAIL" DEPLOY_SMTP_FROM_NAME="$DEPLOY_SMTP_FROM_NAME" DISABLE_LEGACY_DOCKER="true" \
             bash scripts/deploy-vps.sh
           REMOTE_SCRIPT
-
-      - name: Verify Public Rollout
+          2>&1)" || true
+          DEPLOY_EXIT=$?
+          echo "$DEPLOY_OUTPUT"
+          # Save sanitized error output (strip secrets) for diagnostics step.
+          DEPLOY_ERR_B64="$(echo "$DEPLOY_OUTPUT" | tail -60 | sed 's/DEPLOY_[A-Z_]*=[^ ]*/DEPLOY_XXX=***/g' | base64 -w0)"
+          echo "deploy_err_b64=$DEPLOY_ERR_B64" >> "$GITHUB_OUTPUT"
+          echo "deploy_exit=$DEPLOY_EXIT" >> "$GITHUB_OUTPUT"
+          exit $DEPLOY_EXIT
         if: always()
         shell: bash
         env:
@@ -258,8 +263,24 @@ jobs:
           VPS_BACKEND_SERVICE: ${{ secrets.VPS_BACKEND_SERVICE || 'smartbling-backend' }}
           VPS_FRONTEND_DIR: ${{ secrets.VPS_FRONTEND_DIR || '/usr/share/nginx/html' }}
           PUBLIC_HOST: ${{ env.PUBLIC_HOST }}
+          DEPLOY_ERR_B64: ${{ steps.deploy_ssh.outputs.deploy_err_b64 }}
+          DEPLOY_EXIT: ${{ steps.deploy_ssh.outputs.deploy_exit }}
         run: |
           set +e
+
+          # Publish deploy error to VPS for remote debugging (temp file, auto-cleaned).
+          if [ -n "${DEPLOY_ERR_B64:-}" ]; then
+            DEPLOY_ERR_TEXT="$(printf '%s' "$DEPLOY_ERR_B64" | base64 -d 2>/dev/null || echo '(decode failed)')"
+            echo "=== DEPLOY STEP OUTPUT (exit=$DEPLOY_EXIT) ==="
+            echo "$DEPLOY_ERR_TEXT"
+            ssh -i ~/.ssh/deploy_key -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+              "FRONTEND_DIR='${VPS_FRONTEND_DIR:-/usr/share/nginx/html}' bash -se" <<PUBLISH_DIAG
+          sudo tee "\$FRONTEND_DIR/deploy-diag.txt" > /dev/null <<'DIAGEOF'
+deploy_exit=${DEPLOY_EXIT}
+${DEPLOY_ERR_TEXT}
+DIAGEOF
+PUBLISH_DIAG
+          fi
 
           echo "=== PUBLIC ENDPOINTS ==="
           curl -iL --max-time 12 "https://${PUBLIC_HOST}/build-info.json" | sed -n '1,25p'
