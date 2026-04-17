@@ -94,6 +94,283 @@ function formatDateTime(value) {
   return dt.toLocaleString('pt-BR');
 }
 
+function escapeHtml(text) {
+  return String(text ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function getOrderTagLabel(order) {
+  const tags = Array.isArray(order?.tags)
+    ? order.tags.filter((tag) => (tag || '').trim())
+    : [];
+  if (tags.length > 0) return tags.join(', ');
+  const fallback = String(order?.tag || '').trim();
+  return fallback || '';
+}
+
+function buildLabelsFromOrders(orders) {
+  const labels = [];
+  for (const order of orders || []) {
+    const blingNumber = String(order?.numero ?? order?.id ?? '—');
+    const nuvemshopNumber = String(order?.numeroLoja || '—');
+    const buyerName = String(order?.cliente || '—').trim() || '—';
+    const tagLabel = getOrderTagLabel(order);
+    const itens = Array.isArray(order?.itens) ? order.itens : [];
+
+    for (const item of itens) {
+      labels.push({
+        orderCode: `${blingNumber}/${nuvemshopNumber}`,
+        buyerName,
+        tagLabel,
+        itemName: String(item?.product_name || '—').trim() || '—',
+        quantity: Number.isFinite(Number(item?.quantity)) ? Number(item.quantity) : 0,
+        sku: String(item?.sku || '').trim(),
+        notes: String(item?.notes || '').trim(),
+      });
+    }
+  }
+  return labels;
+}
+
+function buildBatchLabelsPrintHtml(labels) {
+  const labelsHtml = labels.map((label) => {
+    const notesText = label.notes || 'Sem observações';
+    const qtyText = `Qtd: ${label.quantity > 0 ? label.quantity : '—'}`;
+    const skuText = label.sku ? `SKU: ${label.sku}` : '';
+
+    return `
+      <section class="label-sheet">
+        <div class="label">
+          <div class="order-panel">
+            <div class="order-caption">PEDIDO:</div>
+            <div class="order-code">${escapeHtml(label.orderCode)}</div>
+          </div>
+
+          <div class="solid-divider"></div>
+
+          <div class="client-block">
+            <div class="client-title">NOME DO CLIENTE:</div>
+            <div class="client-name">${escapeHtml(label.buyerName)}</div>
+            ${label.tagLabel ? `<div class="client-tag">TAG: ${escapeHtml(label.tagLabel)}</div>` : ''}
+          </div>
+
+          <div class="dotted-divider"></div>
+
+          <div class="bottom-grid">
+            <div class="item-block">
+              <div class="section-title">ITEM COMPRADO:</div>
+              <div class="item-name">${escapeHtml(label.itemName)}</div>
+              <div class="item-meta">
+                <div class="meta-line">${escapeHtml(qtyText)}</div>
+                ${skuText ? `<div class="meta-line">${escapeHtml(skuText)}</div>` : ''}
+              </div>
+            </div>
+            <div class="notes-block">
+              <div class="section-title">NOTAS:</div>
+              <div class="notes-text">${escapeHtml(notesText)}</div>
+            </div>
+          </div>
+        </div>
+      </section>`;
+  }).join('');
+
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Etiquetas de pedidos</title>
+    <style>
+      @page {
+        size: 100mm 50mm;
+        margin: 0 0 5mm 0;
+      }
+
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #fff;
+        font-family: Arial, sans-serif;
+      }
+
+      .label-sheet {
+        width: 100mm;
+        height: 50mm;
+        page-break-after: always;
+        box-sizing: border-box;
+      }
+
+      .label {
+        width: 100mm;
+        height: 50mm;
+        box-sizing: border-box;
+        border: none;
+        padding: 3mm 3.5mm 2.5mm;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .order-panel {
+        background: #000;
+        color: #fff;
+        border-radius: 2mm;
+        padding: 1.2mm 2mm 1.4mm;
+        flex-shrink: 0;
+      }
+
+      .order-caption {
+        font-size: 2.5mm;
+        font-weight: 800;
+        letter-spacing: 0.1mm;
+      }
+
+      .order-code {
+        margin-top: 0.3mm;
+        font-size: 7mm;
+        line-height: 1;
+        font-weight: 800;
+      }
+
+      .solid-divider {
+        border-top: 0.6mm solid #000;
+        margin: 1.2mm 0 1mm;
+        flex-shrink: 0;
+      }
+
+      .client-block {
+        flex-shrink: 0;
+      }
+
+      .client-title {
+        font-size: 2.3mm;
+        font-weight: 800;
+        line-height: 1;
+      }
+
+      .client-name {
+        margin-top: 0.5mm;
+        font-size: 5.5mm;
+        font-weight: 800;
+        line-height: 1.1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .client-tag {
+        margin-top: 0.5mm;
+        font-size: 2.2mm;
+        font-weight: 700;
+      }
+
+      .dotted-divider {
+        border-top: 0.6mm dotted #000;
+        margin: 1mm 0 0.8mm;
+        flex-shrink: 0;
+      }
+
+      .bottom-grid {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 62% 38%;
+        gap: 1.5mm;
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      .item-block,
+      .notes-block {
+        min-width: 0;
+        overflow: hidden;
+      }
+
+      .item-block {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+
+      .notes-block {
+        border-left: 0.6mm solid #000;
+        padding-left: 1.5mm;
+      }
+
+      .section-title {
+        font-size: 2.2mm;
+        font-weight: 800;
+        margin-bottom: 0.2mm;
+        line-height: 1.1;
+      }
+
+      .item-name {
+        font-size: 2.8mm;
+        font-weight: 800;
+        line-height: 1.1;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+        white-space: normal;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      .item-meta {
+        margin-top: 0.6mm;
+        font-size: 1.95mm;
+        font-weight: 600;
+        line-height: 1.2;
+        white-space: normal;
+        overflow: hidden;
+        flex-shrink: 0;
+      }
+
+      .meta-line {
+        word-break: break-word;
+        overflow-wrap: anywhere;
+      }
+
+      .notes-text {
+        margin-top: 0.8mm;
+        font-size: 2.4mm;
+        font-weight: 600;
+        line-height: 1.3;
+        word-break: break-word;
+        overflow-wrap: break-word;
+        white-space: normal;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    ${labelsHtml}
+    <script>
+      function fitItemNameText() {
+        var itemEls = document.querySelectorAll('.item-name');
+        itemEls.forEach(function (el) {
+          var computed = window.getComputedStyle(el);
+          var currentPx = parseFloat(computed.fontSize) || 12;
+          var minPx = 6; // ~1.6mm on most browsers/printers
+
+          while (el.scrollHeight > el.clientHeight + 0.5 && currentPx > minPx) {
+            currentPx -= 0.25;
+            el.style.fontSize = currentPx + 'px';
+          }
+        });
+      }
+
+      window.onload = function () {
+        fitItemNameText();
+        window.focus();
+        window.print();
+      };
+    </script>
+  </body>
+</html>`;
+}
+
 function StatusBadge({ text }) {
   const lower = (text || '').toLowerCase();
   let bg = '#f1f5f9', color = '#64748b';
@@ -326,6 +603,9 @@ export function OrdersPage() {
   const [tagErrorByOrder, setTagErrorByOrder] = useState({});
   const [expandedOrderId, setExpandedOrderId] = useState(savedUiState?.expandedOrderId ?? null);
   const [syncModalOpen, setSyncModalOpen] = useState(false);
+  const [printingLabels, setPrintingLabels] = useState(false);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const exportMenuRef = useRef(null);
   const initialScrollYRef = useRef(savedUiState?.scrollY || 0);
   const hasRestoredScrollRef = useRef(false);
   const debounceRef = useRef(null);
@@ -513,6 +793,70 @@ export function OrdersPage() {
       setLoading(false);
     }
   }, []);
+
+  const fetchAllFilteredOrdersForPrint = useCallback(async () => {
+    const statusStr = Array.from(selectedStatuses).join(',');
+    const aggregated = [];
+    let currentPage = 1;
+    let pages = 1;
+
+    while (currentPage <= pages) {
+      const params = new URLSearchParams({
+        page: String(currentPage),
+        limit: '500',
+        statuses: statusStr,
+      });
+      if (search) params.set('search', search);
+      if (selectedTagFilter) params.set('tag', selectedTagFilter);
+
+      const resp = await fetch(`${API_BASE}/orders?${params.toString()}`);
+      if (!resp.ok) {
+        throw new Error('Falha ao carregar pedidos para impressão');
+      }
+      const data = await resp.json();
+      aggregated.push(...(data.data || []));
+      pages = Number.isFinite(Number(data.pages)) ? Math.max(1, Number(data.pages)) : 1;
+      currentPage += 1;
+
+      // Hard safety break to avoid infinite loops in inconsistent API responses.
+      if (currentPage > 500) {
+        break;
+      }
+    }
+
+    return aggregated;
+  }, [search, selectedStatuses, selectedTagFilter]);
+
+  const handlePrintFilteredLabels = useCallback(async () => {
+    if (typeof window === 'undefined') return;
+    try {
+      setPrintingLabels(true);
+      setError(null);
+
+      const filteredOrders = await fetchAllFilteredOrdersForPrint();
+      const labels = buildLabelsFromOrders(filteredOrders);
+
+      if (labels.length === 0) {
+        window.alert('Nenhuma etiqueta para imprimir com os filtros atuais.');
+        return;
+      }
+
+      const html = buildBatchLabelsPrintHtml(labels);
+      const printWindow = window.open('', '_blank', 'width=1024,height=768');
+      if (!printWindow) {
+        window.alert('Nao foi possivel abrir a janela de impressao. Verifique o bloqueador de pop-up.');
+        return;
+      }
+
+      printWindow.document.open();
+      printWindow.document.write(html);
+      printWindow.document.close();
+    } catch (err) {
+      setError(err.message || 'Erro ao preparar etiquetas para impressão');
+    } finally {
+      setPrintingLabels(false);
+    }
+  }, [fetchAllFilteredOrdersForPrint]);
 
   const fetchSyncStatus = useCallback(async () => {
     try {
@@ -742,6 +1086,62 @@ export function OrdersPage() {
               style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer', fontSize: 13, color: '#475569', fontWeight: 500 }}>
               {loading ? '⟳' : '⟳ Atualizar'}
             </button>
+
+            {/* ── Exportar dropdown ── */}
+            <div ref={exportMenuRef} style={{ position: 'relative' }}>
+              <button
+                onClick={() => setExportMenuOpen((v) => !v)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '7px 14px', borderRadius: 8,
+                  border: '1px solid #e2e8f0', background: '#fff',
+                  cursor: 'pointer', fontSize: 13, color: '#475569', fontWeight: 500,
+                }}
+              >
+                Exportar
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                  style={{ marginLeft: 2, transform: exportMenuOpen ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }}>
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+
+              {exportMenuOpen && (
+                <>
+                  {/* Dismiss overlay */}
+                  <div
+                    onClick={() => setExportMenuOpen(false)}
+                    style={{ position: 'fixed', inset: 0, zIndex: 998 }}
+                  />
+                  <div style={{
+                    position: 'absolute', top: 'calc(100% + 6px)', right: 0,
+                    background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10,
+                    boxShadow: '0 8px 24px rgba(0,0,0,.1)', zIndex: 999,
+                    minWidth: 210, overflow: 'hidden',
+                  }}>
+                    <button
+                      onClick={() => { setExportMenuOpen(false); handlePrintFilteredLabels(); }}
+                      disabled={loading || printingLabels}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        width: '100%', padding: '11px 16px',
+                        border: 'none', background: 'none',
+                        cursor: (loading || printingLabels) ? 'not-allowed' : 'pointer',
+                        fontSize: 13, color: '#0f172a', fontWeight: 600,
+                        textAlign: 'left',
+                        opacity: (loading || printingLabels) ? 0.5 : 1,
+                      }}
+                    >
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="6 9 6 2 18 2 18 9" />
+                        <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+                        <rect x="6" y="14" width="12" height="8" />
+                      </svg>
+                      {printingLabels ? 'Preparando etiquetas...' : 'Imprimir etiquetas 10×5'}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
 

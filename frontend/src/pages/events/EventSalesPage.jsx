@@ -52,6 +52,7 @@ function readSavedUiState() {
       groupBy: parsed?.groupBy === 'item' ? 'item' : 'pedido',
       expandedOrderId: normalizeExpandedKey(parsed?.expandedOrderId),
       searchTerm: typeof parsed?.searchTerm === 'string' ? parsed.searchTerm : '',
+      skuTerm: typeof parsed?.skuTerm === 'string' ? parsed.skuTerm : '',
       selectedStatuses: Array.isArray(parsed?.selectedStatuses)
         ? new Set(parsed.selectedStatuses.filter((value) => typeof value === 'string' && value.trim()))
         : null,
@@ -70,6 +71,7 @@ function persistUiState(state) {
       groupBy: state.groupBy === 'item' ? 'item' : 'pedido',
       expandedOrderId: state.expandedOrderId ?? null,
       searchTerm: state.searchTerm || '',
+      skuTerm: state.skuTerm || '',
       selectedStatuses: state.selectedStatuses ? Array.from(state.selectedStatuses) : null,
       scrollY: Number.isFinite(Number(state.scrollY)) ? Math.max(0, Number(state.scrollY)) : 0,
     }));
@@ -101,6 +103,283 @@ function slugifyText(value) {
     .replace(/[^a-zA-Z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .toLowerCase();
+}
+
+function escapeHtml(text) {
+  return String(text ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function getOrderTagLabel(order) {
+  const tags = Array.isArray(order?.tags)
+    ? order.tags.filter((tag) => (tag || '').toString().trim())
+    : [];
+  if (tags.length > 0) return tags.join(', ');
+  const fallback = String(order?.tag || '').trim();
+  return fallback || '';
+}
+
+function buildLabelsFromCampaignOrders(orders) {
+  const labels = [];
+  for (const order of orders || []) {
+    const blingNumber = String(order?.numero ?? order?.id ?? '—');
+    const nuvemshopNumber = String(order?.numero_loja || '—');
+    const buyerName = String(order?.cliente || '—').trim() || '—';
+    const tagLabel = getOrderTagLabel(order);
+    const items = Array.isArray(order?.matched_items) ? order.matched_items : [];
+
+    for (const item of items) {
+      labels.push({
+        orderCode: `${blingNumber}/${nuvemshopNumber}`,
+        buyerName,
+        tagLabel,
+        itemName: String(item?.product_name || '—').trim() || '—',
+        quantity: Number.isFinite(Number(item?.quantity)) ? Number(item.quantity) : 0,
+        sku: String(item?.sku || '').trim(),
+        notes: String(item?.notes || '').trim(),
+      });
+    }
+  }
+  return labels;
+}
+
+function buildBatchLabelsPrintHtml(labels) {
+  const labelsHtml = labels.map((label) => {
+    const notesText = label.notes || 'Sem observações';
+    const qtyText = `Qtd: ${label.quantity > 0 ? label.quantity : '—'}`;
+    const skuText = label.sku ? `SKU: ${label.sku}` : '';
+
+    return `
+      <section class="label-sheet">
+        <div class="label">
+          <div class="order-panel">
+            <div class="order-caption">PEDIDO:</div>
+            <div class="order-code">${escapeHtml(label.orderCode)}</div>
+          </div>
+
+          <div class="solid-divider"></div>
+
+          <div class="client-block">
+            <div class="client-title">NOME DO CLIENTE:</div>
+            <div class="client-name">${escapeHtml(label.buyerName)}</div>
+            ${label.tagLabel ? `<div class="client-tag">TAG: ${escapeHtml(label.tagLabel)}</div>` : ''}
+          </div>
+
+          <div class="dotted-divider"></div>
+
+          <div class="bottom-grid">
+            <div class="item-block">
+              <div class="section-title">ITEM COMPRADO:</div>
+              <div class="item-name">${escapeHtml(label.itemName)}</div>
+              <div class="item-meta">
+                <div class="meta-line">${escapeHtml(qtyText)}</div>
+                ${skuText ? `<div class="meta-line">${escapeHtml(skuText)}</div>` : ''}
+              </div>
+            </div>
+            <div class="notes-block">
+              <div class="section-title">NOTAS:</div>
+              <div class="notes-text">${escapeHtml(notesText)}</div>
+            </div>
+          </div>
+        </div>
+      </section>`;
+  }).join('');
+
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Etiquetas de pedidos</title>
+    <style>
+      @page {
+        size: 100mm 50mm;
+        margin: 0 0 5mm 0;
+      }
+
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #fff;
+        font-family: Arial, sans-serif;
+      }
+
+      .label-sheet {
+        width: 100mm;
+        height: 50mm;
+        page-break-after: always;
+        box-sizing: border-box;
+      }
+
+      .label {
+        width: 100mm;
+        height: 50mm;
+        box-sizing: border-box;
+        border: none;
+        padding: 3mm 3.5mm 2.5mm;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .order-panel {
+        background: #000;
+        color: #fff;
+        border-radius: 2mm;
+        padding: 1.2mm 2mm 1.4mm;
+        flex-shrink: 0;
+      }
+
+      .order-caption {
+        font-size: 2.5mm;
+        font-weight: 800;
+        letter-spacing: 0.1mm;
+      }
+
+      .order-code {
+        margin-top: 0.3mm;
+        font-size: 7mm;
+        line-height: 1;
+        font-weight: 800;
+      }
+
+      .solid-divider {
+        border-top: 0.6mm solid #000;
+        margin: 1.2mm 0 1mm;
+        flex-shrink: 0;
+      }
+
+      .client-block {
+        flex-shrink: 0;
+      }
+
+      .client-title {
+        font-size: 2.3mm;
+        font-weight: 800;
+        line-height: 1;
+      }
+
+      .client-name {
+        margin-top: 0.5mm;
+        font-size: 5.5mm;
+        font-weight: 800;
+        line-height: 1.1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .client-tag {
+        margin-top: 0.5mm;
+        font-size: 2.2mm;
+        font-weight: 700;
+      }
+
+      .dotted-divider {
+        border-top: 0.6mm dotted #000;
+        margin: 1mm 0 0.8mm;
+        flex-shrink: 0;
+      }
+
+      .bottom-grid {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 62% 38%;
+        gap: 1.5mm;
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      .item-block,
+      .notes-block {
+        min-width: 0;
+        overflow: hidden;
+      }
+
+      .item-block {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+
+      .notes-block {
+        border-left: 0.6mm solid #000;
+        padding-left: 1.5mm;
+      }
+
+      .section-title {
+        font-size: 2.2mm;
+        font-weight: 800;
+        margin-bottom: 0.2mm;
+        line-height: 1.1;
+      }
+
+      .item-name {
+        font-size: 2.8mm;
+        font-weight: 800;
+        line-height: 1.1;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+        white-space: normal;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      .item-meta {
+        margin-top: 0.6mm;
+        font-size: 1.95mm;
+        font-weight: 600;
+        line-height: 1.2;
+        white-space: normal;
+        overflow: hidden;
+        flex-shrink: 0;
+      }
+
+      .meta-line {
+        word-break: break-word;
+        overflow-wrap: anywhere;
+      }
+
+      .notes-text {
+        margin-top: 0.8mm;
+        font-size: 2.4mm;
+        font-weight: 600;
+        line-height: 1.3;
+        word-break: break-word;
+        overflow-wrap: break-word;
+        white-space: normal;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    ${labelsHtml}
+    <script>
+      function fitItemNameText() {
+        var itemEls = document.querySelectorAll('.item-name');
+        itemEls.forEach(function (el) {
+          var computed = window.getComputedStyle(el);
+          var currentPx = parseFloat(computed.fontSize) || 12;
+          var minPx = 6;
+
+          while (el.scrollHeight > el.clientHeight + 0.5 && currentPx > minPx) {
+            currentPx -= 0.25;
+            el.style.fontSize = currentPx + 'px';
+          }
+        });
+      }
+
+      window.onload = function () {
+        fitItemNameText();
+        window.focus();
+        window.print();
+      };
+    </script>
+  </body>
+</html>`;
 }
 
 function downloadCsvFile(filename, content) {
@@ -248,10 +527,12 @@ export function EventSalesPage() {
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [loadingSales, setLoadingSales] = useState(false);
   const [loadingExport, setLoadingExport] = useState(false);
+  const [loadingPrint, setLoadingPrint] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [eventOrdersCount, setEventOrdersCount] = useState({});
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState(savedUiState?.searchTerm || '');
+  const [skuTerm, setSkuTerm] = useState(savedUiState?.skuTerm || '');
   const [selectedStatuses, setSelectedStatuses] = useState(() => savedUiState?.selectedStatuses ?? null);
   const [expandedOrderId, setExpandedOrderId] = useState(savedUiState?.expandedOrderId || null);
   const [groupBy, setGroupBy] = useState(savedUiState?.groupBy || 'pedido');
@@ -616,10 +897,11 @@ export function EventSalesPage() {
       groupBy,
       expandedOrderId,
       searchTerm,
+      skuTerm,
       selectedStatuses,
       scrollY: getCurrentScrollY(),
     });
-  }, [selectedEventId, groupBy, expandedOrderId, searchTerm, selectedStatuses]);
+  }, [selectedEventId, groupBy, expandedOrderId, searchTerm, skuTerm, selectedStatuses]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -629,13 +911,14 @@ export function EventSalesPage() {
         groupBy,
         expandedOrderId,
         searchTerm,
+        skuTerm,
         selectedStatuses,
         scrollY: getCurrentScrollY(),
       });
     };
     window.addEventListener('beforeunload', persistOnUnload);
     return () => window.removeEventListener('beforeunload', persistOnUnload);
-  }, [selectedEventId, groupBy, expandedOrderId, searchTerm, selectedStatuses]);
+  }, [selectedEventId, groupBy, expandedOrderId, searchTerm, skuTerm, selectedStatuses]);
 
   useEffect(() => {
     if (selectedEventId) {
@@ -702,20 +985,32 @@ export function EventSalesPage() {
       if (!term) return true;
 
       const pedidoText = String(order.numero || order.id || '').toLowerCase();
+      const nuvemshopText = String(order.numero_loja || order.numeroLoja || '').toLowerCase();
       const clienteText = String(order.cliente || '').toLowerCase();
-      return pedidoText.includes(term) || clienteText.includes(term);
+      return pedidoText.includes(term) || nuvemshopText.includes(term) || clienteText.includes(term);
     });
   }, [salesData, searchTerm, selectedStatuses, selectedTagFilter]);
 
   const filteredOrdersByItemStatus = useMemo(() => {
-    if (!selectedItemStatusFilter) return visibleOrders;
+    const normalizedSkuTerm = (skuTerm || '').trim().toLowerCase();
 
     return visibleOrders
       .map((order) => {
         const items = Array.isArray(order.matched_items) ? order.matched_items : [];
-        const filteredItems = items.filter(
-          (item) => normalizeProductionStatusKey(item.production_status) === selectedItemStatusFilter,
-        );
+        const skuFilteredItems = normalizedSkuTerm
+          ? items.filter((item) => {
+              const skuText = String(item?.sku || '').toLowerCase();
+              const productText = String(item?.product_name || '').toLowerCase();
+              return skuText.includes(normalizedSkuTerm) || productText.includes(normalizedSkuTerm);
+            })
+          : items;
+
+        const filteredItems = selectedItemStatusFilter
+          ? skuFilteredItems.filter(
+              (item) => normalizeProductionStatusKey(item.production_status) === selectedItemStatusFilter,
+            )
+          : skuFilteredItems;
+
         if (filteredItems.length === 0) return null;
         const totalMatched = filteredItems.reduce((acc, item) => acc + Number(item.paid_total || 0), 0);
         const packedCount = filteredItems.filter((i) => normalizeProductionStatusKey(i.production_status) === 'packed').length;
@@ -727,7 +1022,7 @@ export function EventSalesPage() {
         };
       })
       .filter(Boolean);
-  }, [visibleOrders, selectedItemStatusFilter]);
+  }, [visibleOrders, selectedItemStatusFilter, skuTerm]);
 
   const filteredSummary = useMemo(() => {
     const matchedItemsCount = filteredOrdersByItemStatus.reduce((acc, order) => acc + (order.matched_items?.length || 0), 0);
@@ -996,6 +1291,37 @@ export function EventSalesPage() {
     downloadCsvFile(filename, lines.join('\n'));
   }, [events, filteredOrdersByItemStatus, salesData?.event?.name, selectedEventId]);
 
+  const printCampaignLabels = useCallback(() => {
+    const baseOrders = Array.isArray(filteredOrdersByItemStatus) ? filteredOrdersByItemStatus : [];
+    if (baseOrders.length === 0) {
+      window.alert('Não há pedidos para imprimir com os filtros atuais.');
+      return;
+    }
+
+    try {
+      setLoadingPrint(true);
+      const labels = buildLabelsFromCampaignOrders(baseOrders);
+      if (labels.length === 0) {
+        window.alert('Não há etiquetas para imprimir com os filtros atuais.');
+        return;
+      }
+
+      const html = buildBatchLabelsPrintHtml(labels);
+      const printWindow = window.open('', '_blank', 'width=1024,height=768');
+      if (!printWindow) {
+        window.alert('Não foi possível abrir a janela de impressão. Verifique o bloqueador de pop-up.');
+        return;
+      }
+
+      printWindow.document.open();
+      printWindow.document.write(html);
+      printWindow.document.close();
+    } finally {
+      setExportMenuOpen(false);
+      setLoadingPrint(false);
+    }
+  }, [filteredOrdersByItemStatus]);
+
   return (
     <Layout>
       <div className="page-inner">
@@ -1011,13 +1337,13 @@ export function EventSalesPage() {
             <div style={{ position: 'relative' }}>
               <button
                 className="btn-secondary"
-                disabled={!selectedEventId || loadingSales || loadingExport || filteredOrdersByItemStatus.length === 0}
+                disabled={!selectedEventId || loadingSales || loadingExport || loadingPrint || filteredOrdersByItemStatus.length === 0}
                 onClick={() => setExportMenuOpen((prev) => !prev)}
                 title="Escolha o formato para download"
               >
-                {loadingExport ? 'Preparando...' : 'Exportar ▾'}
+                {loadingExport || loadingPrint ? 'Preparando...' : 'Exportar ▾'}
               </button>
-              {exportMenuOpen && !loadingExport && (
+              {exportMenuOpen && !loadingExport && !loadingPrint && (
                 <div
                   style={{
                     position: 'absolute',
@@ -1034,12 +1360,30 @@ export function EventSalesPage() {
                 >
                   <button
                     type="button"
+                    onClick={printCampaignLabels}
+                    style={{
+                      width: '100%',
+                      textAlign: 'left',
+                      padding: '10px 12px',
+                      border: 'none',
+                      background: '#fff',
+                      color: '#0f172a',
+                      fontSize: 14,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Imprimir etiquetas 10×5
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => exportCampaignOrders('csv')}
                     style={{
                       width: '100%',
                       textAlign: 'left',
                       padding: '10px 12px',
                       border: 'none',
+                      borderTop: '1px solid #f1f5f9',
                       background: '#fff',
                       color: '#0f172a',
                       fontSize: 14,
@@ -1132,9 +1476,19 @@ export function EventSalesPage() {
                     id="event-sales-search"
                     name="eventSalesSearch"
                     type="text"
-                    placeholder="Buscar por nº do pedido ou nome do cliente..."
+                    placeholder="Buscar por nº do pedido, nº Nuvemshop ou nome do cliente..."
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
+                  />
+                </div>
+                <div className="search-box" style={{ marginBottom: 12 }}>
+                  <input
+                    id="event-sales-sku-search"
+                    name="eventSalesSkuSearch"
+                    type="text"
+                    placeholder="Filtrar por SKU ou nome do item..."
+                    value={skuTerm}
+                    onChange={(e) => setSkuTerm(e.target.value)}
                   />
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>

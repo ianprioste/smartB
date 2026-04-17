@@ -628,7 +628,7 @@ async def list_orders(
     search: str = Query("", description="Search by order number, client name, or Nuvemshop number"),
     statuses: str = Query("6,9,15", description="Comma-separated Bling status IDs"),
     page: int = Query(1, ge=1),
-    limit: int = Query(50, ge=1, le=100),
+    limit: int = Query(50, ge=1, le=500),
     tag: str = Query("", description="Filter by exact global tag name"),
 ):
     """List orders from local persistent snapshot with search and status filter."""
