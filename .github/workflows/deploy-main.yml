@@ -197,6 +197,8 @@ jobs:
           echo "deploy_err_b64=$DEPLOY_ERR_B64" >> "$GITHUB_OUTPUT"
           echo "deploy_exit=$DEPLOY_EXIT" >> "$GITHUB_OUTPUT"
           exit $DEPLOY_EXIT
+
+      - name: Verify Public Rollout
         if: always()
         shell: bash
         env:
