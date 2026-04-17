@@ -631,7 +631,7 @@ upsert_env_key GIT_COMMIT "$GIT_COMMIT"
 upsert_env_key BUILD_ID "$BUILD_ID"
 upsert_env_key BUILD_TIMESTAMP "$BUILD_TIMESTAMP"
 
-bash scripts/bootstrap-vps-deps.sh
+$SUDO bash scripts/bootstrap-vps-deps.sh
 
 if [ -d .venv ] && { [ ! -x ./.venv/bin/python ] || [ ! -x ./.venv/bin/pip ]; }; then
   log ".venv existente esta incompleta; recriando ambiente virtual"
