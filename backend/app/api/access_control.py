@@ -111,12 +111,20 @@ def _require_admin(request: Request, db: Session) -> None:
 
 @router.get("/bootstrap-status")
 async def bootstrap_status(db: Session = Depends(get_db)):
-    _ensure_admin_bootstrap(db)
-    total_users = AccessRepository.count_users(db, DEFAULT_TENANT_ID)
-    return {
-        "needs_bootstrap": total_users == 0,
-        "master_admin_email": settings.MASTER_ADMIN_EMAIL,
-    }
+    try:
+        _ensure_admin_bootstrap(db)
+        total_users = AccessRepository.count_users(db, DEFAULT_TENANT_ID)
+        return {
+            "needs_bootstrap": total_users == 0,
+            "master_admin_email": settings.MASTER_ADMIN_EMAIL,
+        }
+    except Exception as exc:
+        logger.error("bootstrap_status_failed error=%s", str(exc))
+        # Safe fallback: keep UI operational and allow first-login flow.
+        return {
+            "needs_bootstrap": True,
+            "master_admin_email": settings.MASTER_ADMIN_EMAIL,
+        }
 
 
 def _get_active_reset_for_email(db: Session, email: str):
@@ -273,11 +281,19 @@ async def me(request: Request, db: Session = Depends(get_db)):
     if not token:
         raise HTTPException(status_code=401, detail="Não autenticado")
 
-    user = AccessRepository.get_session_user(db, token)
+    try:
+        user = AccessRepository.get_session_user(db, token)
+    except Exception as exc:
+        logger.error("me_session_lookup_failed error=%s", str(exc))
+        raise HTTPException(status_code=401, detail="Não autenticado")
     if not user:
         raise HTTPException(status_code=401, detail="Sessão inválida")
 
-    profile = next((p for p in AccessRepository.list_profiles(db, DEFAULT_TENANT_ID) if p.id == user.profile_id), None)
+    try:
+        profile = next((p for p in AccessRepository.list_profiles(db, DEFAULT_TENANT_ID) if p.id == user.profile_id), None)
+    except Exception as exc:
+        logger.error("me_profile_lookup_failed error=%s", str(exc))
+        raise HTTPException(status_code=401, detail="Não autenticado")
     if not profile:
         raise HTTPException(status_code=401, detail="Perfil inválido")
 

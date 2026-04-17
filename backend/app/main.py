@@ -142,7 +142,11 @@ def create_app() -> FastAPI:
 
         db = SessionLocal()
         try:
-            user = AccessRepository.get_session_user(db, token)
+            try:
+                user = AccessRepository.get_session_user(db, token)
+            except Exception as exc:
+                logger.error("access_guard_session_lookup_failed path=%s error=%s", path, str(exc))
+                return JSONResponse(status_code=401, content={"detail": "Não autenticado"})
             if not user:
                 return JSONResponse(status_code=401, content={"detail": "Sessão inválida"})
             request.state.access_user = user
