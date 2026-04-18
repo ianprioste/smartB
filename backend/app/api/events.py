@@ -2,14 +2,16 @@
 from typing import Any, Dict, List
 from uuid import UUID
 import re
+import asyncio
 from datetime import datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.infra.db import get_db
+from app.infra.db import get_db, SessionLocal
 from app.infra.bling_client import BlingClient, BlingAuthError, BlingAPIError
 from app.infra.logging import get_logger
+from app.settings import settings
 from app.domain.order_local_cache import get_cached_order_detail, warm_order_details
 from app.domain.bling_situacoes import get_bling_status_ids
 from app.repositories.bling_token_repo import BlingTokenRepository
@@ -292,6 +294,70 @@ def _make_client(db: Session):
         token_expires_at=token_row.expires_at,
         on_token_refresh=_save,
     )
+
+
+async def _bg_enrich_emails(contact_ids: list[int], event_id: str) -> dict[int, str]:
+    """Fetch emails from Bling contacts API concurrently and persist them.
+
+    Uses its own DB session so the request session is not blocked.
+    Respects the configured max-contacts cap to avoid API rate limits.
+    """
+    newly_resolved: dict[int, str] = {}
+    db = SessionLocal()
+    try:
+        client = _make_client(db)
+        if not client:
+            logger.warning("bg_enrich_emails_no_client event_id=%s", event_id)
+            return newly_resolved
+
+        max_api_calls = settings.ORDERS_EMAIL_ENRICHMENT_MAX_CONTACTS
+        unique_ids = list(dict.fromkeys(contact_ids))[:max_api_calls]
+        newly_resolved: dict[int, str] = {}
+
+        sem = asyncio.Semaphore(5)  # max 5 concurrent Bling API calls
+
+        async def _fetch_one(cid: int) -> None:
+            async with sem:
+                try:
+                    payload = await client.get(f"/contatos/{cid}")
+                    data = payload.get("data") or {}
+                    contato = data.get("contato") if isinstance(data.get("contato"), dict) else {}
+                    email = (
+                        contato.get("email")
+                        or data.get("email")
+                        or data.get("emailContato")
+                    )
+                    email = str(email or "").strip() or None
+                    if email:
+                        newly_resolved[cid] = email
+                except Exception as exc:
+                    logger.warning(
+                        "bg_enrich_email_failed contact_id=%s error=%s", cid, str(exc)
+                    )
+
+        await asyncio.gather(*[_fetch_one(cid) for cid in unique_ids])
+
+        if newly_resolved:
+            try:
+                OrderSnapshotRepository.apply_customer_emails_by_contact_id(
+                    db, DEFAULT_TENANT_ID, newly_resolved
+                )
+                db.commit()
+                logger.info(
+                    "bg_enrich_emails_done event_id=%s resolved=%s/%s",
+                    event_id, len(newly_resolved), len(unique_ids),
+                )
+            except Exception as exc:
+                logger.warning("bg_enrich_email_persist_failed error=%s", str(exc))
+                db.rollback()
+        else:
+            logger.info("bg_enrich_emails_none_resolved event_id=%s attempted=%s", event_id, len(unique_ids))
+    except Exception as exc:
+        logger.error("bg_enrich_emails_crash event_id=%s error=%s", event_id, str(exc), exc_info=True)
+    finally:
+        db.close()
+
+    return newly_resolved
 
 
 def _map_event_response(db: Session, event) -> SalesEventResponse:
@@ -769,7 +835,11 @@ async def get_event(event_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/{event_id}/sales", response_model=EventSalesResponse)
-async def get_event_sales(event_id: UUID, enrich_emails: bool = Query(default=False), db: Session = Depends(get_db)):
+async def get_event_sales(
+    event_id: UUID,
+    enrich_emails: bool = Query(default=False),
+    db: Session = Depends(get_db),
+):
     try:
         return await _get_event_sales_impl(event_id, enrich_emails, db)
     except HTTPException:
@@ -905,58 +975,35 @@ async def _get_event_sales_impl(event_id: UUID, enrich_emails: bool, db: Session
         except Exception as exc:
             logger.warning("event_tags_injection_failed event_id=%s error=%s", str(event_id), str(exc))
 
-        # On-demand email enrichment: fetch contact emails for orders still missing them.
-        if enrich_emails:
-            client = _make_client(db)
-            if client:
-                missing = [o for o in filtered_orders if not o.email]
-                max_api_calls = settings.ORDERS_EMAIL_ENRICHMENT_MAX_CONTACTS
-                seen_contacts: dict[int, str] = {}
-                newly_resolved: dict[int, str] = {}
-                api_calls = 0
-                for order in missing:
+        # Inline email enrichment: fetch missing emails from Bling contacts API
+        # concurrently, apply to response, and persist to DB for future loads.
+        missing_contact_ids = {}
+        missing_order_contact_map: dict[str, int] = {}  # order key -> contact_id
+        for order in filtered_orders:
+            if order.email:
+                continue
+            lookup_key = str(order.id or order.numero or "")
+            cid = order_contact_id_map.get(lookup_key)
+            if cid:
+                missing_contact_ids[cid] = True
+                missing_order_contact_map[lookup_key] = cid
+        if missing_contact_ids:
+            logger.info(
+                "event_sales_enriching_emails_inline event_id=%s missing=%s",
+                str(event_id), len(missing_contact_ids),
+            )
+            resolved = await _bg_enrich_emails(
+                contact_ids=list(missing_contact_ids.keys()),
+                event_id=str(event_id),
+            )
+            if resolved:
+                for order in filtered_orders:
+                    if order.email:
+                        continue
                     lookup_key = str(order.id or order.numero or "")
-                    cid = order_contact_id_map.get(lookup_key)
-                    if not cid:
-                        continue
-                    if cid in seen_contacts:
-                        order.email = seen_contacts[cid]
-                        continue
-                    if api_calls >= max_api_calls:
-                        logger.info(
-                            "enrich_email_cap_reached event_id=%s cap=%s remaining=%s",
-                            str(event_id), max_api_calls, len(missing) - api_calls,
-                        )
-                        break
-                    try:
-                        api_calls += 1
-                        payload = await client.get(f"/contatos/{cid}")
-                        data = payload.get("data") or {}
-                        contato = data.get("contato") if isinstance(data.get("contato"), dict) else {}
-                        email = (
-                            contato.get("email")
-                            or data.get("email")
-                            or data.get("emailContato")
-                        )
-                        email = str(email or "").strip() or None
-                        if email:
-                            seen_contacts[cid] = email
-                            newly_resolved[cid] = email
-                            order.email = email
-                    except Exception as exc:
-                        logger.warning(
-                            "enrich_email_failed order_id=%s contact_id=%s error=%s",
-                            order.id, cid, str(exc)
-                        )
-                if newly_resolved:
-                    try:
-                        OrderSnapshotRepository.apply_customer_emails_by_contact_id(
-                            db, DEFAULT_TENANT_ID, newly_resolved
-                        )
-                        db.commit()
-                    except Exception as exc:
-                        logger.warning("enrich_email_persist_failed error=%s", str(exc))
-                        db.rollback()
+                    cid = missing_order_contact_map.get(lookup_key)
+                    if cid and cid in resolved:
+                        order.email = resolved[cid]
 
         logger.info(
             "event_sales_local_db_done event_id=%s matched_orders=%s matched_items=%s total_matched=%.2f",
