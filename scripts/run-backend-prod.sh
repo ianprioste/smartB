@@ -47,4 +47,5 @@ elif [ -n "${EFFECTIVE_DB_URL}" ] && [ -z "${DATABASE_URL:-}" ]; then
 fi
 
 cd "${REPO_ROOT}/backend"
-exec "${REPO_ROOT}/.venv/bin/python" -m uvicorn app.main:app --host "${HOST}" --port "${PORT}" --log-level "${LOG_LEVEL}"
+# Use 2 workers for 2 vCPU server (each worker = ~150-200MB)
+exec "${REPO_ROOT}/.venv/bin/python" -m uvicorn app.main:app --host "${HOST}" --port "${PORT}" --log-level "${LOG_LEVEL}" --workers 2

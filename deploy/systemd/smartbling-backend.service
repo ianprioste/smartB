@@ -17,8 +17,8 @@ RestartSec=10
 StartLimitInterval=60s
 StartLimitBurst=3
 
-# Limita memória para evitar OOM (driver PostgreSQL pode vazar)
-MemoryMax=1536M
+# Limita memória para evitar OOM (deixa ~1GB para sistema com 4GB total)
+MemoryMax=3072M
 MemoryAccounting=yes
 
 # Kill gracioso: 30s para shutdown limpo, depois SIGKILL
