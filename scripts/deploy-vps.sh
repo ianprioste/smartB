@@ -460,8 +460,11 @@ EOF
   done
 
   $SUDO nginx -t || fail "nginx invalido apos instalar smartbling-public.conf"
-  # Use restart (not reload) when conflicting configs were removed to ensure clean state.
-  $SUDO systemctl restart nginx || fail "Falha ao reiniciar nginx apos instalar smartbling-public.conf"
+  if $SUDO systemctl is-active --quiet nginx; then
+    $SUDO systemctl reload nginx || fail "Falha ao recarregar nginx apos instalar smartbling-public.conf"
+  else
+    $SUDO systemctl start nginx || fail "Falha ao iniciar nginx apos instalar smartbling-public.conf"
+  fi
   log "Configuracao nginx publica reforcada em $conf_path"
 }
 
@@ -477,7 +480,9 @@ provision_ssl_cert() {
   cert_path="/etc/letsencrypt/live/${PUBLIC_HOST}/fullchain.pem"
 
   if [ -f "$cert_path" ]; then
-    log "Certificado SSL ja existe para ${PUBLIC_HOST}; nenhuma acao necessaria"
+    log "Certificado SSL ja existe para ${PUBLIC_HOST}; aplicando config HTTPS sem novo cert"
+    # Config HTTPS is already applied by enforce_nginx_public_server (called before this);
+    # no need to call it again.
     return 0
   fi
 
@@ -785,4 +790,18 @@ if ! printf '%s' "$health_payload" | grep -q "\"git_commit\""; then
 fi
 
 log "Deploy remoto concluido; verificacao de commit publico segue no workflow"
+
+# Final nginx active verification — ensure HTTPS is reachable before handing off.
+if [ "${REQUIRE_NGINX}" = "true" ]; then
+  if ! $SUDO systemctl is-active --quiet nginx; then
+    warn "Nginx caiu apos o deploy; tentando reiniciar"
+    $SUDO systemctl start nginx || fail "Falha ao reiniciar nginx no final do deploy"
+  fi
+  # Verify port 443 is actually accepting connections.
+  if ! curl --fail --silent --show-error --max-time 5 --insecure "https://127.0.0.1/" > /dev/null 2>&1; then
+    warn "Porta 443 nao responde; reiniciando nginx"
+    $SUDO systemctl restart nginx || fail "Falha ao reiniciar nginx para restaurar porta 443"
+  fi
+fi
+
 log "Deploy concluido com sucesso"
