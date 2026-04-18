@@ -77,33 +77,14 @@ export function Layout({ children }) {
   }
 
   function handleBlingAuth() {
-    // First, try silent token refresh (no popup needed)
-    fetch(`${API_BASE}/auth/bling/refresh`, { method: 'POST' })
-      .then(async (resp) => {
-        if (resp.ok) {
-          // Refresh succeeded — just re-check status
-          await recheckBling();
-          return;
-        }
-        // Refresh failed (401 = expired refresh token) — open full OAuth flow
-        window.open(`${API_BASE}/auth/bling/connect`, '_blank');
-        let attempts = 0;
-        const poll = setInterval(async () => {
-          attempts++;
-          await recheckBling();
-          if (blingOk || attempts >= 30) clearInterval(poll);
-        }, 3000);
-      })
-      .catch(() => {
-        // Network error — fallback to OAuth flow
-        window.open(`${API_BASE}/auth/bling/connect`, '_blank');
-        let attempts = 0;
-        const poll = setInterval(async () => {
-          attempts++;
-          await recheckBling();
-          if (blingOk || attempts >= 30) clearInterval(poll);
-        }, 3000);
-      });
+    // Open OAuth flow directly — fast and reliable
+    window.open(`${API_BASE}/auth/bling/connect`, '_blank');
+    let attempts = 0;
+    const poll = setInterval(async () => {
+      attempts++;
+      await recheckBling();
+      if (attempts >= 30) clearInterval(poll);
+    }, 3000);
   }
 
   async function handleLogout() {
