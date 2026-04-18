@@ -160,7 +160,13 @@ class OrderSnapshotRepository:
         row.numero_loja = order_list_payload.get("numeroLoja")
         row.order_date = _try_parse_datetime(order_list_payload.get("data"))
         row.customer_name = contato.get("nome") if isinstance(contato, dict) else None
-        row.customer_email = _extract_customer_email(order_list_payload, order_detail_payload)
+        # Only overwrite customer_email if the new value is not empty;
+        # preserve enriched emails (fetched from /contatos API) across syncs.
+        extracted_email = _extract_customer_email(order_list_payload, order_detail_payload)
+        if extracted_email:
+            row.customer_email = extracted_email
+        elif not existing:
+            row.customer_email = None
         row.customer_contact_id = _extract_customer_contact_id(order_list_payload, order_detail_payload)
 
         detail_data = order_detail_payload.get("data") if isinstance(order_detail_payload.get("data"), dict) else {}

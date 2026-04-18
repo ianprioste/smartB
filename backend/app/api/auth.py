@@ -313,10 +313,8 @@ async def bling_callback(
         except Exception as exc:
             logger.warning("auto_sync_trigger_failed error=%s", str(exc))
 
-        return TokenAuthResponse(
-            message="Connected to Bling successfully",
-            access_token=token_data["access_token"][:20] + "...",  # Partial for display
-        )
+        # Redirect browser back to the app instead of showing raw JSON
+        return RedirectResponse(url="/?bling=ok", status_code=302)
 
     except httpx.HTTPError as e:
         bling_status = getattr(getattr(e, 'response', None), 'status_code', 'N/A')
@@ -386,6 +384,45 @@ async def check_bling_token_status(db: Session = Depends(get_db)):
         )
         
         if token.expires_at and token.expires_at <= now:
+            # Try auto-refresh before reporting expired
+            if token.refresh_token:
+                try:
+                    credentials = f"{settings.BLING_CLIENT_ID}:{settings.BLING_CLIENT_SECRET}"
+                    encoded_credentials = base64.b64encode(credentials.encode()).decode()
+                    async with httpx.AsyncClient(timeout=15.0) as client:
+                        resp = await client.post(
+                            settings.BLING_TOKEN_URL,
+                            headers={
+                                "Authorization": f"Basic {encoded_credentials}",
+                                "Content-Type": "application/x-www-form-urlencoded",
+                                "Accept": "application/json",
+                            },
+                            data={
+                                "grant_type": "refresh_token",
+                                "refresh_token": token.refresh_token,
+                            },
+                        )
+                    if resp.status_code == 200:
+                        td = resp.json()
+                        exp_in = td.get("expires_in", 3600)
+                        exp_at = datetime.utcnow() + timedelta(seconds=exp_in)
+                        tenant = BlingTokenRepository.get_or_create_default_tenant(db)
+                        BlingTokenRepository.create_or_update(
+                            db=db,
+                            tenant_id=tenant.id,
+                            access_token=td["access_token"],
+                            refresh_token=td.get("refresh_token", token.refresh_token),
+                            expires_at=exp_at,
+                            scope=td.get("scope"),
+                            token_type=td.get("token_type", "Bearer"),
+                        )
+                        logger.info("auto_refresh_on_status_check success new_expires=%s", exp_at.isoformat())
+                        return {"valid": True, "message": "Token refreshed automatically"}
+                    else:
+                        logger.warning("auto_refresh_on_status_check failed status=%s", resp.status_code)
+                except Exception as exc:
+                    logger.warning("auto_refresh_on_status_check error=%s", str(exc))
+
             return {
                 "valid": False,
                 "message": "Token expired"
@@ -403,3 +440,74 @@ async def check_bling_token_status(db: Session = Depends(get_db)):
             status_code=500,
             detail="Error checking token status"
         )
+
+
+@router.post("/bling/refresh")
+async def force_refresh_bling_token(db: Session = Depends(get_db)):
+    """
+    Force-refresh the Bling access token using the stored refresh_token.
+    Returns {"valid": true} on success, or an error if refresh_token is also expired.
+    """
+    from uuid import UUID
+
+    TENANT_ID = UUID("00000000-0000-0000-0000-000000000001")
+
+    token_repo = BlingTokenRepository()
+    token = token_repo.get_by_tenant(db, TENANT_ID)
+
+    if not token or not token.refresh_token:
+        raise HTTPException(status_code=400, detail="No refresh token stored. Please re-authenticate via OAuth.")
+
+    logger.info("force_refresh_attempt refresh_token_present=True")
+
+    try:
+        credentials = f"{settings.BLING_CLIENT_ID}:{settings.BLING_CLIENT_SECRET}"
+        encoded_credentials = base64.b64encode(credentials.encode()).decode()
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                settings.BLING_TOKEN_URL,
+                headers={
+                    "Authorization": f"Basic {encoded_credentials}",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                },
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": token.refresh_token,
+                },
+            )
+
+        logger.info("force_refresh_response status=%s body=%s", response.status_code, response.text[:300])
+
+        if response.status_code == 400:
+            raise HTTPException(
+                status_code=401,
+                detail="Refresh token expired. Please re-authenticate via OAuth.",
+            )
+
+        response.raise_for_status()
+        token_data = response.json()
+
+        expires_in = token_data.get("expires_in", 3600)
+        expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
+
+        tenant = BlingTokenRepository.get_or_create_default_tenant(db)
+        BlingTokenRepository.create_or_update(
+            db=db,
+            tenant_id=tenant.id,
+            access_token=token_data["access_token"],
+            refresh_token=token_data.get("refresh_token", token.refresh_token),
+            expires_at=expires_at,
+            scope=token_data.get("scope"),
+            token_type=token_data.get("token_type", "Bearer"),
+        )
+
+        logger.info("force_refresh_success new_expires_at=%s", expires_at.isoformat())
+        return {"valid": True, "message": "Token refreshed successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("force_refresh_failed error=%s", str(e))
+        raise HTTPException(status_code=502, detail=f"Refresh failed: {str(e)}")

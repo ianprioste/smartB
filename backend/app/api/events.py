@@ -339,13 +339,13 @@ async def _bg_enrich_emails(contact_ids: list[int], event_id: str) -> dict[int, 
 
         if newly_resolved:
             try:
-                OrderSnapshotRepository.apply_customer_emails_by_contact_id(
+                updated_count = OrderSnapshotRepository.apply_customer_emails_by_contact_id(
                     db, DEFAULT_TENANT_ID, newly_resolved
                 )
                 db.commit()
                 logger.info(
-                    "bg_enrich_emails_done event_id=%s resolved=%s/%s",
-                    event_id, len(newly_resolved), len(unique_ids),
+                    "bg_enrich_emails_done event_id=%s resolved=%s/%s db_rows_updated=%s",
+                    event_id, len(newly_resolved), len(unique_ids), updated_count,
                 )
             except Exception as exc:
                 logger.warning("bg_enrich_email_persist_failed error=%s", str(exc))
