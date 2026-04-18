@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     WEBHOOKS_ENABLED: bool = os.getenv("WEBHOOKS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     WEBHOOK_MAX_RETRIES: int = int(os.getenv("WEBHOOK_MAX_RETRIES", "5"))
     WEBHOOK_RETRY_BASE_DELAY_S: int = int(os.getenv("WEBHOOK_RETRY_BASE_DELAY_S", "10"))
-    PASSWORD_RESET_CODE_EXPIRE_MINUTES: int = int(os.getenv("PASSWORD_RESET_CODE_EXPIRE_MINUTES", "3"))
+    PASSWORD_RESET_CODE_EXPIRE_MINUTES: int = int(os.getenv("PASSWORD_RESET_CODE_EXPIRE_MINUTES", "5"))
     PASSWORD_RESET_CODE_LENGTH: int = int(os.getenv("PASSWORD_RESET_CODE_LENGTH", "6"))
     
     # CORS
