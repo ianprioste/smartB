@@ -11,10 +11,10 @@ if settings.DATABASE_URL.startswith("sqlite"):
 else:
     _kwargs["pool_pre_ping"] = True
     # Mitigate pool exhaustion under concurrent API calls in production.
-    _kwargs["pool_size"] = 20
-    _kwargs["max_overflow"] = 40
-    _kwargs["pool_timeout"] = 15
-    _kwargs["pool_recycle"] = 1800
+    _kwargs["pool_size"] = 30
+    _kwargs["max_overflow"] = 50
+    _kwargs["pool_timeout"] = 20
+    _kwargs["pool_recycle"] = 1200
 
 engine = create_engine(
     settings.DATABASE_URL,

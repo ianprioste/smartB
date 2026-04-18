@@ -1,0 +1,15 @@
+[Unit]
+Description=smartBling Backend Health Check Watchdog
+After=smartbling-backend.service
+Requires=smartbling-backend.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env bash /opt/smartB/scripts/health-check-restart.sh
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -10,8 +10,24 @@ Environment=BACKEND_HOST=0.0.0.0
 Environment=BACKEND_PORT=8000
 Environment=BACKEND_LOG_LEVEL=info
 ExecStart=/usr/bin/env bash /opt/smartB/scripts/run-backend-prod.sh
+
+# Auto-restart com backoff progressivo (evita thundering herd)
 Restart=always
-RestartSec=5
+RestartSec=10
+StartLimitInterval=60s
+StartLimitBurst=3
+
+# Limita memória para evitar OOM (driver PostgreSQL pode vazar)
+MemoryMax=1536M
+MemoryAccounting=yes
+
+# Kill gracioso: 30s para shutdown limpo, depois SIGKILL
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Watchdog: reinicia se não responder em 60s
+WatchdogSec=60
 
 [Install]
 WantedBy=multi-user.target
