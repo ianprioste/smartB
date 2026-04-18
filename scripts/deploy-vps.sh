@@ -330,7 +330,7 @@ enforce_nginx_public_server() {
     is_ip=true
   fi
 
-  if [ "$is_ip" = "false" ] && [ -f "$cert_path" ]; then
+  if [ "$is_ip" = "false" ] && $SUDO test -f "$cert_path"; then
     # ── HTTPS mode ────────────────────────────────────────────────
     log "Certificado SSL detectado; configurando nginx com HTTPS"
     $SUDO tee "$conf_path" > /dev/null <<EOF
@@ -479,7 +479,7 @@ provision_ssl_cert() {
 
   cert_path="/etc/letsencrypt/live/${PUBLIC_HOST}/fullchain.pem"
 
-  if [ -f "$cert_path" ]; then
+  if $SUDO test -f "$cert_path"; then
     log "Certificado SSL ja existe para ${PUBLIC_HOST}; aplicando config HTTPS sem novo cert"
     # Config HTTPS is already applied by enforce_nginx_public_server (called before this);
     # no need to call it again.
