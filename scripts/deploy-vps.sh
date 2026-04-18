@@ -460,7 +460,8 @@ EOF
   done
 
   $SUDO nginx -t || fail "nginx invalido apos instalar smartbling-public.conf"
-  $SUDO systemctl reload nginx || fail "Falha ao recarregar nginx apos instalar smartbling-public.conf"
+  # Use restart (not reload) when conflicting configs were removed to ensure clean state.
+  $SUDO systemctl restart nginx || fail "Falha ao reiniciar nginx apos instalar smartbling-public.conf"
   log "Configuracao nginx publica reforcada em $conf_path"
 }
 
@@ -696,6 +697,20 @@ if [ -f backend/alembic.ini ]; then
     log "Aplicando migrations Alembic"
     if ! (
       cd backend
+      # If alembic_version table is missing but schema tables exist (pre-alembic DB),
+      # stamp head so alembic doesn't try to recreate existing tables.
+      if ! ../.venv/bin/python -m alembic -c alembic.ini current 2>/dev/null | grep -q 'head'; then
+        if ../.venv/bin/python -c "
+import sqlalchemy, os
+url = os.environ.get('DATABASE_URL','sqlite:///./smartbling.db')
+e = sqlalchemy.create_engine(url)
+tables = sqlalchemy.inspect(e).get_table_names()
+print('has_tables' if 'tenants' in tables else 'empty')
+" 2>/dev/null | grep -q 'has_tables'; then
+          log "DB pre-existente sem alembic_version; executando stamp head"
+          ../.venv/bin/python -m alembic -c alembic.ini stamp head
+        fi
+      fi
       ../.venv/bin/python -m alembic -c alembic.ini upgrade head
     ); then
       if [ "${MIGRATIONS_MODE}" = "required" ]; then

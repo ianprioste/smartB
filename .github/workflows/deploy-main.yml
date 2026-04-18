@@ -208,8 +208,12 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          curl --fail --silent --show-error --dump-header /tmp/build.headers "https://${PUBLIC_HOST}/build-info.json?b=${BUILD_ID}" > /tmp/build-info.json
-          curl --fail --silent --show-error --dump-header /tmp/health.headers "https://${PUBLIC_HOST}/api/health?b=${BUILD_ID}" > /tmp/health.json
+          # Wait for nginx to stabilize after config changes (restart/reload).
+          echo "Waiting 10s for nginx to settle..."
+          sleep 10
+
+          curl --fail --silent --show-error --retry 5 --retry-delay 5 --retry-connrefused --max-time 15 --dump-header /tmp/build.headers "https://${PUBLIC_HOST}/build-info.json?b=${BUILD_ID}" > /tmp/build-info.json
+          curl --fail --silent --show-error --retry 5 --retry-delay 5 --retry-connrefused --max-time 15 --dump-header /tmp/health.headers "https://${PUBLIC_HOST}/api/health?b=${BUILD_ID}" > /tmp/health.json
 
           echo "--- verify headers: build-info ---"
           sed -n '1,20p' /tmp/build.headers || true
