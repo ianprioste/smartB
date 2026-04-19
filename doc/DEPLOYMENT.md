@@ -26,6 +26,7 @@ Este projeto foi padronizado para deploy sem Docker.
 - Backend em producao: processo sem `reload`, iniciado por `scripts/run-backend-prod.sh`
 - Bootstrap de dependencias do sistema: `scripts/bootstrap-vps-deps.sh`
 - Deploy remoto idempotente: `scripts/deploy-vps.sh`
+- Hook de pos-deploy: `scripts/post-deploy.sh`
 - Gerenciamento obrigatorio do backend: `systemd`
 - Health-check esperado: `http://127.0.0.1:8000/health`
 - Verificacao de rollout: commit esperado deve aparecer em `/api/health` e `/build-info.json`
@@ -52,13 +53,20 @@ cd /opt/smartB
 APP_DIR=/opt/smartB BACKEND_SERVICE=smartbling-backend bash scripts/deploy-vps.sh
 ```
 
-4. Configurar ambiente:
+4. (Opcional) Rodar apenas validacao de pos-deploy manualmente:
+
+```bash
+cd /opt/smartB
+BACKEND_SERVICE=smartbling-backend HEALTH_URL=http://127.0.0.1:8000/health bash scripts/post-deploy.sh
+```
+
+5. Configurar ambiente:
 
 - Ajustar backend/.env
 - Definir DATABASE_URL
 - Definir credenciais BLING_* e SECRET_KEY
 
-5. Rodar backend:
+6. Rodar backend:
 
 ```bash
 bash scripts/run-backend-prod.sh

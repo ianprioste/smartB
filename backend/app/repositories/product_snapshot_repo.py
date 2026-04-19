@@ -9,14 +9,45 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.models.database import BlingProductSnapshotModel
+from app.models.enums import ProductKindEnum
 
 
 class ProductSnapshotRepository:
+    @staticmethod
+    def upsert_product_kind_hint(
+        db: Session,
+        tenant_id: UUID,
+        bling_product_id: int,
+        product_kind: ProductKindEnum,
+    ) -> None:
+        """Persist minimal business classification until webhook refreshes full detail."""
+        existing = (
+            db.query(BlingProductSnapshotModel)
+            .filter(
+                BlingProductSnapshotModel.tenant_id == tenant_id,
+                BlingProductSnapshotModel.bling_product_id == int(bling_product_id),
+            )
+            .first()
+        )
+
+        row = existing or BlingProductSnapshotModel(
+            tenant_id=tenant_id,
+            bling_product_id=int(bling_product_id),
+            imported_at=datetime.utcnow(),
+        )
+
+        row.product_kind = product_kind
+        row.updated_at = datetime.utcnow()
+
+        if existing is None:
+            db.add(row)
+
     @staticmethod
     def upsert_product_detail(
         db: Session,
         tenant_id: UUID,
         product_payload: Dict[str, Any],
+        product_kind: Optional[ProductKindEnum] = None,
     ) -> None:
         product_data = product_payload.get("data") if isinstance(product_payload.get("data"), dict) else product_payload
         if not isinstance(product_data, dict):
@@ -44,6 +75,8 @@ class ProductSnapshotRepository:
 
         row.codigo = product_data.get("codigo")
         row.nome = product_data.get("nome")
+        if product_kind is not None:
+            row.product_kind = product_kind
         row.formato = product_data.get("formato")
         row.situacao = product_data.get("situacao")
         row.parent_product_id = _extract_parent_id(product_data)
@@ -54,6 +87,17 @@ class ProductSnapshotRepository:
 
         if existing is None:
             db.add(row)
+
+        variations = product_data.get("variacoes") if isinstance(product_data.get("variacoes"), list) else []
+        for variation in variations:
+            ProductSnapshotRepository._upsert_variation_snapshot(
+                db=db,
+                tenant_id=tenant_id,
+                parent_product_id=product_id,
+                variation_payload=variation,
+                situacao=row.situacao,
+                product_kind=product_kind,
+            )
 
     @staticmethod
     def list_all(db: Session, tenant_id: UUID) -> List[BlingProductSnapshotModel]:
@@ -118,6 +162,46 @@ class ProductSnapshotRepository:
             .all()
         )
 
+    @staticmethod
+    def _upsert_variation_snapshot(
+        db: Session,
+        tenant_id: UUID,
+        parent_product_id: int,
+        variation_payload: Dict[str, Any],
+        situacao: Optional[str],
+        product_kind: Optional[ProductKindEnum],
+    ) -> None:
+        variation_id = _extract_variation_id(variation_payload)
+        if variation_id is None:
+            return
+
+        existing = (
+            db.query(BlingProductSnapshotModel)
+            .filter(
+                BlingProductSnapshotModel.tenant_id == tenant_id,
+                BlingProductSnapshotModel.bling_product_id == variation_id,
+            )
+            .first()
+        )
+
+        row = existing or BlingProductSnapshotModel(
+            tenant_id=tenant_id,
+            bling_product_id=variation_id,
+            imported_at=datetime.utcnow(),
+        )
+
+        row.codigo = _extract_variation_code(variation_payload)
+        row.nome = _extract_variation_name(variation_payload)
+        if product_kind is not None:
+            row.product_kind = product_kind
+        row.formato = _extract_variation_format(variation_payload)
+        row.situacao = variation_payload.get("situacao") or situacao
+        row.parent_product_id = parent_product_id
+        row.updated_at = datetime.utcnow()
+
+        if existing is None:
+            db.add(row)
+
 
 def _extract_parent_id(product_data: Dict[str, Any]) -> Optional[int]:
     variacao = product_data.get("variacao") if isinstance(product_data.get("variacao"), dict) else {}
@@ -127,6 +211,37 @@ def _extract_parent_id(product_data: Dict[str, Any]) -> Optional[int]:
         return int(candidate) if candidate is not None else None
     except Exception:
         return None
+
+
+def _extract_variation_id(variation_data: Dict[str, Any]) -> Optional[int]:
+    candidate = variation_data.get("id")
+    if candidate is None and isinstance(variation_data.get("produto"), dict):
+        candidate = variation_data.get("produto", {}).get("id")
+    try:
+        return int(candidate) if candidate is not None else None
+    except Exception:
+        return None
+
+
+def _extract_variation_code(variation_data: Dict[str, Any]) -> Optional[str]:
+    code = variation_data.get("codigo")
+    if not code and isinstance(variation_data.get("produto"), dict):
+        code = variation_data.get("produto", {}).get("codigo")
+    return code
+
+
+def _extract_variation_name(variation_data: Dict[str, Any]) -> Optional[str]:
+    name = variation_data.get("nome")
+    if not name and isinstance(variation_data.get("produto"), dict):
+        name = variation_data.get("produto", {}).get("nome")
+    return name
+
+
+def _extract_variation_format(variation_data: Dict[str, Any]) -> Optional[str]:
+    formato = variation_data.get("formato")
+    if not formato and isinstance(variation_data.get("produto"), dict):
+        formato = variation_data.get("produto", {}).get("formato")
+    return formato
 
 
 def _extract_stock_quantity(product_data: Dict[str, Any]) -> Optional[float]:

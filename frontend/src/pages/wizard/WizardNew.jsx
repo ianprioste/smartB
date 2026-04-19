@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Layout } from '../../components/Layout';
+import { summarizeDeletionMismatch, summarizePlannedDeletionRisk } from './planExecutionInsights';
 import '../../styles/wizard.css';
 
 const API_BASE = '/api';
@@ -1017,6 +1018,7 @@ export function WizardNewPage() {
 function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan, onShowReauthModal, onSetPendingRetry, onSetError }) {
   const [plan, setPlan] = React.useState(initialPlan);
   const [autoSeedBasePlain, setAutoSeedBasePlain] = React.useState(initialPlan.options?.auto_seed_base_plain || false);
+  const [strictPlannedDeletions, setStrictPlannedDeletions] = React.useState(initialPlan.options?.strict_planned_deletions || false);
   const [isRegenerating, setIsRegenerating] = React.useState(false);
   const [loadingStatus, setLoadingStatus] = React.useState('');
   const [seedResultsModal, setSeedResultsModal] = React.useState(null);
@@ -1147,10 +1149,17 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan, o
     return uniqueSkus.size;
   }, [plan.items]);
 
+  const plannedDeletionRisk = React.useMemo(
+    () => summarizePlannedDeletionRisk(plan),
+    [plan]
+  );
+
   function getPlanForExecution() {
+    let executionPlan = plan;
+
     if (includeExistingProducts) {
       // Convert NOOP items to CREATE/UPDATE
-      return {
+      executionPlan = {
         ...plan,
         items: plan.items.map(item => {
           if (item.action === 'NOOP') {
@@ -1161,7 +1170,14 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan, o
         })
       };
     }
-    return plan;
+
+    return {
+      ...executionPlan,
+      options: {
+        ...(executionPlan.options || {}),
+        strict_planned_deletions: strictPlannedDeletions,
+      },
+    };
   }
 
   return (
@@ -1268,6 +1284,22 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan, o
         </div>
       )}
 
+      {plannedDeletionRisk.parentsWithPlannedDeletions > 0 && (
+        <div className="blocker-warning" style={{ background: strictPlannedDeletions ? '#fff7ed' : '#fffbea', borderColor: strictPlannedDeletions ? '#fdba74' : '#facc15', color: '#78350f' }}>
+          <strong>{strictPlannedDeletions ? '🔒 Modo estrito ativo.' : '⚠️ Atenção para exclusões planejadas.'}</strong>
+          {' '}
+          {plannedDeletionRisk.parentsWithPlannedDeletions} produto(s) pai têm remoções previstas, somando {plannedDeletionRisk.totalPlannedDeletionSkus} SKU(s).
+          <div style={{ marginTop: '8px', fontSize: '12px' }}>
+            {plannedDeletionRisk.sensitiveParents.slice(0, 4).map((item) => (
+              <div key={item.sku}>• {item.sku}: {item.count} exclusão(ões) prevista(s)</div>
+            ))}
+            {plannedDeletionRisk.sensitiveParents.length > 4 && (
+              <div>• +{plannedDeletionRisk.sensitiveParents.length - 4} produto(s) com exclusão planejada</div>
+            )}
+          </div>
+        </div>
+      )}
+
       {itemsByAction.NOOP.length > 0 && (
         <div className="noop-option-block">
           <div className="noop-checkbox">
@@ -1285,6 +1317,22 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan, o
           </div>
         </div>
       )}
+
+      <div className="noop-option-block">
+        <div className="noop-checkbox">
+          <input
+            type="checkbox"
+            id="strictPlannedDeletions"
+            checked={strictPlannedDeletions}
+            onChange={(e) => setStrictPlannedDeletions(e.target.checked)}
+          />
+          <label htmlFor="strictPlannedDeletions">
+            <strong>🔒 Modo estrito de exclusões planejadas</strong>
+            <br />
+            <small>Bloqueia UPDATE se as variações removidas divergirem de "Excluir" no plano.</small>
+          </label>
+        </div>
+      </div>
 
       <div className="plan-table-container">
         <div className="table-deletion-summary">
@@ -1747,6 +1795,8 @@ function ExecutionResultsModal({ results, executedPlan, onRecreateFailedUpdates,
               {failedItems.map((item, idx) => {
                 const isOrphan = item.error_type === 'orphan_composition_variations';
                 const errorText = item.error || item.error_message || item.message || item.detail;
+                const mismatch = summarizeDeletionMismatch(item);
+                const isStrictDeletionMismatch = errorText === 'Strict planned deletions mismatch';
                 const isDuplicateCodeError =
                   typeof errorText === 'string' &&
                   errorText.toLowerCase().includes('já foi cadastrado');
@@ -1782,6 +1832,24 @@ function ExecutionResultsModal({ results, executedPlan, onRecreateFailedUpdates,
                             ))}
                           </div>
                         )}
+                      </div>
+                    ) : isStrictDeletionMismatch ? (
+                      <div style={{ marginTop: '8px', marginLeft: '16px', background: '#fff7ed', border: '1px solid #fdba74', borderRadius: '6px', padding: '10px' }}>
+                        <div style={{ fontWeight: 600, color: '#9a3412', marginBottom: '6px', fontSize: '13px' }}>
+                          🔒 Divergência entre exclusões planejadas e efetivas
+                        </div>
+                        <div style={{ color: '#7c2d12', fontSize: '12px', marginBottom: '8px' }}>
+                          O modo estrito impediu a atualização porque as variações que seriam removidas no Bling não batem com a coluna Excluir do plano.
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#7c2d12', marginBottom: '6px' }}>
+                          <strong>Planejadas:</strong> {mismatch.planned.length > 0 ? mismatch.planned.join(', ') : 'nenhuma'}
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#991b1b', marginBottom: '6px' }}>
+                          <strong>Remoções inesperadas:</strong> {mismatch.unexpected.length > 0 ? mismatch.unexpected.join(', ') : 'nenhuma'}
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#9a3412' }}>
+                          <strong>Planejadas que não seriam removidas:</strong> {mismatch.missing.length > 0 ? mismatch.missing.join(', ') : 'nenhuma'}
+                        </div>
                       </div>
                     ) : (
                       errorText && (

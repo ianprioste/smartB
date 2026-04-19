@@ -13,8 +13,15 @@ class TemplateKindEnum(str, enum.Enum):
 
 class PlanTypeEnum(str, enum.Enum):
     """Plan type enumeration."""
+    NEW_PLAIN = "NEW_PLAIN"  # New plain product creation plan
     NEW_PRINT = "NEW_PRINT"  # New print creation plan
     FIX = "FIX"  # Fix/correction plan (future sprint)
+
+
+class ProductKindEnum(str, enum.Enum):
+    """Business classification for products handled by the app."""
+    PLAIN = "PLAIN"
+    PRINTED = "PRINTED"
 
 
 class PlanStatusEnum(str, enum.Enum):

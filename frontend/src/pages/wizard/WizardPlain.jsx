@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Layout } from '../../components/Layout';
+import { summarizeDeletionMismatch, summarizePlannedDeletionRisk } from './planExecutionInsights';
 import '../../styles/wizard.css';
 
 const API_BASE = '/api';
@@ -33,6 +34,8 @@ export function WizardPlainPage() {
   const [generatingPlan, setGeneratingPlan] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState('');
   const [executing, setExecuting] = useState(false);
+  const [strictPlannedDeletions, setStrictPlannedDeletions] = useState(false);
+  const [executionResultsModal, setExecutionResultsModal] = useState(null);
 
   useEffect(() => {
     fetchConfiguration();
@@ -125,6 +128,7 @@ export function WizardPlainPage() {
       options: {
         auto_seed_base_plain: false,
         stock_type: 'virtual',
+        strict_planned_deletions: strictPlannedDeletions,
       },
       edit_parent_id: editProduct ? editProduct.id : null,
     };
@@ -188,23 +192,31 @@ export function WizardPlainPage() {
     try {
       setExecuting(true);
       setError(null);
+      const executionPlan = {
+        ...plan,
+        options: {
+          ...(plan.options || {}),
+          strict_planned_deletions: strictPlannedDeletions,
+        },
+      };
       const response = await fetch('/api/plans/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(plan),
+        body: JSON.stringify(executionPlan),
       });
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data?.detail?.message || data?.detail || 'Falha na execução');
       }
-      alert(`Execução concluída. Sucesso: ${data?.summary?.success || 0}, Falhas: ${data?.summary?.failed || 0}`);
-      navigate('/products');
+      setExecutionResultsModal(data);
     } catch (e) {
       setError(e.message || 'Erro ao executar plano');
     } finally {
       setExecuting(false);
     }
   }
+
+  const plannedDeletionRisk = summarizePlannedDeletionRisk(plan);
 
   return (
     <Layout>
@@ -361,6 +373,30 @@ export function WizardPlainPage() {
               <div className="summary-card status-blocked"><strong>{plan.summary.blocked_count}</strong><span>🔴 Bloqueado</span></div>
             </div>
 
+            {plannedDeletionRisk.parentsWithPlannedDeletions > 0 && (
+              <div className="blocker-warning" style={{ background: strictPlannedDeletions ? '#fff7ed' : '#fffbea', borderColor: strictPlannedDeletions ? '#fdba74' : '#facc15', color: '#78350f' }}>
+                <strong>{strictPlannedDeletions ? '🔒 Modo estrito ativo.' : '⚠️ Atenção para exclusões planejadas.'}</strong>
+                {' '}
+                {plannedDeletionRisk.parentsWithPlannedDeletions} produto(s) pai têm remoções previstas, somando {plannedDeletionRisk.totalPlannedDeletionSkus} SKU(s).
+              </div>
+            )}
+
+            <div className="noop-option-block">
+              <div className="noop-checkbox">
+                <input
+                  type="checkbox"
+                  id="strictPlannedDeletionsPlain"
+                  checked={strictPlannedDeletions}
+                  onChange={(e) => setStrictPlannedDeletions(e.target.checked)}
+                />
+                <label htmlFor="strictPlannedDeletionsPlain">
+                  <strong>🔒 Modo estrito de exclusões planejadas</strong>
+                  <br />
+                  <small>Bloqueia UPDATE se as variações removidas divergirem do plano previsto.</small>
+                </label>
+              </div>
+            </div>
+
             <div className="plan-table-container">
               <table className="plan-table">
                 <thead>
@@ -409,7 +445,82 @@ export function WizardPlainPage() {
             </div>
           </div>
         )}
+
+        {executionResultsModal && (
+          <PlainExecutionResultsModal
+            results={executionResultsModal}
+            onClose={() => setExecutionResultsModal(null)}
+            onGoProducts={() => navigate('/products')}
+          />
+        )}
       </div>
     </Layout>
+  );
+}
+
+function PlainExecutionResultsModal({ results, onClose, onGoProducts }) {
+  if (!results) return null;
+
+  const items = Array.isArray(results.results) ? results.results : [];
+  const successItems = items.filter((item) => item.status === 'success');
+  const failedItems = items.filter((item) => item.status === 'failed');
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '700px' }}>
+        <h3>{failedItems.length > 0 ? '⚠️ Execução concluída com falhas' : '✅ Plano executado com sucesso'}</h3>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginBottom: '20px' }}>
+          <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
+            <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#16a34a' }}>{successItems.length}</div>
+            <div style={{ color: '#15803d', marginTop: '2px', fontSize: '11px' }}>Sucesso</div>
+          </div>
+          <div style={{ background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
+            <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#2563eb' }}>{items.length}</div>
+            <div style={{ color: '#1e40af', marginTop: '2px', fontSize: '11px' }}>Itens processados</div>
+          </div>
+          <div style={{ background: failedItems.length > 0 ? '#fef2f2' : '#f9fafb', border: failedItems.length > 0 ? '1px solid #fca5a5' : '1px solid #e5e7eb', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
+            <div style={{ fontSize: '20px', fontWeight: 'bold', color: failedItems.length > 0 ? '#dc2626' : '#6b7280' }}>{failedItems.length}</div>
+            <div style={{ color: failedItems.length > 0 ? '#b91c1c' : '#6b7280', marginTop: '2px', fontSize: '11px' }}>Falhas</div>
+          </div>
+        </div>
+
+        {failedItems.length > 0 && (
+          <div style={{ marginBottom: '20px' }}>
+            <h4 style={{ marginBottom: '12px', color: '#dc2626' }}>Falhas</h4>
+            <div style={{ background: '#fef2f2', borderRadius: '6px', padding: '12px', maxHeight: '320px', overflowY: 'auto' }}>
+              {failedItems.map((item, idx) => {
+                const errorText = item.error || item.error_message || item.message || item.detail;
+                const mismatch = summarizeDeletionMismatch(item);
+                const isStrictDeletionMismatch = errorText === 'Strict planned deletions mismatch';
+
+                return (
+                  <div key={idx} style={{ padding: '10px 0', fontSize: '14px', borderBottom: '1px solid #fecaca' }}>
+                    <div style={{ color: '#dc2626' }}>• {item.sku} <span style={{ fontSize: '12px', color: '#991b1b' }}>({item.entity})</span></div>
+                    {isStrictDeletionMismatch ? (
+                      <div style={{ marginTop: '8px', marginLeft: '16px', background: '#fff7ed', border: '1px solid #fdba74', borderRadius: '6px', padding: '10px' }}>
+                        <div style={{ fontWeight: 600, color: '#9a3412', marginBottom: '6px', fontSize: '13px' }}>🔒 Divergência entre exclusões planejadas e efetivas</div>
+                        <div style={{ fontSize: '12px', color: '#7c2d12', marginBottom: '6px' }}><strong>Planejadas:</strong> {mismatch.planned.length > 0 ? mismatch.planned.join(', ') : 'nenhuma'}</div>
+                        <div style={{ fontSize: '12px', color: '#991b1b', marginBottom: '6px' }}><strong>Remoções inesperadas:</strong> {mismatch.unexpected.length > 0 ? mismatch.unexpected.join(', ') : 'nenhuma'}</div>
+                        <div style={{ fontSize: '12px', color: '#9a3412' }}><strong>Planejadas que não seriam removidas:</strong> {mismatch.missing.length > 0 ? mismatch.missing.join(', ') : 'nenhuma'}</div>
+                      </div>
+                    ) : (
+                      <div style={{ marginTop: '4px', marginLeft: '16px', fontSize: '12px', color: '#991b1b', background: '#fee2e2', padding: '6px', borderRadius: '4px' }}>
+                        {errorText || 'Falha na execução'}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        <div className="modal-actions">
+          <button onClick={onClose}>Fechar</button>
+          <button onClick={onGoProducts}>Ir para Produtos</button>
+        </div>
+      </div>
+    </div>
   );
 }

@@ -4,13 +4,18 @@ from sqlalchemy.orm import Session
 from typing import Optional, Dict, Any, List, Set
 from uuid import UUID
 from dataclasses import dataclass
+from celery.result import AsyncResult
 
 from app.infra.db import get_db
 from app.infra.bling_client import BlingClient, BlingRefreshTokenExpiredError
 from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.color_repo import ColorRepository
+from app.repositories.product_snapshot_repo import ProductSnapshotRepository
 from app.infra.logging import get_logger
 from app.models.schemas import PlanPlainRequest, PlanResponse, ErrorResponse
+from app.models.enums import ProductKindEnum
+from app.settings import settings
+from app.workers.celery_app import celery_app
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/plans", tags=["Plan Execution"])
@@ -325,6 +330,36 @@ def _variation_ids_by_code(variations: List[Dict[str, Any]]) -> Dict[str, int]:
         if code and var_id:
             result[code] = var_id
     return result
+
+
+def _normalize_skus(values: Optional[List[str]]) -> Set[str]:
+    """Normalize SKU values to uppercase set without empty entries."""
+    normalized: Set[str] = set()
+    for value in values or []:
+        sku = str(value or "").strip().upper()
+        if sku:
+            normalized.add(sku)
+    return normalized
+
+
+def _deletion_alignment(
+    removed_codes: List[str],
+    planned_deletions: Optional[List[str]],
+) -> Dict[str, List[str]]:
+    """Compare removed variation SKUs against planned_deletions from plan builder."""
+    removed_set = _normalize_skus(removed_codes)
+    planned_set = _normalize_skus(planned_deletions)
+
+    return {
+        "planned_deletions": sorted(planned_set),
+        "unexpected_removed": sorted(removed_set - planned_set),
+        "missing_planned": sorted(planned_set - removed_set),
+    }
+
+
+def _has_deletion_mismatch(alignment: Dict[str, List[str]]) -> bool:
+    """Return True when effective removals diverge from planned_deletions."""
+    return bool(alignment.get("unexpected_removed") or alignment.get("missing_planned"))
 
 
 def _dedupe_variations_by_code(variations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -734,6 +769,67 @@ def _get_error_message(error: Exception) -> str:
     return str(error) if error else "Erro desconhecido"
 
 
+def _product_kind_for_entity(entity: Optional[str]) -> Optional[ProductKindEnum]:
+    if entity in {"BASE_PARENT", "BASE_VARIATION"}:
+        return ProductKindEnum.PLAIN
+    if entity in {"PARENT_PRINTED", "VARIATION_PRINTED"}:
+        return ProductKindEnum.PRINTED
+    return None
+
+
+async def _sync_snapshot_with_kind(
+    client: BlingClient,
+    db: Session,
+    product_id: Optional[int],
+    product_kind: Optional[ProductKindEnum],
+    force_direct: bool = False,
+) -> None:
+    """Refresh local snapshot with explicit business classification when available."""
+    if not product_id or product_kind is None:
+        return
+
+    product_sync_mode = (settings.PRODUCT_SYNC_MODE or "webhook_first").strip().lower()
+    webhook_first = product_sync_mode in {"webhook_first", "webhook"}
+    can_defer_to_webhook = webhook_first and settings.WEBHOOKS_ENABLED and not force_direct
+
+    if can_defer_to_webhook and not settings.PRODUCT_SYNC_DIRECT_FALLBACK:
+        try:
+            ProductSnapshotRepository.upsert_product_kind_hint(
+                db=db,
+                tenant_id=TENANT_ID,
+                bling_product_id=int(product_id),
+                product_kind=product_kind,
+            )
+            db.commit()
+            logger.info(
+                "[SNAPSHOT] Deferred full sync to webhook pipeline for product_id=%s mode=%s",
+                int(product_id),
+                product_sync_mode,
+            )
+            return
+        except Exception as exc:
+            logger.warning(
+                "[SNAPSHOT] Failed to persist webhook-first hint for product_id=%s: %s",
+                int(product_id),
+                exc,
+            )
+
+    try:
+        detail = await client.get_product(int(product_id))
+        if detail:
+            ProductSnapshotRepository.upsert_product_detail(
+                db,
+                TENANT_ID,
+                detail,
+                product_kind=product_kind,
+            )
+            db.commit()
+    except Exception as exc:
+        logger.warning(
+            f"[SNAPSHOT] Failed to refresh local snapshot for product_id={product_id}: {exc}"
+        )
+
+
 async def _mark_product_as_excluded(client: BlingClient, product_id: int) -> Optional[str]:
     """Try to set product status to excluded in Bling.
 
@@ -805,6 +901,27 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
     3. Create printed products (format V with format E variations + composition)
     4. Update printed products (add composition to existing variations)
     """
+    if bool((plan.get("options") or {}).get("execute_async", False)):
+        token = BlingTokenRepository.get_by_tenant(db, TENANT_ID)
+        if not token:
+            raise HTTPException(status_code=401, detail="Bling token not configured")
+
+        try:
+            from app.workers.tasks import process_plan_execution_task
+
+            task = process_plan_execution_task.delay(plan)
+            return {
+                "status": "queued",
+                "runner": "celery",
+                "task_id": task.id,
+                "message": "Execução do plano enfileirada com sucesso.",
+                "status_url": f"/plans/execute/status/{task.id}",
+                "sync_mode": settings.PRODUCT_SYNC_MODE,
+            }
+        except Exception as exc:
+            logger.error("plan_execution_queue_dispatch_failed error=%s", str(exc), exc_info=True)
+            raise HTTPException(status_code=503, detail="Fila indisponível para execução assíncrona")
+
     client = await _get_bling_client(db)
     if not client:
         raise HTTPException(status_code=401, detail="Bling token not configured")
@@ -815,6 +932,12 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
 
     stock_type = (plan.get("options") or {}).get("stock_type", "virtual")
     is_physical = stock_type == "physical"
+    strict_planned_deletions = bool(
+        (plan.get("options") or {}).get("strict_planned_deletions", False)
+    )
+    force_direct_product_sync = bool(
+        (plan.get("options") or {}).get("force_direct_product_sync", False)
+    )
     
     # ========== Bulk load cache ==========
     all_skus = _collect_all_skus(items)
@@ -846,6 +969,7 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
             continue
 
         sku = item["sku"]
+        product_kind = _product_kind_for_entity(item.get("entity"))
         computed = item.get("computed_payload_preview") or {}
         payload = _prepare_base_payload(sku, computed.get("nome"))
         payload["formato"] = "V"
@@ -869,6 +993,13 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
         created_id, create_error = await create_product_with_error(client, payload)
         if created_id:
             base_ids[sku] = created_id
+            await _sync_snapshot_with_kind(
+                client,
+                db,
+                created_id,
+                product_kind,
+                force_direct=force_direct_product_sync,
+            )
             results.append({
                 "sku": sku,
                 "entity": "BASE_PARENT",
@@ -891,6 +1022,8 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
             continue
 
         sku = item["sku"]
+        planned_deletions = item.get("planned_deletions") or []
+        product_kind = _product_kind_for_entity(item.get("entity"))
         payload = _prepare_parent_payload(item)
         payload["variacoes"] = children_map.get(sku, [])
         
@@ -965,9 +1098,33 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
                         )
                         merged_codes = _variation_codes_set(merged_variations)
                         removed_codes = sorted(existing_codes - merged_codes)
+                        deletion_alignment = _deletion_alignment(removed_codes, planned_deletions)
                         existing_ids_by_code = _variation_ids_by_code(existing_variations)
                         removed_deleted_count = 0
                         removed_delete_failed: List[str] = []
+
+                        if _has_deletion_mismatch(deletion_alignment):
+                            logger.warning(
+                                f"[SYNC] {sku}: deletion alignment mismatch "
+                                f"unexpected_removed={deletion_alignment['unexpected_removed']} "
+                                f"missing_planned={deletion_alignment['missing_planned']}"
+                            )
+
+                        if strict_planned_deletions and _has_deletion_mismatch(deletion_alignment):
+                            results.append({
+                                "sku": sku,
+                                "entity": "PARENT_PRINTED",
+                                "action": "UPDATE",
+                                "id": candidate_parent_id,
+                                "status": "failed",
+                                "error": "Strict planned deletions mismatch",
+                                "planned_deletions": deletion_alignment["planned_deletions"],
+                                "unexpected_removed_variations": deletion_alignment["unexpected_removed"],
+                                "missing_planned_deletions": deletion_alignment["missing_planned"],
+                                "recovery_mode": "create_conflict_updated_existing_parent",
+                            })
+                            recovered = True
+                            continue
 
                         for removed_code in removed_codes:
                             removed_id = existing_ids_by_code.get(removed_code)
@@ -993,6 +1150,13 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
                         retry_payload["variacoes"] = merged_variations
 
                         await client.put(f"/produtos/{candidate_parent_id}", retry_payload)
+                        await _sync_snapshot_with_kind(
+                            client,
+                            db,
+                            candidate_parent_id,
+                            product_kind,
+                            force_direct=force_direct_product_sync,
+                        )
 
                         parent_ids[sku] = candidate_parent_id
                         results.append({
@@ -1007,6 +1171,9 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
                             "removed_variations": removed_codes,
                             "removed_variations_deleted_count": removed_deleted_count,
                             "removed_variations_delete_failed": removed_delete_failed,
+                            "planned_deletions": deletion_alignment["planned_deletions"],
+                            "unexpected_removed_variations": deletion_alignment["unexpected_removed"],
+                            "missing_planned_deletions": deletion_alignment["missing_planned"],
                             "recovery_mode": "create_conflict_updated_existing_parent",
                         })
                         recovered = True
@@ -1043,6 +1210,8 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
             continue
 
         sku = item["sku"]
+        planned_deletions = item.get("planned_deletions") or []
+        product_kind = _product_kind_for_entity(item.get("entity"))
         force_update_id = item.get("force_update_id")
         orphan_warning = None
 
@@ -1129,9 +1298,31 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
             merged_variations = _fill_missing_variation_structure(merged_variations, new_variations)
             merged_codes = _variation_codes_set(merged_variations)
             removed_codes = sorted(existing_codes - merged_codes)
+            deletion_alignment = _deletion_alignment(removed_codes, planned_deletions)
             existing_ids_by_code = _variation_ids_by_code(existing_variations)
             removed_deleted_count = 0
             removed_delete_failed: List[str] = []
+
+            if _has_deletion_mismatch(deletion_alignment):
+                logger.warning(
+                    f"[SYNC] {sku}: deletion alignment mismatch "
+                    f"unexpected_removed={deletion_alignment['unexpected_removed']} "
+                    f"missing_planned={deletion_alignment['missing_planned']}"
+                )
+
+            if strict_planned_deletions and _has_deletion_mismatch(deletion_alignment):
+                results.append({
+                    "sku": sku,
+                    "entity": "PARENT_PRINTED",
+                    "action": "UPDATE",
+                    "id": existing_id,
+                    "status": "failed",
+                    "error": "Strict planned deletions mismatch",
+                    "planned_deletions": deletion_alignment["planned_deletions"],
+                    "unexpected_removed_variations": deletion_alignment["unexpected_removed"],
+                    "missing_planned_deletions": deletion_alignment["missing_planned"],
+                })
+                continue
 
             for removed_code in removed_codes:
                 removed_id = existing_ids_by_code.get(removed_code)
@@ -1232,6 +1423,13 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
             
             if resp:
                 parent_ids[sku] = existing_id
+                await _sync_snapshot_with_kind(
+                    client,
+                    db,
+                    existing_id,
+                    product_kind,
+                    force_direct=force_direct_product_sync,
+                )
                 result_item = {
                     "sku": sku,
                     "entity": "PARENT_PRINTED",
@@ -1244,6 +1442,9 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
                     "removed_variations": removed_codes,
                     "removed_variations_deleted_count": removed_deleted_count,
                     "removed_variations_delete_failed": removed_delete_failed,
+                    "planned_deletions": deletion_alignment["planned_deletions"],
+                    "unexpected_removed_variations": deletion_alignment["unexpected_removed"],
+                    "missing_planned_deletions": deletion_alignment["missing_planned"],
                 }
                 if orphan_warning:
                     result_item.update(orphan_warning)
@@ -1290,6 +1491,36 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
             "success": len(success),
             "failed": len([r for r in results if r.get("status") == "failed"]),
         }
+
+
+@router.get("/execute/status/{task_id}")
+async def get_execute_plan_status(task_id: str):
+    """Return Celery task status and result for async plan execution."""
+    task_result = AsyncResult(task_id, app=celery_app)
+    state = str(task_result.state or "PENDING")
+
+    if state == "SUCCESS":
+        payload = task_result.result if isinstance(task_result.result, dict) else {"result": task_result.result}
+        return {
+            "status": "completed",
+            "task_id": task_id,
+            "state": state,
+            **payload,
+        }
+
+    if state == "FAILURE":
+        return {
+            "status": "failed",
+            "task_id": task_id,
+            "state": state,
+            "error": str(task_result.result),
+        }
+
+    return {
+        "status": "running" if state in {"STARTED", "RETRY"} else "queued",
+        "task_id": task_id,
+        "state": state,
+    }
     }
 
 

@@ -52,6 +52,17 @@ function getProductTypeLabel(product, childrenCount = 0) {
   return '◉ Simples';
 }
 
+function getProductKindLabel(product) {
+  const kind = (product?.product_kind || '').toUpperCase();
+  if (kind === 'PLAIN') return 'Liso';
+  if (kind === 'PRINTED') return 'Estampado';
+  return 'Não classificado';
+}
+
+function getDisplayTypeLabel(product, childrenCount = 0) {
+  return `${getProductTypeLabel(product, childrenCount)} • ${getProductKindLabel(product)}`;
+}
+
 function getStockTypeLabel(product) {
   const type = (product?.tipo_estoque || '').toUpperCase();
   if (type === 'V') return 'virtual';
@@ -61,9 +72,9 @@ function getStockTypeLabel(product) {
 
 function getSubproductTypeLabel(product) {
   if (product?.formato === 'E') {
-    return `🧩 Composição (${getStockTypeLabel(product)})`;
+    return `🧩 Composição (${getStockTypeLabel(product)}) • ${getProductKindLabel(product)}`;
   }
-  return '📄 Variação (físico)';
+  return `📄 Variação (físico) • ${getProductKindLabel(product)}`;
 }
 
 function productMatchesQuery(product, query) {
@@ -446,7 +457,7 @@ export function ProductsListPage() {
                             )}
                           </div>
                           <div style={{ fontSize: 12, color: '#475569', marginBottom: 6 }}><strong>SKU:</strong> {group.parent.codigo || '—'}</div>
-                          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}><strong>Tipo:</strong> {getProductTypeLabel(group.parent, group.children.length)}</div>
+                          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}><strong>Tipo:</strong> {getDisplayTypeLabel(group.parent, group.children.length)}</div>
                           <div style={{ fontSize: 12, color: '#64748b' }}><strong>Estoque:</strong> {formatStock(getGroupStockQuantity(group))}</div>
                         </button>
 
@@ -529,7 +540,7 @@ export function ProductsListPage() {
                               </code>
                             </td>
                             <td style={{ fontSize: 12 }}>
-                              {getProductTypeLabel(group.parent, group.children.length)}
+                              {getDisplayTypeLabel(group.parent, group.children.length)}
                             </td>
                             <td style={{ fontSize: 12, fontWeight: 600 }}>
                               {formatStock(getGroupStockQuantity(group))}

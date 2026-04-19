@@ -274,6 +274,7 @@ class BlingProductSearchItem(BaseModel):
     id: int
     codigo: str  # SKU
     nome: str
+    product_kind: Optional[str] = None
     formato: Optional[str] = None
     situacao: Optional[str] = None
     tipo_estoque: Optional[str] = None
@@ -377,6 +378,18 @@ class PlanOptions(BaseModel):
     """Plan execution options and toggles."""
     auto_seed_base_plain: bool = Field(default=False, description="Auto-seed missing base plain (BASE_PARENT, BASE_VARIATION) templates")
     stock_type: str = Field(default="virtual", description="Stock type: 'virtual' (composition, tipoEstoque=V) or 'physical' (variation, utilizarDadosDoPai=true)")
+    strict_planned_deletions: bool = Field(
+        default=False,
+        description="If true, block UPDATE when removed variations differ from planned_deletions",
+    )
+    force_direct_product_sync: bool = Field(
+        default=False,
+        description="If true, bypass webhook-first snapshot mode and refresh product detail directly in Bling",
+    )
+    execute_async: bool = Field(
+        default=False,
+        description="If true, enqueue plan execution in Celery and return task_id immediately",
+    )
 
     class Config:
         protected_namespaces = ()

@@ -768,11 +768,21 @@ async def save_plan(
 
         # Convert plan to dict for storage
         plan_dict = request.plan.model_dump()
+        try:
+            plan_type = PlanTypeEnum(request.plan.type)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "INVALID_PLAN_TYPE",
+                    "message": f"Unsupported plan type: {request.plan.type}",
+                },
+            )
 
         # Create plan in database
         saved_plan = plan_repo.create(
             tenant_id=TENANT_ID,
-            plan_type=PlanTypeEnum.NEW_PRINT,
+            plan_type=plan_type,
             input_payload=plan_dict,  # In real scenario, store original request
             plan_payload=plan_dict,
         )

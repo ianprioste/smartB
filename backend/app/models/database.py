@@ -6,7 +6,7 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from app.infra.db import Base
 from app.settings import settings
 import enum
-from app.models.enums import TemplateKindEnum, PlanTypeEnum, PlanStatusEnum
+from app.models.enums import TemplateKindEnum, PlanTypeEnum, PlanStatusEnum, ProductKindEnum
 
 
 # Cross-database UUID type: uses native PG UUID when on PostgreSQL, CHAR(32) otherwise.
@@ -270,6 +270,7 @@ class BlingProductSnapshotModel(Base):
 
     codigo = Column(String(255), nullable=True)
     nome = Column(String(500), nullable=True)
+    product_kind = Column(Enum(ProductKindEnum), nullable=True)
     formato = Column(String(20), nullable=True)
     situacao = Column(String(50), nullable=True)
     parent_product_id = Column(BigInteger, nullable=True)

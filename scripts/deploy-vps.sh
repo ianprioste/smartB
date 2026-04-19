@@ -40,6 +40,8 @@ DEPLOY_SMTP_PASSWORD="${DEPLOY_SMTP_PASSWORD:-}"
 DEPLOY_SMTP_FROM_EMAIL="${DEPLOY_SMTP_FROM_EMAIL:-}"
 DEPLOY_SMTP_FROM_NAME="${DEPLOY_SMTP_FROM_NAME:-}"
 DEPLOY_BLING_WEBHOOK_SECRET="${DEPLOY_BLING_WEBHOOK_SECRET:-}"
+POST_DEPLOY_HOOK="${POST_DEPLOY_HOOK:-scripts/post-deploy.sh}"
+RUN_POST_DEPLOY_HOOK="${RUN_POST_DEPLOY_HOOK:-true}"
 
 cd "${REPO_ROOT}"
 
@@ -790,6 +792,19 @@ if ! printf '%s' "$health_payload" | grep -q "\"git_commit\""; then
 fi
 
 log "Deploy remoto concluido; verificacao de commit publico segue no workflow"
+
+if [ "${RUN_POST_DEPLOY_HOOK}" = "true" ]; then
+  if [ -f "${POST_DEPLOY_HOOK}" ]; then
+    log "Executando pos-deploy hook (${POST_DEPLOY_HOOK})"
+    BACKEND_SERVICE="${BACKEND_SERVICE}" \
+    HEALTH_URL="${HEALTH_URL}" \
+    EXPECT_GIT_COMMIT="${GIT_COMMIT}" \
+    REQUIRE_NGINX="${REQUIRE_NGINX}" \
+    bash "${POST_DEPLOY_HOOK}" || fail "Pos-deploy hook falhou (${POST_DEPLOY_HOOK})"
+  else
+    warn "Pos-deploy hook nao encontrado: ${POST_DEPLOY_HOOK}"
+  fi
+fi
 
 # Final nginx active verification — ensure HTTPS is reachable before handing off.
 if [ "${REQUIRE_NGINX}" = "true" ]; then

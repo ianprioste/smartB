@@ -472,3 +472,33 @@ def process_webhook_product_task(self, event_id: str, bling_product_id: int, eve
             except Exception:
                 pass
         db.close()
+
+
+@celery_app.task(bind=True, name="process_plan_execution_task")
+def process_plan_execution_task(self, plan_payload: dict):
+    """Execute plan payload in background worker and return the same result shape as /plans/execute."""
+    from app.api import plan_execution as plan_execution_api
+
+    db = SessionLocal()
+    try:
+        safe_plan = dict(plan_payload or {})
+        options = dict(safe_plan.get("options") or {})
+        # Prevent recursive queueing when worker invokes API executor.
+        options["execute_async"] = False
+        safe_plan["options"] = options
+
+        result = asyncio.run(plan_execution_api.execute_plan_direct(safe_plan, db=db))
+        return {
+            "ok": True,
+            "task_id": self.request.id,
+            "result": result,
+        }
+    except Exception as exc:
+        logger.error("plan_execution_async_failed task_id=%s error=%s", self.request.id, str(exc), exc_info=True)
+        return {
+            "ok": False,
+            "task_id": self.request.id,
+            "error": str(exc),
+        }
+    finally:
+        db.close()
