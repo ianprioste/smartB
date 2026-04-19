@@ -6,7 +6,7 @@ falls back to well-known standard IDs (9 = Atendido).  Custom statuses like
 """
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 import os
 
 from app.infra.logging import get_logger
@@ -18,6 +18,7 @@ VENDAS_MODULE_ID = 98310
 
 # In-memory cache (lives for the process lifetime, which is fine for uvicorn workers).
 _cached_ids: Optional[Dict[str, int]] = None
+_cached_all_statuses: Optional[List[Dict]] = None
 
 # Well-known standard Bling status IDs (work without the Situações scope).
 _FALLBACK_IDS: Dict[str, int] = {
@@ -108,5 +109,44 @@ async def get_bling_status_ids(client) -> Dict[str, int]:
 
 def clear_cache():
     """Reset cached IDs (useful after reconnecting Bling account)."""
-    global _cached_ids
+    global _cached_ids, _cached_all_statuses
     _cached_ids = None
+    _cached_all_statuses = None
+
+
+async def get_all_bling_statuses(client) -> List[Dict]:
+    """Return ALL Bling order statuses from /situacoes/modulos/{VENDAS_MODULE_ID}.
+
+    Each item: {"id": int, "nome": str, "valor": int|None}.
+    Falls back to empty list if the API is unavailable.
+    """
+    global _cached_all_statuses
+    if _cached_all_statuses is not None:
+        return _cached_all_statuses
+
+    try:
+        resp = await client.get(f"/situacoes/modulos/{VENDAS_MODULE_ID}")
+        items = resp.get("data", []) if isinstance(resp, dict) else []
+        if not isinstance(items, list):
+            items = []
+    except Exception as exc:
+        logger.warning(
+            "bling_all_statuses_fetch_failed error=%s",
+            str(exc),
+        )
+        return []
+
+    result: List[Dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        sit_id = item.get("id")
+        nome = (item.get("nome") or "").strip()
+        if sit_id is None or not nome:
+            continue
+        valor = item.get("valor")
+        result.append({"id": int(sit_id), "nome": nome, "valor": valor})
+
+    _cached_all_statuses = result
+    logger.info("bling_all_statuses_resolved count=%d", len(result))
+    return result

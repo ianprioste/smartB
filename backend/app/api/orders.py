@@ -13,7 +13,7 @@ from app.infra.db import get_db, SessionLocal
 from app.infra.bling_client import BlingClient, BlingAuthError, BlingAPIError
 from app.infra.logging import get_logger
 from app.domain.order_sync import sync_orders
-from app.domain.bling_situacoes import get_bling_status_ids
+from app.domain.bling_situacoes import get_bling_status_ids, get_all_bling_statuses
 from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.order_snapshot_repo import OrderSnapshotRepository, parse_progress_from_sync_message, _try_parse_datetime
 from app.repositories.item_production_note_repo import ItemProductionNoteRepository
@@ -46,19 +46,13 @@ STATUS_NAME_MAP = {
 }
 VALID_STATUS_NAMES = {"Em aberto", "Atendido", "Cancelado"}
 
-# Status display mappings: map Bling status names to app display names
-DISPLAY_STATUS_MAP = {
-    "Pronto para retirada": "Pronto para envio",  # Map "Pronto para retirada" -> "Pronto para envio"
-    "Pronto para envio": "Pronto para envio",      # Keep "Pronto para envio" as-is
+# Color mappings by Bling situacao.valor category.
+_VALOR_COLORS = {
+    0: {"color": "#eab308", "bg": "#fefce8"},   # Em aberto (yellow)
+    1: {"color": "#16a34a", "bg": "#f0fdf4"},   # Atendido (green)
+    2: {"color": "#dc2626", "bg": "#fef2f2"},   # Cancelado (red)
 }
-
-
-def _get_display_status_name(status_name: str | None) -> str | None:
-    """Apply display-level status name mappings (e.g., unify pickup/delivery statuses)."""
-    if not status_name:
-        return status_name
-    trimmed = str(status_name).strip()
-    return DISPLAY_STATUS_MAP.get(trimmed, trimmed)
+_DEFAULT_STATUS_COLOR = {"color": "#6366f1", "bg": "#eef2ff"}  # Indigo for custom statuses
 
 
 def _field_was_provided(model, field_name: str) -> bool:
@@ -421,16 +415,14 @@ def _order_matches_active_campaign(order_date: datetime | None, order_payload: D
 def _resolve_status_name(raw_status: Any, fallback_status_id: Any = None, persisted_status_name: str | None = None) -> str:
     """Resolve a displayable order status.
 
-    For display, prefer the exact status name coming from Bling.
-    Apply any display-level status name mappings (e.g., unifying pickup/delivery statuses).
+    For display, prefer the exact status name coming from Bling (no remapping).
     Category/id fallbacks are used only when a readable name is unavailable.
     """
     if isinstance(raw_status, dict):
         # Prefer the original Bling status name for UI fidelity.
         status_name = raw_status.get("nome")
         if status_name:
-            display_name = _get_display_status_name(status_name)
-            return str(display_name).strip() or "—"
+            return str(status_name).strip() or "—"
 
         # Fallback to category when name is missing.
         valor = raw_status.get("valor")
@@ -451,8 +443,7 @@ def _resolve_status_name(raw_status: Any, fallback_status_id: Any = None, persis
         return "—"
 
     if persisted_status_name:
-        display_name = _get_display_status_name(persisted_status_name)
-        return str(display_name).strip() or "—"
+        return str(persisted_status_name).strip() or "—"
 
     if fallback_status_id is not None:
         try:
@@ -622,11 +613,83 @@ def _format_snapshot_order(row) -> Dict[str, Any]:
     }
 
 
+def _status_color(valor) -> Dict[str, str]:
+    """Return color/bg for a Bling situacao.valor category."""
+    if valor is not None:
+        try:
+            return _VALOR_COLORS.get(int(valor), _DEFAULT_STATUS_COLOR)
+        except (TypeError, ValueError):
+            pass
+    return _DEFAULT_STATUS_COLOR
+
+
+@router.get("/statuses")
+async def list_available_statuses(db: Session = Depends(get_db)):
+    """Return all Bling order statuses available for this account.
+
+    Tries the Bling API first; falls back to distinct statuses stored in the local DB.
+    """
+    client = _make_client(db)
+
+    # Try fetching from Bling API
+    if client:
+        try:
+            bling_statuses = await get_all_bling_statuses(client)
+            if bling_statuses:
+                result = []
+                for s in bling_statuses:
+                    colors = _status_color(s.get("valor"))
+                    result.append({
+                        "id": s["id"],
+                        "nome": s["nome"],
+                        "valor": s.get("valor"),
+                        "color": colors["color"],
+                        "bg": colors["bg"],
+                    })
+                return {"statuses": result}
+        except Exception as exc:
+            logger.warning("list_available_statuses bling_fetch_failed error=%s", str(exc))
+
+    # Fallback: derive from persisted snapshots
+    try:
+        db_statuses = OrderSnapshotRepository.list_distinct_statuses(db, DEFAULT_TENANT_ID)
+        result = []
+        for s in db_statuses:
+            # Infer valor from known mappings
+            nome_lower = (s.get("nome") or "").strip().lower()
+            valor = None
+            if "aberto" in nome_lower or "pendente" in nome_lower:
+                valor = 0
+            elif "atendido" in nome_lower or "entregue" in nome_lower:
+                valor = 1
+            elif "cancel" in nome_lower or "devolv" in nome_lower:
+                valor = 2
+            colors = _status_color(valor)
+            result.append({
+                "id": s["id"],
+                "nome": s["nome"],
+                "valor": valor,
+                "color": colors["color"],
+                "bg": colors["bg"],
+            })
+        if result:
+            return {"statuses": result}
+    except Exception as exc:
+        logger.warning("list_available_statuses db_fallback_failed error=%s", str(exc))
+
+    # Ultimate fallback: hardcoded known statuses
+    return {"statuses": [
+        {"id": 6, "nome": "Em aberto", "valor": 0, "color": "#eab308", "bg": "#fefce8"},
+        {"id": 9, "nome": "Atendido", "valor": 1, "color": "#16a34a", "bg": "#f0fdf4"},
+        {"id": 15, "nome": "Cancelado", "valor": 2, "color": "#dc2626", "bg": "#fef2f2"},
+    ]}
+
+
 @router.get("")
 async def list_orders(
     db: Session = Depends(get_db),
     search: str = Query("", description="Search by order number, client name, or Nuvemshop number"),
-    statuses: str = Query("6,9,15", description="Comma-separated Bling status IDs"),
+    statuses: str = Query("", description="Comma-separated Bling status IDs (empty = all)"),
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=500),
     tag: str = Query("", description="Filter by exact global tag name"),
@@ -658,7 +721,6 @@ async def list_orders(
             "total": 0,
             "page": page,
             "pages": 0,
-            "statuses": KNOWN_STATUSES,
             "source": "local-db",
         }
 
@@ -668,13 +730,10 @@ async def list_orders(
         s = s.strip()
         if s.isdigit():
             status_ids.append(int(s))
-    if not status_ids:
-        status_ids = [6, 9, 15]
 
     # Merge: filtering Cancelado also includes status 12
     if 15 in status_ids and 12 not in status_ids:
         status_ids.append(12)
-    requested_labels = _requested_status_labels(status_ids)
 
     # Fallback mode when snapshot tables are not available.
     if not snapshot_repo_available:
@@ -685,11 +744,10 @@ async def list_orders(
                 "total": 0,
                 "page": page,
                 "pages": 0,
-                "statuses": KNOWN_STATUSES,
                 "source": "bling-direct-fallback",
             }
         try:
-            all_orders = await _fetch_all_orders(client)
+            all_orders = await _fetch_all_orders(client, status_ids if status_ids else None)
         except BlingAuthError:
             return {
                 "has_bling_auth": False,
@@ -697,7 +755,6 @@ async def list_orders(
                 "total": 0,
                 "page": page,
                 "pages": 0,
-                "statuses": KNOWN_STATUSES,
                 "source": "bling-direct-fallback",
             }
 
@@ -712,11 +769,11 @@ async def list_orders(
             if _order_matches_active_campaign(order_dt, raw_order, campaign_filters):
                 continue
             formatted.append(order)
-        if requested_labels:
+        if status_ids:
+            sid_set = set(status_ids)
             formatted = [
-                o
-                for o in formatted
-                if ((o.get("_status_filter_label") or o.get("situacao") or "") in requested_labels)
+                o for o in formatted
+                if o.get("situacaoId") in sid_set
             ]
         formatted = _filter_global_orders_by_tag(db, formatted, tag)
         formatted.sort(key=lambda x: x.get("data") or "", reverse=True)
@@ -740,7 +797,6 @@ async def list_orders(
             "total": total,
             "page": page,
             "pages": pages,
-            "statuses": KNOWN_STATUSES,
             "source": "bling-direct-fallback",
         }
 
@@ -752,12 +808,11 @@ async def list_orders(
             "total": 0,
             "page": page,
             "pages": 0,
-            "statuses": KNOWN_STATUSES,
             "source": "empty-db",
             "needs_sync": True,
         }
 
-    rows = OrderSnapshotRepository.list_for_orders_page(db, DEFAULT_TENANT_ID, [], search)
+    rows = OrderSnapshotRepository.list_for_orders_page(db, DEFAULT_TENANT_ID, status_ids, search)
     if campaign_order_ids or campaign_filters:
         filtered_rows = []
         for row in rows:
@@ -777,12 +832,6 @@ async def list_orders(
             formatted.append(_format_snapshot_order(row))
         except Exception as exc:
             logger.warning("orders.format_snapshot_order_failed bling_order_id=%s error=%s", getattr(row, 'bling_order_id', '?'), str(exc))
-    if requested_labels:
-        formatted = [
-            o
-            for o in formatted
-            if ((o.get("_status_filter_label") or o.get("situacao") or "") in requested_labels)
-        ]
     formatted = _filter_global_orders_by_tag(db, formatted, tag)
 
     # Sort by date descending
@@ -813,7 +862,6 @@ async def list_orders(
         "total": total,
         "page": page,
         "pages": pages,
-        "statuses": KNOWN_STATUSES,
         "source": "local-db",
     }
 

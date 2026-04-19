@@ -7,14 +7,13 @@ import { useVersionPolling } from '../../hooks/useVersionPolling';
 const API_BASE = '/api';
 const ORDERS_UI_STATE_KEY = 'smartbling:orders:ui-state:v1';
 
-const KNOWN_STATUSES = [
-  { id: 6, nome: 'Em aberto', color: '#eab308', bg: '#fefce8' },
-  { id: 9, nome: 'Atendido', color: '#16a34a', bg: '#f0fdf4' },
-  { id: 15, nome: 'Cancelado', color: '#dc2626', bg: '#fef2f2' },
+const FALLBACK_STATUSES = [
+  { id: 6, nome: 'Em aberto', valor: 0, color: '#eab308', bg: '#fefce8' },
+  { id: 9, nome: 'Atendido', valor: 1, color: '#16a34a', bg: '#f0fdf4' },
+  { id: 15, nome: 'Cancelado', valor: 2, color: '#dc2626', bg: '#fef2f2' },
 ];
 
 const DEFAULT_STATUS_IDS = [6];
-const KNOWN_STATUS_IDS = new Set(KNOWN_STATUSES.map((status) => status.id));
 
 function normalizeExpandedKey(value) {
   if (value == null || value === '') return null;
@@ -371,12 +370,24 @@ function buildBatchLabelsPrintHtml(labels) {
 </html>`;
 }
 
-function StatusBadge({ text }) {
-  const lower = (text || '').toLowerCase();
+function StatusBadge({ text, statusId, availableStatuses }) {
+  // Try to find color from the fetched statuses list by ID
   let bg = '#f1f5f9', color = '#64748b';
-  if (lower.includes('atendido') || lower.includes('conclu') || lower.includes('entregue')) { bg = '#dcfce7'; color = '#15803d'; }
-  else if (lower.includes('pendente') || lower.includes('aberto') || lower.includes('andamento')) { bg = '#fef9c3'; color = '#a16207'; }
-  else if (lower.includes('cancel') || lower.includes('devolvido')) { bg = '#fee2e2'; color = '#b91c1c'; }
+  if (statusId != null && availableStatuses?.length) {
+    const match = availableStatuses.find(s => s.id === statusId);
+    if (match) {
+      bg = match.bg || bg;
+      color = match.color || color;
+    }
+  }
+  if (bg === '#f1f5f9') {
+    // Fallback: infer color from text
+    const lower = (text || '').toLowerCase();
+    if (lower.includes('atendido') || lower.includes('conclu') || lower.includes('entregue')) { bg = '#dcfce7'; color = '#15803d'; }
+    else if (lower.includes('pendente') || lower.includes('aberto') || lower.includes('andamento')) { bg = '#fef9c3'; color = '#a16207'; }
+    else if (lower.includes('cancel') || lower.includes('devolvido')) { bg = '#fee2e2'; color = '#b91c1c'; }
+    else if (lower.includes('pronto') || lower.includes('envio') || lower.includes('retirada') || lower.includes('verificad') || lower.includes('agenciad')) { bg = '#eef2ff'; color = '#6366f1'; }
+  }
   return (
     <span style={{ display: 'inline-block', padding: '3px 10px', borderRadius: 12, fontSize: 12, fontWeight: 600, background: bg, color }}>{text || '—'}</span>
   );
@@ -592,6 +603,7 @@ export function OrdersPage() {
   const [sourceMode, setSourceMode] = useState('');
   const [search, setSearch] = useState(savedUiState?.search || '');
   const [selectedStatuses, setSelectedStatuses] = useState(() => new Set(DEFAULT_STATUS_IDS));
+  const [availableStatuses, setAvailableStatuses] = useState(FALLBACK_STATUSES);
   const [page, setPage] = useState(savedUiState?.page || 1);
   const [totalPages, setTotalPages] = useState(0);
   const [total, setTotal] = useState(0);
@@ -1032,6 +1044,20 @@ export function OrdersPage() {
   useEffect(() => { fetchSyncStatus(); }, []); // eslint-disable-line
   useEffect(() => { fetchGlobalTags(); }, [fetchGlobalTags]);
 
+  // Fetch available Bling statuses dynamically
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_BASE}/orders/statuses`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!cancelled && data?.statuses?.length) {
+          setAvailableStatuses(data.statuses);
+        }
+      })
+      .catch(() => {}); // keep fallback
+    return () => { cancelled = true; };
+  }, []); // eslint-disable-line
+
   useVersionPolling({
     enabled: hasBling && !isSyncRunningFlag,
     pollKey: 'orders_global',
@@ -1181,8 +1207,8 @@ export function OrdersPage() {
               <option key={tag} value={tag}>{tag}</option>
             ))}
           </select>
-          <div style={{ display: 'flex', gap: 6 }}>
-            {KNOWN_STATUSES.map(s => {
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {availableStatuses.map(s => {
               const active = selectedStatuses.has(s.id);
               return (
                 <button key={s.id} onClick={() => toggleStatus(s.id)}
@@ -1245,7 +1271,7 @@ export function OrdersPage() {
                                 />
                               </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                              <StatusBadge text={order.situacao} />
+                              <StatusBadge text={order.situacao} statusId={order.situacaoId} availableStatuses={availableStatuses} />
                               <span style={{ fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</span>
                               <span title={order.has_frete ? 'Envio' : 'Retirada'}>{order.has_frete ? '🚚' : '🏪'}</span>
                               {itens.length > 0 && <ChevronIcon isExpanded={expanded} />}
@@ -1342,7 +1368,7 @@ export function OrdersPage() {
                               error={tagErrorByOrder[String(order.id || '')]}
                             />
                           </td>
-                          <td style={{ padding: '10px 12px', textAlign: 'center' }}><StatusBadge text={order.situacao} /></td>
+                          <td style={{ padding: '10px 12px', textAlign: 'center' }}><StatusBadge text={order.situacao} statusId={order.situacaoId} availableStatuses={availableStatuses} /></td>
                           <td style={{ padding: '10px 12px', textAlign: 'center', fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</td>
                           <td style={{ padding: '10px 4px', fontSize: 14, textAlign: 'center' }} title={order.has_frete ? 'Envio' : 'Retirada'}>{order.has_frete ? '🚚' : '🏪'}</td>
                           <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 700, color: '#0f172a' }}>{formatBRL(order.total)}</td>

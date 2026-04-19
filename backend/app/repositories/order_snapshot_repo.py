@@ -236,6 +236,27 @@ class OrderSnapshotRepository:
         return rows
 
     @staticmethod
+    def list_distinct_statuses(db: Session, tenant_id: UUID) -> List[Dict[str, Any]]:
+        """Return distinct (status_id, status_name) pairs from persisted snapshots."""
+        rows = (
+            db.query(
+                BlingOrderSnapshotModel.status_id,
+                BlingOrderSnapshotModel.status_name,
+            )
+            .filter(
+                BlingOrderSnapshotModel.tenant_id == tenant_id,
+                BlingOrderSnapshotModel.status_id.isnot(None),
+            )
+            .distinct()
+            .all()
+        )
+        return [
+            {"id": r.status_id, "nome": r.status_name or f"Status {r.status_id}"}
+            for r in rows
+            if r.status_id is not None
+        ]
+
+    @staticmethod
     def list_for_period(db: Session, tenant_id: UUID, start_dt: datetime, end_dt: datetime) -> List[BlingOrderSnapshotModel]:
         return (
             db.query(BlingOrderSnapshotModel)
