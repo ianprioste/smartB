@@ -1,20 +1,67 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { Layout } from '../../components/Layout';
 import { ProductionStatusBadge, ProductionNotesInput } from '../../components/ProductionControls';
 import useIsMobile from '../../hooks/useIsMobile';
 import { useVersionPolling } from '../../hooks/useVersionPolling';
+import { normalizeProductionStatus, deriveOrderStatusFromItems, countFinalizedItems } from '../../utils/orderStatus.js';
 
 const API_BASE = '/api';
 const ORDERS_UI_STATE_KEY = 'smartbling:orders:ui-state:v1';
 
-const KNOWN_STATUSES = [
-  { id: 6, nome: 'Em aberto', color: '#eab308', bg: '#fefce8' },
-  { id: 9, nome: 'Atendido', color: '#16a34a', bg: '#f0fdf4' },
-  { id: 15, nome: 'Cancelado', color: '#dc2626', bg: '#fef2f2' },
+const FALLBACK_STATUSES = [
+  { id: 6, nome: 'Em aberto', valor: 0, color: '#eab308', bg: '#fefce8' },
+  { id: 9, nome: 'Atendido', valor: 1, color: '#16a34a', bg: '#f0fdf4' },
+  { id: 15, nome: 'Cancelado', valor: 2, color: '#dc2626', bg: '#fef2f2' },
 ];
 
 const DEFAULT_STATUS_IDS = [6];
-const KNOWN_STATUS_IDS = new Set(KNOWN_STATUSES.map((status) => status.id));
+
+function normalizeOrderStatusLabel(status) {
+  const valor = Number.isFinite(Number(status?.valor)) ? Number(status.valor) : null;
+  if (valor === 0) return 'Em aberto';
+  if (valor === 1) return 'Atendido';
+  if (valor === 2) return 'Cancelado';
+
+  const lower = String(status?.nome || '').trim().toLowerCase();
+  if (lower.includes('cancel') || lower.includes('devolv')) return 'Cancelado';
+  if (lower.includes('atendid') || lower.includes('conclu') || lower.includes('entreg')) return 'Atendido';
+  if (lower.includes('aberto') || lower.includes('pendente') || lower.includes('andamento')) return 'Em aberto';
+
+  const rawId = Number(status?.id);
+  if (rawId === 9) return 'Atendido';
+  if (rawId === 12 || rawId === 15) return 'Cancelado';
+  return 'Em aberto';
+}
+
+function aggregateStatusOptions(rawStatuses) {
+  const defaults = {
+    'Em aberto': { id: 6, nome: 'Em aberto', valor: 0, color: '#eab308', bg: '#fefce8', sourceIds: new Set([6]) },
+    Atendido: { id: 9, nome: 'Atendido', valor: 1, color: '#16a34a', bg: '#f0fdf4', sourceIds: new Set([9]) },
+    Cancelado: { id: 15, nome: 'Cancelado', valor: 2, color: '#dc2626', bg: '#fef2f2', sourceIds: new Set([12, 15]) },
+  };
+
+  (Array.isArray(rawStatuses) ? rawStatuses : []).forEach((status) => {
+    const label = normalizeOrderStatusLabel(status);
+    const target = defaults[label];
+    const sid = Number(status?.id);
+    if (Number.isFinite(sid)) target.sourceIds.add(sid);
+  });
+
+  return ['Em aberto', 'Atendido', 'Cancelado'].map((label) => ({
+    ...defaults[label],
+    sourceIds: Array.from(defaults[label].sourceIds),
+  }));
+}
+
+function expandSelectedStatusIds(selectedStatuses, options) {
+  const selected = new Set(Array.from(selectedStatuses || []));
+  const expanded = new Set();
+  (Array.isArray(options) ? options : []).forEach((option) => {
+    if (!selected.has(option.id)) return;
+    (option.sourceIds || [option.id]).forEach((sid) => expanded.add(sid));
+  });
+  return Array.from(expanded);
+}
 
 function normalizeExpandedKey(value) {
   if (value == null || value === '') return null;
@@ -371,12 +418,26 @@ function buildBatchLabelsPrintHtml(labels) {
 </html>`;
 }
 
-function StatusBadge({ text }) {
-  const lower = (text || '').toLowerCase();
+function StatusBadge({ text, statusId, availableStatuses }) {
+  // Try to find color from the fetched statuses list by ID
   let bg = '#f1f5f9', color = '#64748b';
-  if (lower.includes('atendido') || lower.includes('conclu') || lower.includes('entregue')) { bg = '#dcfce7'; color = '#15803d'; }
-  else if (lower.includes('pendente') || lower.includes('aberto') || lower.includes('andamento')) { bg = '#fef9c3'; color = '#a16207'; }
-  else if (lower.includes('cancel') || lower.includes('devolvido')) { bg = '#fee2e2'; color = '#b91c1c'; }
+  if (statusId != null && availableStatuses?.length) {
+    const match = availableStatuses.find(s => s.id === statusId);
+    if (match) {
+      bg = match.bg || bg;
+      color = match.color || color;
+    }
+  }
+  if (bg === '#f1f5f9') {
+    // Fallback: infer color from text
+    const lower = (text || '').toLowerCase();
+    if (lower.includes('atendido') || lower.includes('conclu') || lower.includes('entregue')) { bg = '#dcfce7'; color = '#166534'; }
+    else if (lower.includes('imped')) { bg = '#fee2e2'; color = '#b91c1c'; }
+    else if (lower.includes('cancel') || lower.includes('devolvido')) { bg = '#fee2e2'; color = '#b91c1c'; }
+    else if (lower.includes('pronto') || lower.includes('envio') || lower.includes('retirada')) { bg = '#ede9fe'; color = '#6d28d9'; }
+    else if (lower.includes('andamento') || lower.includes('produ') || lower.includes('verificad') || lower.includes('agenciad')) { bg = '#dbeafe'; color = '#1e40af'; }
+    else if (lower.includes('pendente') || lower.includes('aberto')) { bg = '#fef9c3'; color = '#a16207'; }
+  }
   return (
     <span style={{ display: 'inline-block', padding: '3px 10px', borderRadius: 12, fontSize: 12, fontWeight: 600, background: bg, color }}>{text || '—'}</span>
   );
@@ -592,6 +653,7 @@ export function OrdersPage() {
   const [sourceMode, setSourceMode] = useState('');
   const [search, setSearch] = useState(savedUiState?.search || '');
   const [selectedStatuses, setSelectedStatuses] = useState(() => new Set(DEFAULT_STATUS_IDS));
+  const [availableStatuses, setAvailableStatuses] = useState(FALLBACK_STATUSES);
   const [page, setPage] = useState(savedUiState?.page || 1);
   const [totalPages, setTotalPages] = useState(0);
   const [total, setTotal] = useState(0);
@@ -616,9 +678,27 @@ export function OrdersPage() {
   const suppressDeltaUntilRef = useRef(0);
   const isSyncRunningFlag = syncRunning || syncStatus?.sync?.last_sync_status === 'running';
 
+  const statusFilterOptions = useMemo(
+    () => aggregateStatusOptions(availableStatuses),
+    [availableStatuses],
+  );
+
   const markLocalMutation = useCallback(() => {
     suppressDeltaUntilRef.current = Date.now() + 4000;
   }, []);
+
+  const includeStatusInFilter = useCallback((statusLabel) => {
+    const canonical = normalizeOrderStatusLabel({ nome: statusLabel });
+    const option = (statusFilterOptions || []).find((item) => item.nome === canonical);
+    if (!option) return;
+    setSelectedStatuses((prev) => {
+      const current = prev || new Set();
+      if (current.has(option.id)) return current;
+      const next = new Set(current);
+      next.add(option.id);
+      return next;
+    });
+  }, [statusFilterOptions]);
 
   const handleProductionSaved = useCallback((sku, newStatus, newNotes) => {
     setOrders((prev) =>
@@ -631,11 +711,18 @@ export function OrdersPage() {
             ...(newNotes !== undefined ? { notes: newNotes } : {}),
           };
         });
-        const embalado = itens.filter((i) => i.production_status === 'Embalado').length;
-        return { ...order, itens, production_summary: `${embalado}/${itens.length} Embalado` };
+        const finalized = countFinalizedItems(itens);
+        const nextSituacao = deriveOrderStatusFromItems(itens, !!order.has_frete);
+        includeStatusInFilter(nextSituacao);
+        return {
+          ...order,
+          situacao: nextSituacao,
+          itens,
+          production_summary: `${finalized}/${itens.length} Finalizado`,
+        };
       }),
     );
-  }, []);
+  }, [includeStatusInFilter]);
 
   const handleProductionStatusChange = useCallback(async (sku, currentStatus, nextStatus, blingOrderId) => {
     if (nextStatus === currentStatus) return;
@@ -671,13 +758,14 @@ export function OrdersPage() {
       });
       if (!resp.ok) throw new Error('Falha ao atualizar status');
       markLocalMutation();
+      includeStatusInFilter(newStatus);
       setOrders((prev) =>
         prev.map((o) => o.id === orderId ? { ...o, situacao: newStatus } : o),
       );
     } catch (err) {
       alert(`Erro: ${err.message}`);
     }
-  }, [markLocalMutation]);
+  }, [includeStatusInFilter, markLocalMutation]);
 
   const fetchGlobalTags = useCallback(async () => {
     try {
@@ -774,7 +862,7 @@ export function OrdersPage() {
     try {
       setLoading(true);
       setError(null);
-      const statusStr = Array.from(statuses).join(',');
+      const statusStr = expandSelectedStatusIds(statuses, statusFilterOptions).join(',');
       const params = new URLSearchParams({ page: String(pageNum), limit: '50', statuses: statusStr });
       if (searchTerm) params.set('search', searchTerm);
       if (selectedTag) params.set('tag', selectedTag);
@@ -792,10 +880,10 @@ export function OrdersPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [statusFilterOptions]);
 
   const fetchAllFilteredOrdersForPrint = useCallback(async () => {
-    const statusStr = Array.from(selectedStatuses).join(',');
+    const statusStr = expandSelectedStatusIds(selectedStatuses, statusFilterOptions).join(',');
     const aggregated = [];
     let currentPage = 1;
     let pages = 1;
@@ -825,7 +913,7 @@ export function OrdersPage() {
     }
 
     return aggregated;
-  }, [search, selectedStatuses, selectedTagFilter]);
+  }, [search, selectedStatuses, selectedTagFilter, statusFilterOptions]);
 
   const handlePrintFilteredLabels = useCallback(async () => {
     if (typeof window === 'undefined') return;
@@ -901,6 +989,10 @@ export function OrdersPage() {
       const statusMap = new Map((delta.order_status_updates || []).map((u) => [Number(u.order_id), u.situacao]));
       const notesUpdates = delta.production_updates || [];
 
+      (delta.order_status_updates || []).forEach((update) => {
+        includeStatusInFilter(update?.situacao);
+      });
+
       setOrders((prev) => prev.map((order) => {
         const orderId = Number(order.id);
         const nextStatus = statusMap.get(orderId);
@@ -918,19 +1010,20 @@ export function OrdersPage() {
             notes: match.notes,
           };
         });
-        const embalado = itens.filter((i) => i.production_status === 'Embalado').length;
+        const finalized = countFinalizedItems(itens);
+        const derivedStatus = deriveOrderStatusFromItems(itens, !!order.has_frete);
         return {
           ...order,
-          ...(nextStatus ? { situacao: nextStatus } : {}),
+          situacao: nextStatus || derivedStatus,
           itens,
-          production_summary: `${embalado}/${itens.length} Embalado`,
+          production_summary: `${finalized}/${itens.length} Finalizado`,
         };
       }));
       fetchSyncStatus();
     } catch {
       // Keep current list stable; retry on next polling cycle.
     }
-  }, [fetchSyncStatus]);
+  }, [fetchSyncStatus, includeStatusInFilter]);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -1031,6 +1124,20 @@ export function OrdersPage() {
   useEffect(() => { fetchOrders(search, selectedStatuses, page, selectedTagFilter); }, [page, selectedStatuses, selectedTagFilter]); // eslint-disable-line
   useEffect(() => { fetchSyncStatus(); }, []); // eslint-disable-line
   useEffect(() => { fetchGlobalTags(); }, [fetchGlobalTags]);
+
+  // Fetch available Bling statuses dynamically
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_BASE}/orders/statuses`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!cancelled && data?.statuses?.length) {
+          setAvailableStatuses(data.statuses);
+        }
+      })
+      .catch(() => {}); // keep fallback
+    return () => { cancelled = true; };
+  }, []); // eslint-disable-line
 
   useVersionPolling({
     enabled: hasBling && !isSyncRunningFlag,
@@ -1181,8 +1288,8 @@ export function OrdersPage() {
               <option key={tag} value={tag}>{tag}</option>
             ))}
           </select>
-          <div style={{ display: 'flex', gap: 6 }}>
-            {KNOWN_STATUSES.map(s => {
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {statusFilterOptions.map(s => {
               const active = selectedStatuses.has(s.id);
               return (
                 <button key={s.id} onClick={() => toggleStatus(s.id)}
@@ -1214,7 +1321,10 @@ export function OrdersPage() {
                   {orders.map((order) => {
                     const itens = order.itens || [];
                     const expanded = isExpandedMatch(expandedOrderId, order.id);
-                    const allEmbalado = itens.length > 0 && itens.every((i) => i.production_status === 'Embalado');
+                    const allEmbalado = itens.length > 0 && itens.every((i) => {
+                      const key = normalizeProductionStatus(i.production_status);
+                      return key === 'embalado' || key === 'entregue';
+                    });
 
                     return (
                       <div key={order.id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
@@ -1245,7 +1355,7 @@ export function OrdersPage() {
                                 />
                               </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                              <StatusBadge text={order.situacao} />
+                              <StatusBadge text={order.situacao} statusId={order.situacaoId} availableStatuses={availableStatuses} />
                               <span style={{ fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</span>
                               <span title={order.has_frete ? 'Envio' : 'Retirada'}>{order.has_frete ? '🚚' : '🏪'}</span>
                               {itens.length > 0 && <ChevronIcon isExpanded={expanded} />}
@@ -1314,7 +1424,10 @@ export function OrdersPage() {
                   <tbody>
                     {orders.map(order => {
                       const itens = order.itens || [];
-                      const allEmbalado = itens.length > 0 && itens.every((i) => i.production_status === 'Embalado');
+                      const allEmbalado = itens.length > 0 && itens.every((i) => {
+                        const key = normalizeProductionStatus(i.production_status);
+                        return key === 'embalado' || key === 'entregue';
+                      });
                       return (
                       <React.Fragment key={order.id}>
                         <tr onClick={() => setExpandedOrderId(isExpandedMatch(expandedOrderId, order.id) ? null : String(order.id))}
@@ -1342,7 +1455,7 @@ export function OrdersPage() {
                               error={tagErrorByOrder[String(order.id || '')]}
                             />
                           </td>
-                          <td style={{ padding: '10px 12px', textAlign: 'center' }}><StatusBadge text={order.situacao} /></td>
+                          <td style={{ padding: '10px 12px', textAlign: 'center' }}><StatusBadge text={order.situacao} statusId={order.situacaoId} availableStatuses={availableStatuses} /></td>
                           <td style={{ padding: '10px 12px', textAlign: 'center', fontSize: 12, color: '#64748b' }}>{order.production_summary || '—'}</td>
                           <td style={{ padding: '10px 4px', fontSize: 14, textAlign: 'center' }} title={order.has_frete ? 'Envio' : 'Retirada'}>{order.has_frete ? '🚚' : '🏪'}</td>
                           <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 700, color: '#0f172a' }}>{formatBRL(order.total)}</td>
