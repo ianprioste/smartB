@@ -10,6 +10,7 @@ Responsibilities:
 - Produce preview with CREATE/UPDATE/NOOP/BLOCKED status
 """
 
+import asyncio
 from typing import List, Dict, Any, Optional, Set
 from app.domain.sku_engine import SkuEngine
 from app.domain.template_merge import TemplateMerge
@@ -163,8 +164,8 @@ class PlanBuilderNew:
         # Validate input
         self._validate_input(request)
 
-        # Load template payloads from Bling for merging (minimal calls - only templates)
-        await self._load_template_payloads()
+        # Load only the requested model templates from Bling for merging.
+        await self._load_template_payloads({model_req.code for model_req in request.models})
 
         # Pre-register base SKUs that will be created when auto-seed is enabled
         if self._auto_seed_base_plain:
@@ -177,12 +178,49 @@ class PlanBuilderNew:
         # Track items to create
         items_to_create = []
         
+        # IMPORTANT: Always check if BASE_PARENT exists, regardless of auto_seed_base_plain setting
+        # This ensures wizard detects existing bases in all scenarios
+        for model_req in request.models:
+            base_parent_sku = model_req.code.upper()
+            existing_base_parent = await self._check_bling_product_cached(base_parent_sku)
+            if existing_base_parent:
+                # Base parent exists - mark as NOOP
+                base_parent_item = PlanItem(
+                    sku=base_parent_sku,
+                    entity="BASE_PARENT",
+                    action=PlanItemActionEnum.NOOP,
+                    hard_dependencies=[],
+                    soft_dependencies=[],
+                    template=PlanItemTemplate(
+                        model=model_req.code,
+                        kind=TemplateKindEnum.BASE_PARENT.value,
+                        fallback_used=False,
+                    ),
+                    status=PlanItemActionEnum.NOOP,
+                    reason="EXISTING_IN_BLING",
+                    message=f"Base {base_parent_sku} já existe no Bling",
+                    existing_product=existing_base_parent,
+                    template_ref={
+                        "model_code": model_req.code,
+                        "template_kind": TemplateKindEnum.BASE_PARENT.value,
+                    },
+                    overrides_used={},
+                    autoseed_candidate=True,
+                    included=False,
+                )
+                items_to_create.append(base_parent_item)
+                logger.info(f"Found existing BASE_PARENT: {base_parent_sku}")
+        
         # If manual mode, verify which seeds user manually created
         # (This checks only seeds that SHOULD exist, not all possible SKUs)
         if not request.options.auto_seed_base_plain:
             all_possible_seeds = await self._get_all_possible_seeds(request)
             verified_manual_seeds = await self._verify_manually_created_seeds(all_possible_seeds)
-            items_to_create.extend(verified_manual_seeds)
+            # Only add seeds that aren't already detected BASE_PARENT items
+            existing_skus = {item.sku for item in items_to_create}
+            for seed in verified_manual_seeds:
+                if seed.sku not in existing_skus:
+                    items_to_create.append(seed)
 
         # Generate all plan items
         # (Dependencies will be checked on-demand with caching - no bulk verification)
@@ -713,6 +751,8 @@ class PlanBuilderNew:
         Returns:
             Product data if found, None if not found
         """
+        sku_upper = str(sku or "").strip().upper()
+
         if sku in self._bling_cache:
             cached_value = self._bling_cache[sku]
             if cached_value is not None:
@@ -720,36 +760,61 @@ class PlanBuilderNew:
             else:
                 logger.debug(f"Cache HIT for SKU {sku}: NOT found in Bling")
             return cached_value
+
+        # Try normalized (uppercase) lookup as fallback.
+        if sku_upper != sku and sku_upper in self._bling_cache:
+            cached_value = self._bling_cache[sku_upper]
+            logger.debug(f"Cache HIT for SKU {sku} (normalized to {sku_upper}): {'found' if cached_value else 'not found'}")
+            return cached_value
         
         # Fetch and cache
         logger.debug(f"Cache MISS for SKU {sku}, calling bling_checker")
         result = await self.bling_checker(sku)
         self._bling_cache[sku] = result
+        if sku_upper != sku:
+            self._bling_cache[sku_upper] = result
         if result is not None:
             logger.debug(f"Bling check returned product for {sku}: id={result.get('id')}")
         else:
             logger.debug(f"Bling check returned None for {sku}")
         return result
 
-    async def _load_template_payloads(self) -> None:
-        """Fetch template payloads from Bling for all templates in use."""
+    async def _load_template_payloads(self, model_codes: Optional[Set[str]] = None) -> None:
+        """Fetch template payloads from Bling for the requested models only."""
         if not self.bling_client:
             logger.warning("No bling_client provided; template payloads unavailable")
             return
 
-        for model_code, kinds in self.templates_data.items():
+        selected_model_codes = set(model_codes or self.templates_data.keys())
+        fetch_jobs: list[tuple[str, str, int]] = []
+
+        for model_code in selected_model_codes:
+            kinds = self.templates_data.get(model_code, {})
             if model_code not in self.template_payloads:
                 self.template_payloads[model_code] = {}
 
             for kind, bling_product_id in kinds.items():
-                try:
-                    payload = await self.bling_client.get_product(bling_product_id)
-                    self.template_payloads[model_code][kind] = payload.get("data") if payload else None
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to fetch template payload for {model_code}/{kind}: {e}"
-                    )
-                    self.template_payloads[model_code][kind] = None
+                if kind in self.template_payloads[model_code]:
+                    continue
+                fetch_jobs.append((model_code, kind, bling_product_id))
+
+        if not fetch_jobs:
+            return
+
+        payload_results = await asyncio.gather(
+            *(self.bling_client.get_product(bling_product_id) for _, _, bling_product_id in fetch_jobs),
+            return_exceptions=True,
+        )
+
+        for (model_code, kind, _), payload_result in zip(fetch_jobs, payload_results):
+            if isinstance(payload_result, Exception):
+                logger.warning(
+                    f"Failed to fetch template payload for {model_code}/{kind}: {payload_result}"
+                )
+                self.template_payloads[model_code][kind] = None
+                continue
+
+            self.template_payloads[model_code][kind] = payload_result.get("data") if payload_result else None
 
     def _get_template_payload(
         self, model_code: str, template_kind: TemplateKindEnum

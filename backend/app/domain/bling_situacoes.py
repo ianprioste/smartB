@@ -1,15 +1,19 @@
 """Discover and cache Bling situation (status) IDs for the Pedidos de Vendas module.
 
 If the Bling account doesn't have the 'Situações' scope enabled, discovery
-falls back to well-known standard IDs (9 = Atendido).  Custom statuses like
+falls back to well-known standard IDs (6 = Em aberto, 9 = Atendido,
+15 = Cancelado). Custom statuses like
 "Pronto para Envio / Retirada" require the scope or manual configuration.
 """
 from __future__ import annotations
 
 from typing import Dict, List, Optional
 import os
+import unicodedata
+import re
 
 from app.infra.logging import get_logger
+from app.settings import settings
 
 logger = get_logger(__name__)
 
@@ -21,9 +25,12 @@ _cached_ids: Optional[Dict[str, int]] = None
 _cached_all_statuses: Optional[List[Dict]] = None
 
 # Well-known standard Bling status IDs (work without the Situações scope).
+# 12 = Cancelado is the standard Bling system ID (valor=2); 15 is a
+# different status in most accounts (do NOT use 15 as cancelado fallback).
 _FALLBACK_IDS: Dict[str, int] = {
     "em_aberto": 6,
     "atendido": 9,
+    "cancelado": 12,
 }
 
 # When Bling does not provide detailed intermediate statuses, map them to
@@ -41,15 +48,23 @@ def _env_status_ids() -> Dict[str, int]:
 
     Useful when the token does not have Situações scope.
     """
+    def _read(key: str) -> str:
+        # Prefer settings fields so values from .env are always available.
+        value = getattr(settings, key, "")
+        text = str(value or "").strip()
+        if text:
+            return text
+        return os.getenv(key, "").strip()
+
     mapping = {
-        "em_aberto": os.getenv("BLING_STATUS_EM_ABERTO_ID", "").strip(),
-        "em_andamento": os.getenv("BLING_STATUS_EM_ANDAMENTO_ID", "").strip(),
-        "impedido": os.getenv("BLING_STATUS_IMPEDIDO_ID", "").strip(),
-        "parcialmente_entregue": os.getenv("BLING_STATUS_PARCIALMENTE_ENTREGUE_ID", "").strip(),
-        "pronto_envio": os.getenv("BLING_STATUS_PRONTO_ENVIO_ID", "").strip(),
-        "pronto_retirada": os.getenv("BLING_STATUS_PRONTO_RETIRADA_ID", "").strip(),
-        "atendido": os.getenv("BLING_STATUS_ATENDIDO_ID", "").strip(),
-        "cancelado": os.getenv("BLING_STATUS_CANCELADO_ID", "").strip(),
+        "em_aberto": _read("BLING_STATUS_EM_ABERTO_ID"),
+        "em_andamento": _read("BLING_STATUS_EM_ANDAMENTO_ID"),
+        "impedido": _read("BLING_STATUS_IMPEDIDO_ID"),
+        "parcialmente_entregue": _read("BLING_STATUS_PARCIALMENTE_ENTREGUE_ID"),
+        "pronto_envio": _read("BLING_STATUS_PRONTO_ENVIO_ID"),
+        "pronto_retirada": _read("BLING_STATUS_PRONTO_RETIRADA_ID"),
+        "atendido": _read("BLING_STATUS_ATENDIDO_ID"),
+        "cancelado": _read("BLING_STATUS_CANCELADO_ID"),
     }
     resolved: Dict[str, int] = {}
     for key, raw in mapping.items():
@@ -72,6 +87,68 @@ _TARGETS = {
     "atendido": "atendido",
     "cancelado": "cancelado",
 }
+
+
+def _normalize_status_text(value: str) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.lower().strip()
+    # Normalize common separators/abbreviations seen in Bling custom labels.
+    text = text.replace("p/", "para ")
+    text = text.replace(" p ", " para ")
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _matches_target(name: str, key: str, target: str) -> bool:
+    normalized_name = _normalize_status_text(name)
+    normalized_target = _normalize_status_text(target)
+
+    if normalized_target in normalized_name:
+        return True
+
+    if key == "pronto_envio":
+        return (
+            "pronto" in normalized_name
+            and ("envio" in normalized_name or "envi" in normalized_name)
+        )
+
+    if key == "pronto_retirada":
+        return (
+            "pronto" in normalized_name
+            and (
+                "retirada" in normalized_name
+                or "retir" in normalized_name
+                or "coleta" in normalized_name
+            )
+        )
+
+    if key == "parcialmente_entregue":
+        return "parcial" in normalized_name and "entreg" in normalized_name
+
+    if key == "em_andamento":
+        return "andamento" in normalized_name or (
+            "produ" in normalized_name and "em" in normalized_name
+        )
+
+    if key == "em_aberto":
+        return "aberto" in normalized_name or "pendente" in normalized_name
+
+    if key == "atendido":
+        return (
+            "atendid" in normalized_name
+            or "conclu" in normalized_name
+            or "entreg" in normalized_name
+        )
+
+    if key == "cancelado":
+        return "cancel" in normalized_name or "devolv" in normalized_name
+
+    if key == "impedido":
+        return "imped" in normalized_name
+
+    return False
 
 
 async def get_bling_status_ids(client) -> Dict[str, int]:
@@ -112,7 +189,7 @@ async def get_bling_status_ids(client) -> Dict[str, int]:
         if not name or sit_id is None:
             continue
         for key, target in _TARGETS.items():
-            if key not in result and target in name:
+            if key not in result and _matches_target(name, key, target):
                 result[key] = int(sit_id)
 
     # Merge env overrides and ensure atendido always has a value.

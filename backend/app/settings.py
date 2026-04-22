@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     BLING_AUTH_URL: str = "https://www.bling.com.br/Api/v3/oauth/authorize"
     BLING_TOKEN_URL: str = "https://www.bling.com.br/Api/v3/oauth/token"
     BLING_API_BASE_URL: str = "https://www.bling.com.br/Api/v3"
+    BLING_STATUS_EM_ABERTO_ID: str = ""
+    BLING_STATUS_EM_ANDAMENTO_ID: str = ""
+    BLING_STATUS_IMPEDIDO_ID: str = ""
+    BLING_STATUS_PARCIALMENTE_ENTREGUE_ID: str = ""
+    BLING_STATUS_PRONTO_ENVIO_ID: str = ""
+    BLING_STATUS_PRONTO_RETIRADA_ID: str = ""
+    BLING_STATUS_ATENDIDO_ID: str = ""
+    BLING_STATUS_CANCELADO_ID: str = ""
     
     # JWT (internal)
     SECRET_KEY: str = os.getenv(
@@ -63,11 +71,13 @@ class Settings(BaseSettings):
 
     # Bling Webhooks
     BLING_WEBHOOK_SECRET: str = os.getenv("BLING_WEBHOOK_SECRET", "")
+    PUBLIC_API_URL: str = os.getenv("PUBLIC_API_URL", "http://localhost:8000")
     WEBHOOKS_ENABLED: bool = os.getenv("WEBHOOKS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     WEBHOOK_MAX_RETRIES: int = int(os.getenv("WEBHOOK_MAX_RETRIES", "5"))
     WEBHOOK_RETRY_BASE_DELAY_S: int = int(os.getenv("WEBHOOK_RETRY_BASE_DELAY_S", "10"))
     PRODUCT_SYNC_MODE: str = os.getenv("PRODUCT_SYNC_MODE", "webhook_first").strip().lower()
     PRODUCT_SYNC_DIRECT_FALLBACK: bool = os.getenv("PRODUCT_SYNC_DIRECT_FALLBACK", "false").strip().lower() in {"1", "true", "yes", "on"}
+    PRODUCT_CATALOG_RECONCILE_MINUTES: int = int(os.getenv("PRODUCT_CATALOG_RECONCILE_MINUTES", "30"))
     PASSWORD_RESET_CODE_EXPIRE_MINUTES: int = int(os.getenv("PASSWORD_RESET_CODE_EXPIRE_MINUTES", "5"))
     PASSWORD_RESET_CODE_LENGTH: int = int(os.getenv("PASSWORD_RESET_CODE_LENGTH", "6"))
     

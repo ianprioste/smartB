@@ -3,6 +3,37 @@ import { Layout } from '../../components/Layout';
 import useIsMobile from '../../hooks/useIsMobile';
 
 const API_BASE = '/api';
+const PRODUCTS_CACHE_KEY = 'smartb_products_catalog_v3';
+
+function loadCachedCatalog() {
+  try {
+    const raw = localStorage.getItem(PRODUCTS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function matchesProductQuery(product, query) {
+  const normalized = (query || '').trim().toLowerCase();
+  if (!normalized) return true;
+
+  const codigo = String(product?.codigo || '').toLowerCase();
+  const nome = String(product?.nome || '').toLowerCase();
+  const id = String(product?.id || '').toLowerCase();
+  return codigo.includes(normalized) || nome.includes(normalized) || id.includes(normalized);
+}
+
+function searchFromCachedCatalog(query, limit = 20) {
+  const catalog = loadCachedCatalog();
+  if (!catalog || catalog.length === 0) return null;
+
+  return catalog
+    .filter((item) => matchesProductQuery(item, query))
+    .slice(0, limit);
+}
 
 // ============ Models Page ============
 
@@ -491,18 +522,31 @@ export function TemplatesPage() {
   }
 
   async function handleSearch() {
-    if (!searchQuery) return;
+    const q = searchQuery.trim();
+    if (!q) {
+      setSearchResults([]);
+      return;
+    }
+
     try {
       setSearching(true);
       setError(null);
+
+      // Same behavior as campaign search: instant local filter when catalog cache exists.
+      const cachedResults = searchFromCachedCatalog(q, 20);
+      if (cachedResults) {
+        setSearchResults(cachedResults);
+        return;
+      }
+
       const resp = await fetch(
-        `${API_BASE}/bling/products/search?q=${encodeURIComponent(searchQuery)}`
+        `${API_BASE}/bling/products/list/all?q=${encodeURIComponent(q)}&page=1&limit=20&include_hierarchy=false`
       );
       
       if (!resp.ok) {
         const err = await resp.json();
         const errorMsg = err.detail?.message || 'Erro ao buscar produtos no Bling';
-        const needsReauth = err.detail?.needs_reauth || false;
+        const needsReauth = err.detail?.needs_reauth || resp.status === 401;
         
         // If token expired, show reauth modal
         if (needsReauth || errorMsg.includes('Token') || errorMsg.includes('expirado') || errorMsg.includes('401')) {
@@ -516,7 +560,7 @@ export function TemplatesPage() {
         setSearchResults(data.items || []);
         
         if (!data.items || data.items.length === 0) {
-          setError(`Nenhum produto encontrado com "${searchQuery}". Verifique se o produto existe no Bling.`);
+          setError(`Nenhum produto encontrado com "${q}". Verifique se o produto existe no Bling.`);
         }
       }
     } catch (err) {

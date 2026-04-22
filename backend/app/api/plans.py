@@ -1,10 +1,13 @@
 """Plans API endpoints - Sprint 3."""
+import asyncio
+import uuid as _uuid_mod
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional, Dict, Any
 from uuid import UUID
 
-from app.infra.db import get_db
+from app.infra.db import get_db, SessionLocal
 from app.infra.bling_client import BlingClient, BlingRefreshTokenExpiredError
 from app.settings import settings
 from app.models.schemas import (
@@ -31,6 +34,8 @@ from app.infra.logging import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/plans", tags=["Plans"])
+
+_direct_plan_tasks: dict[str, dict[str, Any]] = {}
 
 # TODO: Replace with real tenant resolution
 TENANT_ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -64,6 +69,19 @@ def _calculate_diff_summary_plain(
             continue
         if actual != expected:
             diff_fields.append(existing_field)
+
+    # Compare structured variation label when that data is available in the
+    # existing payload (edit-by-id flow). Bulk listing may not include it.
+    expected_variacao_nome = ((computed_payload.get("variacao") or {}).get("nome") or "").strip()
+    if expected_variacao_nome and "variacao" in existing_product:
+        actual_variacao = existing_product.get("variacao") or {}
+        actual_variacao_nome = ""
+        if isinstance(actual_variacao, dict):
+            actual_variacao_nome = str(actual_variacao.get("nome") or "").strip()
+        elif isinstance(actual_variacao, str):
+            actual_variacao_nome = actual_variacao.strip()
+        if actual_variacao_nome != expected_variacao_nome:
+            diff_fields.append("variacao.nome")
 
     if category_override_active:
         expected_cat = computed_payload.get("categoria_id")
@@ -153,6 +171,28 @@ async def create_new_plain_plan(
                 existing_data = (existing_resp or {}).get("data", {})
                 if existing_data:
                     bling_products_cache[parent_sku] = existing_data
+                    # Populate child variation cache from the parent's variacoes array so
+                    # the plan correctly detects existing children as UPDATE/NOOP instead of CREATE.
+                    for variation in (existing_data.get("variacoes") or []):
+                        var_sku = str(variation.get("codigo") or "").strip().upper()
+                        if var_sku and var_sku in bling_products_cache:
+                            bling_products_cache[var_sku] = {
+                                "id": variation.get("id"),
+                                "codigo": variation.get("codigo"),
+                                "nome": variation.get("nome"),
+                                "variacao": variation.get("variacao"),
+                                "formato": variation.get("formato"),
+                                "situacao": variation.get("situacao"),
+                                "preco": variation.get("preco"),
+                                "precoVenda": variation.get("precoVenda"),
+                                "descricaoCurta": variation.get("descricaoCurta"),
+                                "descricaoComplementar": variation.get("descricaoComplementar"),
+                                "categoria_id": variation.get("categoria_id") or variation.get("categoriaId"),
+                            }
+                    logger.info(
+                        f"Populated cache from edit_parent_id={request.edit_parent_id}: "
+                        f"parent + {len(existing_data.get('variacoes') or [])} variation(s)"
+                    )
             except Exception as e:
                 logger.warning(f"Could not fetch edit_parent_id {request.edit_parent_id}: {e}")
 
@@ -264,6 +304,12 @@ async def create_new_plain_plan(
                 model_name=model_name,
                 print_name="Produto Liso",
             )
+            # Plain variations must carry a stable variation descriptor, otherwise
+            # Bling may render option labels as undefined/malformed.
+            child_payload["variacao"] = {
+                "nome": f"Cor: {color_name};Tamanho: {size}",
+                "ordem": 0,
+            }
             child_existing = bling_products_cache.get(child_sku)
 
             if child_existing is None:
@@ -393,7 +439,7 @@ async def _get_bling_client(db: Session) -> Optional[BlingClient]:
 
 
 async def _check_bling_products_bulk(
-    bling_client: Optional[BlingClient], skus: list[str]
+    bling_client: Optional[BlingClient], skus: list[str], include_type_filter: bool = True
 ) -> Dict[str, Optional[Dict[str, Any]]]:
     """
     Check if products exist in Bling by SKUs (bulk operation).
@@ -422,10 +468,17 @@ async def _check_bling_products_bulk(
         # This creates URL like: /produtos?codigos[]=SKU1&codigos[]=SKU2&limite=100
         params = [("codigos[]", sku) for sku in skus]
         # Include product variations in lookup (critical for size/color SKUs).
-        params.append(("tipo", "T"))
+        if include_type_filter:
+            params.append(("tipo", "T"))
         params.append(("limite", str(min(len(skus) + 10, 100))))
         
-        logger.info(f"Bulk checking {len(skus)} SKUs in Bling: {skus[:5]}..." if len(skus) > 5 else f"Bulk checking SKUs: {skus}")
+        # Log all requested SKUs for debugging (especially parent/base SKUs)
+        # Extract simple SKUs that are likely parents or bases (no numbers = usually base, short = usually parent)
+        simple_skus = [s for s in skus if len(s) <= 10 and str(s).isupper()]
+        base_skus = [s for s in simple_skus if not any(c.isdigit() for c in s)]
+        logger.info(f"Bulk checking {len(skus)} SKUs (including {len(base_skus)} potential bases/parents): {skus[:5]}...")
+        if base_skus:
+            logger.debug(f"Base/Parent SKUs in request: {base_skus}")
         
         # Use raw httpx client to send the request properly
         response = await bling_client.client.get(
@@ -467,6 +520,10 @@ async def _check_bling_products_bulk(
             product_id = product.get("id")
             logger.info(f"Processing found product: {sku} (id={product_id})")
             
+            # Log if this is a base SKU
+            if requested_key in base_skus:
+                logger.info(f"✓ Found BASE SKU {requested_key} in Bling (id={product_id})")
+            
             # Keep bulk check lightweight: list payload is enough for plan decisions.
             enriched = product
             
@@ -483,54 +540,29 @@ async def _check_bling_products_bulk(
                 "categoria_id": enriched.get("categoria_id") or enriched.get("categoriaId"),
             }
 
-        # Fallback for rare false negatives from bulk endpoint.
-        # Use ONE extra bulk retry (chunked) instead of per-SKU calls.
-        missing_skus = [sku for sku, product in result.items() if product is None]
-        if missing_skus:
-            chunk_size = 100
-            for i in range(0, len(missing_skus), chunk_size):
-                chunk = missing_skus[i:i + chunk_size]
-                try:
-                    retry_params = [("codigos[]", sku) for sku in chunk]
-                    retry_params.append(("tipo", "T"))
-                    retry_params.append(("limite", str(min(len(chunk) + 10, 100))))
+            # Bling's list endpoint does NOT return child variations (formato=E) as top-level
+            # entries — they are embedded inside the parent's variacoes array.
+            # Populate the cache for any requested child SKUs found here so the plan
+            # correctly identifies them as existing (NOOP/UPDATE) instead of CREATE.
+            for variation in (product.get("variacoes") or []):
+                var_sku_raw = str(variation.get("codigo") or "").strip()
+                var_sku_norm = var_sku_raw.upper()
+                var_requested_key = requested_key_by_norm.get(var_sku_norm)
+                if var_requested_key and result.get(var_requested_key) is None:
+                    result[var_requested_key] = {
+                        "id": variation.get("id"),
+                        "codigo": variation.get("codigo"),
+                        "nome": variation.get("nome"),
+                        "formato": variation.get("formato"),
+                        "situacao": variation.get("situacao"),
+                        "preco": variation.get("preco"),
+                        "precoVenda": variation.get("precoVenda"),
+                        "descricaoCurta": variation.get("descricaoCurta"),
+                        "descricaoComplementar": variation.get("descricaoComplementar"),
+                        "categoria_id": variation.get("categoria_id") or variation.get("categoriaId"),
+                    }
+                    logger.info(f"✓ Found VARIATION SKU {var_requested_key} inside parent {requested_key} variacoes")
 
-                    fallback_resp = await bling_client.client.get(
-                        "/produtos",
-                        params=retry_params,
-                        headers=bling_client._get_headers(),
-                    )
-                    if fallback_resp.status_code != 200:
-                        logger.warning(
-                            f"Fallback bulk returned status {fallback_resp.status_code} for {len(chunk)} SKU(s)"
-                        )
-                        continue
-
-                    fallback_data = fallback_resp.json() if fallback_resp.content else {}
-                    fallback_items = (fallback_data or {}).get("data") or []
-
-                    for fallback_item in fallback_items:
-                        fallback_code = str((fallback_item or {}).get("codigo", "")).strip().upper()
-                        requested_key = requested_key_by_norm.get(fallback_code)
-                        if not requested_key:
-                            continue
-                        product_id = fallback_item.get("id")
-                        result[requested_key] = {
-                            "id": fallback_item.get("id", product_id),
-                            "codigo": fallback_item.get("codigo", requested_key),
-                            "nome": fallback_item.get("nome"),
-                            "formato": fallback_item.get("formato"),
-                            "situacao": fallback_item.get("situacao"),
-                            "preco": fallback_item.get("preco"),
-                            "precoVenda": fallback_item.get("precoVenda"),
-                            "descricaoCurta": fallback_item.get("descricaoCurta"),
-                            "descricaoComplementar": fallback_item.get("descricaoComplementar"),
-                            "categoria_id": fallback_item.get("categoria_id") or fallback_item.get("categoriaId"),
-                        }
-                        logger.info(f"Fallback bulk found SKU {requested_key} (id={product_id})")
-                except Exception as fallback_error:
-                    logger.warning(f"Fallback bulk lookup failed for chunk of {len(chunk)} SKU(s): {fallback_error}")
-        
         logger.info(f"Bulk check complete: Found {len([v for v in result.values() if v])} of {len(skus)} products")
         logger.info(f"DEBUG: Result dict populated with {len([v for v in result.values() if v is not None])} products")
         return result
@@ -538,6 +570,94 @@ async def _check_bling_products_bulk(
     except Exception as e:
         logger.error(f"Error checking Bling products bulk: {e}", exc_info=True)
         return result
+
+
+async def _run_direct_new_plan(task_id: str, request_payload: Dict[str, Any]) -> None:
+    """Background coroutine: build a new print plan without blocking the HTTP request."""
+    _direct_plan_tasks[task_id] = {"state": "PROGRESS", "message": "Gerando plano..."}
+    db = SessionLocal()
+    try:
+        request = PlanNewRequest(**request_payload)
+        plan = await create_new_plan(request, db)
+        _direct_plan_tasks[task_id] = {
+            "state": "SUCCESS",
+            "plan": plan.model_dump(),
+        }
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+        _direct_plan_tasks[task_id] = {
+            "state": "FAILURE",
+            "status_code": exc.status_code,
+            "error": detail,
+        }
+    except Exception as exc:
+        logger.error("direct_plan_generation_failed task_id=%s error=%s", task_id, str(exc), exc_info=True)
+        _direct_plan_tasks[task_id] = {
+            "state": "FAILURE",
+            "status_code": 500,
+            "error": {
+                "code": "INTERNAL_ERROR",
+                "message": "Failed to create plan",
+                "details": str(exc),
+            },
+        }
+    finally:
+        db.close()
+
+
+@router.post("/new/async")
+async def create_new_plan_async(
+    request: PlanNewRequest,
+    db: Session = Depends(get_db),
+):
+    """Start new plan generation in background and return a polling id immediately."""
+    token = BlingTokenRepository.get_by_tenant(db, TENANT_ID)
+    if not token:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "BLING_TOKEN_EXPIRED",
+                "message": "Token do Bling expirado. É necessário autenticar novamente. Acesse /auth/bling/connect para obter novo token.",
+            },
+        )
+
+    task_id = f"direct-{_uuid_mod.uuid4().hex}"
+    _direct_plan_tasks[task_id] = {"state": "PENDING", "message": "Plano enfileirado."}
+    asyncio.create_task(_run_direct_new_plan(task_id, request.model_dump()))
+    return {"task_id": task_id, "state": "PENDING"}
+
+
+@router.get("/new/status/{task_id}")
+async def get_new_plan_status(task_id: str):
+    """Get status for a background new plan generation task."""
+    payload = _direct_plan_tasks.get(task_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail="Job não encontrado ou expirado.")
+
+    state = payload.get("state")
+    if state == "SUCCESS":
+        return {
+            "status": "completed",
+            "task_id": task_id,
+            "state": state,
+            "plan": payload.get("plan"),
+        }
+
+    if state == "FAILURE":
+        return {
+            "status": "failed",
+            "task_id": task_id,
+            "state": state,
+            "error": payload.get("error"),
+            "status_code": payload.get("status_code", 500),
+        }
+
+    return {
+        "status": "running" if state == "PROGRESS" else "queued",
+        "task_id": task_id,
+        "state": state,
+        "message": payload.get("message"),
+    }
 
 
 @router.post(
@@ -628,6 +748,11 @@ async def create_new_plan(
         required_skus = list(temp_builder.collect_all_required_skus(request))
         print(f"DEBUG: Collected {len(required_skus)} required SKUs")
         print(f"DEBUG: Required SKUs sample: {required_skus[:10]}")
+        
+        # Log base/parent SKUs specifically (these should be simple like "CAMINF")
+        base_parent_skus = [s for s in required_skus if len(s) <= 10 and str(s).isupper()]
+        print(f"DEBUG: Potential BASE_PARENT SKUs: {base_parent_skus}")
+        
         logger.info(f"Bulk checking {len(required_skus)} SKUs in Bling")
         
         # Make single bulk API call to Bling for all SKUs
@@ -649,10 +774,101 @@ async def create_new_plan(
                     print(f"DEBUG: SKUs NÃO encontrados ({len(not_found_skus)}): {not_found_skus[:5]}")
                 
                 logger.info(f"Bulk check complete: found {found_count}/{len(required_skus)} products in Bling")
+                
+                # Log specifically whether base_parent SKUs were found
+                base_parent_results = {sku: prod is not None for sku in base_parent_skus if sku in bling_products_cache}
+                if base_parent_results:
+                    found_bases = [sku for sku, found in base_parent_results.items() if found]
+                    not_found_bases = [sku for sku, found in base_parent_results.items() if not found]
+                    if found_bases:
+                        print(f"DEBUG: BASE_PARENT SKUs encontrados: {found_bases}")
+                        logger.info(f"Found BASE_PARENT SKUs: {found_bases}")
+                    if not_found_bases:
+                        print(f"DEBUG: BASE_PARENT SKUs NÃO encontrados: {not_found_bases}")
+                        logger.warning(f"Base parent SKUs not found in Bling: {not_found_bases}")
             except Exception as e:
                 print(f"DEBUG: Erro no bulk check: {e}")
                 logger.warning(f"Error during bulk Bling check, continuing with empty cache: {e}")
                 bling_products_cache = {sku: None for sku in required_skus}
+
+        # Fallback: some base plain variations may not be returned when the
+        # product type filter is applied in list queries. Retry only missing
+        # BASE_VARIATION SKUs without that filter.
+        if bling_client and request.models:
+            from app.domain.sku_engine import SkuEngine as _SkuEngine
+            _sku_engine = _SkuEngine()
+            missing_base_variations: list[str] = []
+            for model_req in request.models:
+                sizes = model_req.sizes or models_data.get(model_req.code, {}).get("allowed_sizes", [])
+                for color_code in request.colors:
+                    for size in sizes:
+                        base_var_sku = _sku_engine.base_plain(model_req.code, color_code, size)
+                        if base_var_sku in bling_products_cache and bling_products_cache.get(base_var_sku) is None:
+                            missing_base_variations.append(base_var_sku)
+            if missing_base_variations:
+                try:
+                    fallback_checked = await _check_bling_products_bulk(
+                        bling_client,
+                        missing_base_variations,
+                        include_type_filter=False,
+                    )
+                    recovered = 0
+                    for sku, product in fallback_checked.items():
+                        if product is not None and bling_products_cache.get(sku) is None:
+                            bling_products_cache[sku] = product
+                            recovered += 1
+                    if recovered:
+                        logger.info(
+                            f"Recovered {recovered}/{len(missing_base_variations)} missing BASE_VARIATION SKUs "
+                            f"using fallback bulk check without type filter"
+                        )
+                except Exception as e:
+                    logger.warning(f"Fallback bulk check for BASE_VARIATION SKUs failed: {e}")
+
+        # Bling's list endpoint does NOT include child variations (formato=E) in its
+        # response — they are only available via GET /produtos/{id} (detail endpoint).
+        # For each BASE_PARENT found in the bulk check, fetch its full detail and
+        # populate the cache with its variacoes so the plan correctly identifies
+        # existing base variations as NOOP/UPDATE instead of CREATE.
+        if bling_client:
+            base_parent_fetch_tasks = []
+            base_parent_skus_to_enrich = []
+            for model_req in request.models:
+                bp_sku = model_req.code.upper()
+                bp_data = bling_products_cache.get(bp_sku)
+                if bp_data and bp_data.get("id"):
+                    base_parent_fetch_tasks.append(bling_client.get_product(int(bp_data["id"])))
+                    base_parent_skus_to_enrich.append(bp_sku)
+            if base_parent_fetch_tasks:
+                try:
+                    detail_results = await asyncio.gather(*base_parent_fetch_tasks, return_exceptions=True)
+                    for bp_sku, detail_resp in zip(base_parent_skus_to_enrich, detail_results):
+                        if isinstance(detail_resp, Exception):
+                            logger.warning(f"Could not fetch detail for BASE_PARENT {bp_sku}: {detail_resp}")
+                            continue
+                        parent_detail = (detail_resp or {}).get("data", {})
+                        for variation in (parent_detail.get("variacoes") or []):
+                            var_sku = str(variation.get("codigo") or "").strip().upper()
+                            if var_sku and var_sku in bling_products_cache:
+                                bling_products_cache[var_sku] = {
+                                    "id": variation.get("id"),
+                                    "codigo": variation.get("codigo"),
+                                    "nome": variation.get("nome"),
+                                    "formato": variation.get("formato"),
+                                    "situacao": variation.get("situacao"),
+                                    "preco": variation.get("preco"),
+                                    "precoVenda": variation.get("precoVenda"),
+                                    "descricaoCurta": variation.get("descricaoCurta"),
+                                    "descricaoComplementar": variation.get("descricaoComplementar"),
+                                    "categoria_id": variation.get("categoria_id") or variation.get("categoriaId"),
+                                }
+                                logger.info(f"✓ Populated BASE_VARIATION {var_sku} from BASE_PARENT {bp_sku} detail")
+                        logger.info(
+                            f"Enriched BASE_PARENT {bp_sku}: "
+                            f"{len(parent_detail.get('variacoes') or [])} variation(s) fetched"
+                        )
+                except Exception as e:
+                    logger.warning(f"Error enriching base parent variations: {e}")
 
         # If editing an existing product by ID, fetch it and inject into cache
         # under the new parent SKU so the plan builder sees it as UPDATE (not CREATE)

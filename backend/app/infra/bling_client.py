@@ -14,6 +14,8 @@ import time
 
 logger = get_logger(__name__)
 
+BLING_REQUEST_TIMEOUT_SECONDS = 120.0
+
 
 class RateLimiter:
     """
@@ -106,7 +108,7 @@ class BlingClient:
         
         self.client = httpx.AsyncClient(
             base_url=settings.BLING_API_BASE_URL,
-            timeout=30.0,
+            timeout=BLING_REQUEST_TIMEOUT_SECONDS,
         )
 
     def _get_headers(self) -> Dict[str, str]:
@@ -178,7 +180,7 @@ class BlingClient:
                             "client_id": settings.BLING_CLIENT_ID,
                             "client_secret": settings.BLING_CLIENT_SECRET,
                         },
-                        timeout=30.0,
+                        timeout=BLING_REQUEST_TIMEOUT_SECONDS,
                     )
 
                     if response.status_code != 429 or attempt >= (max_attempts - 1):

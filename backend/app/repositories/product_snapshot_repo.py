@@ -14,6 +14,50 @@ from app.models.enums import ProductKindEnum
 
 class ProductSnapshotRepository:
     @staticmethod
+    def snapshot_stats(db: Session, tenant_id: UUID) -> Dict[str, Any]:
+        """Return lightweight stats to evaluate snapshot freshness."""
+        q = db.query(BlingProductSnapshotModel).filter(
+            BlingProductSnapshotModel.tenant_id == tenant_id,
+        )
+        count = q.count()
+        latest = (
+            q.order_by(BlingProductSnapshotModel.updated_at.desc())
+            .with_entities(BlingProductSnapshotModel.updated_at)
+            .first()
+        )
+        latest_updated_at = latest[0] if latest else None
+        return {
+            "count": int(count or 0),
+            "latest_updated_at": latest_updated_at,
+        }
+
+    @staticmethod
+    def delete_product_and_children(
+        db: Session,
+        tenant_id: UUID,
+        bling_product_id: int,
+    ) -> int:
+        """Delete one snapshot row and its child variations (when parent)."""
+        pid = int(bling_product_id)
+        rows = (
+            db.query(BlingProductSnapshotModel)
+            .filter(
+                BlingProductSnapshotModel.tenant_id == tenant_id,
+                (
+                    (BlingProductSnapshotModel.bling_product_id == pid)
+                    | (BlingProductSnapshotModel.parent_product_id == pid)
+                ),
+            )
+            .all()
+        )
+
+        deleted = 0
+        for row in rows:
+            db.delete(row)
+            deleted += 1
+        return deleted
+
+    @staticmethod
     def upsert_product_kind_hint(
         db: Session,
         tenant_id: UUID,

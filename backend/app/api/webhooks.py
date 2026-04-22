@@ -204,12 +204,12 @@ def _dispatch_task(event_id: str, bling_order_id: int) -> None:
     t.start()
 
 
-def _dispatch_product_task(event_id: str, bling_product_id: int, event_kind: str) -> None:
+def _dispatch_product_task(event_id: str, bling_product_id: int, event_kind: str, event_type: str) -> None:
     """Dispatch product/stock webhook processing with Windows fallback."""
     if platform.system() != "Windows":
         try:
             from app.workers.tasks import process_webhook_product_task
-            process_webhook_product_task.delay(event_id, bling_product_id, event_kind)
+            process_webhook_product_task.delay(event_id, bling_product_id, event_kind, event_type)
             return
         except Exception as exc:
             logger.warning("celery_dispatch_product_failed fallback_to_thread error=%s", str(exc))
@@ -238,7 +238,15 @@ def _dispatch_product_task(event_id: str, bling_product_id: int, event_kind: str
                 token_expires_at=token_row.expires_at,
                 on_token_refresh=_save,
             )
-            result = asyncio.run(sync_single_product(db, DEFAULT_TENANT_ID, client, bling_product_id))
+            result = asyncio.run(
+                sync_single_product(
+                    db,
+                    DEFAULT_TENANT_ID,
+                    client,
+                    bling_product_id,
+                    event_type=event_type,
+                )
+            )
             if result.get("ok"):
                 WHR.mark_processed(db, _uuid.UUID(event_id))
             else:
@@ -305,7 +313,7 @@ async def _receive_product_like_webhook(
         )
         return {"ok": True, "status": "duplicate_skipped", "bling_product_id": bling_product_id}
 
-    _dispatch_product_task(str(event.id), bling_product_id, event_kind)
+    _dispatch_product_task(str(event.id), bling_product_id, event_kind, event_type)
     logger.info(
         "webhook_%s_accepted event_id=%s event_type=%s bling_product_id=%s",
         event_kind,
@@ -432,6 +440,23 @@ async def receive_bling_stock_webhook(
     )
 
 
+@router.post("/bling/suppliers", status_code=202)
+@router.post("/bling/suppliers/updated", status_code=202)
+async def receive_bling_suppliers_webhook(
+    request: Request,
+    db: Session = Depends(get_db),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Receive supplier webhook events and refresh supplier snapshot."""
+    return await _receive_product_like_webhook(
+        request=request,
+        db=db,
+        authorization=authorization,
+        default_event="supplier.updated",
+        event_kind="supplier",
+    )
+
+
 @router.get("/health")
 async def webhooks_health(db: Session = Depends(get_db)):
     """Operational health summary for webhook pipeline."""
@@ -440,4 +465,324 @@ async def webhooks_health(db: Session = Depends(get_db)):
         "ok": True,
         "webhooks_enabled": settings.WEBHOOKS_ENABLED,
         **summary,
+    }
+
+
+@router.post("/bling/register-order-webhook", status_code=200)
+async def register_bling_order_webhook(db: Session = Depends(get_db)):
+    """Register this app's webhook URL in Bling for order status updates.
+    
+    This creates a webhook subscription in Bling that will POST to:
+    POST /webhooks/bling/orders whenever an order is updated.
+    """
+    from app.repositories.bling_token_repo import BlingTokenRepository
+    from app.infra.bling_client import BlingClient
+
+    if not settings.PUBLIC_API_URL:
+        raise HTTPException(
+            status_code=400,
+            detail="PUBLIC_API_URL not configured. Cannot register webhook without public URL."
+        )
+
+    token_row = BlingTokenRepository.get_by_tenant(db, DEFAULT_TENANT_ID)
+    if not token_row:
+        raise HTTPException(status_code=401, detail="Bling não autenticado. Configure o token de acesso.")
+
+    def _save(at, rt, ea):
+        from app.repositories.bling_token_repo import BlingTokenRepository as TR
+        TR.create_or_update(db, DEFAULT_TENANT_ID, at, rt, ea)
+
+    client = BlingClient(
+        access_token=token_row.access_token,
+        refresh_token=token_row.refresh_token,
+        token_expires_at=token_row.expires_at,
+        on_token_refresh=_save,
+    )
+
+    webhook_url = f"{settings.PUBLIC_API_URL}/webhooks/bling/orders"
+    webhook_secret = settings.BLING_WEBHOOK_SECRET or "smartbling-webhook-secret"
+
+    try:
+        # Register webhook in Bling
+        payload = {
+            "nome": "SmartBling Order Sync",
+            "url": webhook_url,
+            "recurso": "pedidos",
+            "eventos": ["pedido.atualizado"],
+            "modulo": 98310,  # Pedidos de Vendas module
+        }
+        
+        response = await client.post("/webhooks", payload)
+        
+        logger.info(
+            "bling_webhook_registered webhook_url=%s response=%s",
+            webhook_url,
+            response,
+        )
+        
+        return {
+            "ok": True,
+            "message": "Webhook registrado no Bling com sucesso",
+            "webhook_url": webhook_url,
+            "response": response,
+        }
+    except Exception as exc:
+        logger.error(
+            "bling_webhook_registration_failed webhook_url=%s error=%s",
+            webhook_url,
+            str(exc),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Falha ao registrar webhook no Bling: {str(exc)}"
+        )
+
+
+@router.get("/bling/list-webhooks", status_code=200)
+async def list_bling_webhooks(db: Session = Depends(get_db)):
+    """List all webhooks registered in Bling."""
+    from app.repositories.bling_token_repo import BlingTokenRepository
+    from app.infra.bling_client import BlingClient
+
+    token_row = BlingTokenRepository.get_by_tenant(db, DEFAULT_TENANT_ID)
+    if not token_row:
+        raise HTTPException(status_code=401, detail="Bling não autenticado. Configure o token de acesso.")
+
+    def _save(at, rt, ea):
+        from app.repositories.bling_token_repo import BlingTokenRepository as TR
+        TR.create_or_update(db, DEFAULT_TENANT_ID, at, rt, ea)
+
+    client = BlingClient(
+        access_token=token_row.access_token,
+        refresh_token=token_row.refresh_token,
+        token_expires_at=token_row.expires_at,
+        on_token_refresh=_save,
+    )
+
+    try:
+        response = await client.get("/webhooks")
+        webhooks = response.get("data", []) if isinstance(response, dict) else []
+        
+        logger.info(
+            "bling_webhooks_listed count=%d",
+            len(webhooks),
+        )
+        
+        return {
+            "ok": True,
+            "webhooks": webhooks,
+            "count": len(webhooks),
+        }
+    except Exception as exc:
+        logger.error(
+            "bling_webhooks_list_failed error=%s",
+            str(exc),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Falha ao listar webhooks do Bling: {str(exc)}"
+        )
+
+
+@router.post("/bling/register-product-webhook", status_code=200)
+async def register_bling_product_webhook(db: Session = Depends(get_db)):
+    """Register webhook for product updates."""
+    from app.repositories.bling_token_repo import BlingTokenRepository
+    from app.infra.bling_client import BlingClient
+
+    if not settings.PUBLIC_API_URL:
+        raise HTTPException(
+            status_code=400,
+            detail="PUBLIC_API_URL not configured."
+        )
+
+    token_row = BlingTokenRepository.get_by_tenant(db, DEFAULT_TENANT_ID)
+    if not token_row:
+        raise HTTPException(status_code=401, detail="Bling não autenticado.")
+
+    def _save(at, rt, ea):
+        from app.repositories.bling_token_repo import BlingTokenRepository as TR
+        TR.create_or_update(db, DEFAULT_TENANT_ID, at, rt, ea)
+
+    client = BlingClient(
+        access_token=token_row.access_token,
+        refresh_token=token_row.refresh_token,
+        token_expires_at=token_row.expires_at,
+        on_token_refresh=_save,
+    )
+
+    webhook_url = f"{settings.PUBLIC_API_URL}/webhooks/bling/products"
+
+    try:
+        payload = {
+            "nome": "SmartBling Product Sync",
+            "url": webhook_url,
+            "recurso": "produtos",
+            "eventos": ["produto.atualizado"],
+        }
+        
+        response = await client.post("/webhooks", payload)
+        logger.info("bling_product_webhook_registered url=%s", webhook_url)
+        
+        return {
+            "ok": True,
+            "message": "Webhook de produtos registrado com sucesso",
+            "webhook_url": webhook_url,
+        }
+    except Exception as exc:
+        logger.error("bling_product_webhook_failed error=%s", str(exc))
+        raise HTTPException(status_code=500, detail=f"Falha: {str(exc)}")
+
+
+@router.post("/bling/register-stock-webhook", status_code=200)
+async def register_bling_stock_webhook(db: Session = Depends(get_db)):
+    """Register webhook for stock updates."""
+    from app.repositories.bling_token_repo import BlingTokenRepository
+    from app.infra.bling_client import BlingClient
+
+    if not settings.PUBLIC_API_URL:
+        raise HTTPException(
+            status_code=400,
+            detail="PUBLIC_API_URL not configured."
+        )
+
+    token_row = BlingTokenRepository.get_by_tenant(db, DEFAULT_TENANT_ID)
+    if not token_row:
+        raise HTTPException(status_code=401, detail="Bling não autenticado.")
+
+    def _save(at, rt, ea):
+        from app.repositories.bling_token_repo import BlingTokenRepository as TR
+        TR.create_or_update(db, DEFAULT_TENANT_ID, at, rt, ea)
+
+    client = BlingClient(
+        access_token=token_row.access_token,
+        refresh_token=token_row.refresh_token,
+        token_expires_at=token_row.expires_at,
+        on_token_refresh=_save,
+    )
+
+    webhook_url = f"{settings.PUBLIC_API_URL}/webhooks/bling/stock"
+
+    try:
+        payload = {
+            "nome": "SmartBling Stock Sync",
+            "url": webhook_url,
+            "recurso": "estoque",
+            "eventos": ["estoque.atualizado"],
+        }
+        
+        response = await client.post("/webhooks", payload)
+        logger.info("bling_stock_webhook_registered url=%s", webhook_url)
+        
+        return {
+            "ok": True,
+            "message": "Webhook de estoque registrado com sucesso",
+            "webhook_url": webhook_url,
+        }
+    except Exception as exc:
+        logger.error("bling_stock_webhook_failed error=%s", str(exc))
+        raise HTTPException(status_code=500, detail=f"Falha: {str(exc)}")
+
+
+@router.post("/bling/register-supplier-webhook", status_code=200)
+async def register_bling_supplier_webhook(db: Session = Depends(get_db)):
+    """Register webhook for supplier updates."""
+    from app.repositories.bling_token_repo import BlingTokenRepository
+    from app.infra.bling_client import BlingClient
+
+    if not settings.PUBLIC_API_URL:
+        raise HTTPException(
+            status_code=400,
+            detail="PUBLIC_API_URL not configured."
+        )
+
+    token_row = BlingTokenRepository.get_by_tenant(db, DEFAULT_TENANT_ID)
+    if not token_row:
+        raise HTTPException(status_code=401, detail="Bling não autenticado.")
+
+    def _save(at, rt, ea):
+        from app.repositories.bling_token_repo import BlingTokenRepository as TR
+        TR.create_or_update(db, DEFAULT_TENANT_ID, at, rt, ea)
+
+    client = BlingClient(
+        access_token=token_row.access_token,
+        refresh_token=token_row.refresh_token,
+        token_expires_at=token_row.expires_at,
+        on_token_refresh=_save,
+    )
+
+    webhook_url = f"{settings.PUBLIC_API_URL}/webhooks/bling/suppliers"
+
+    try:
+        payload = {
+            "nome": "SmartBling Supplier Sync",
+            "url": webhook_url,
+            "recurso": "fornecedores",
+            "eventos": ["fornecedor.atualizado"],
+        }
+        
+        response = await client.post("/webhooks", payload)
+        logger.info("bling_supplier_webhook_registered url=%s", webhook_url)
+        
+        return {
+            "ok": True,
+            "message": "Webhook de fornecedores registrado com sucesso",
+            "webhook_url": webhook_url,
+        }
+    except Exception as exc:
+        logger.error("bling_supplier_webhook_failed error=%s", str(exc))
+        raise HTTPException(status_code=500, detail=f"Falha: {str(exc)}")
+
+
+@router.post("/bling/register-all-webhooks", status_code=200)
+async def register_all_bling_webhooks(db: Session = Depends(get_db)):
+    """Register all webhooks at once: orders, products, stock, suppliers."""
+    results = {}
+    
+    try:
+        # Register order webhook
+        try:
+            order_result = await register_bling_order_webhook(db)
+            results["orders"] = {"ok": True, "url": order_result.get("webhook_url")}
+        except Exception as e:
+            results["orders"] = {"ok": False, "error": str(e)}
+    except:
+        results["orders"] = {"ok": False, "error": "Failed"}
+
+    try:
+        # Register product webhook
+        try:
+            product_result = await register_bling_product_webhook(db)
+            results["products"] = {"ok": True, "url": product_result.get("webhook_url")}
+        except Exception as e:
+            results["products"] = {"ok": False, "error": str(e)}
+    except:
+        results["products"] = {"ok": False, "error": "Failed"}
+
+    try:
+        # Register stock webhook
+        try:
+            stock_result = await register_bling_stock_webhook(db)
+            results["stock"] = {"ok": True, "url": stock_result.get("webhook_url")}
+        except Exception as e:
+            results["stock"] = {"ok": False, "error": str(e)}
+    except:
+        results["stock"] = {"ok": False, "error": "Failed"}
+
+    try:
+        # Register supplier webhook
+        try:
+            supplier_result = await register_bling_supplier_webhook(db)
+            results["suppliers"] = {"ok": True, "url": supplier_result.get("webhook_url")}
+        except Exception as e:
+            results["suppliers"] = {"ok": False, "error": str(e)}
+    except:
+        results["suppliers"] = {"ok": False, "error": "Failed"}
+
+    all_ok = all(r.get("ok", False) for r in results.values())
+    
+    return {
+        "ok": all_ok,
+        "message": "Webhooks registrados" if all_ok else "Alguns webhooks falharam",
+        "results": results,
     }

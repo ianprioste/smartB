@@ -32,6 +32,7 @@ class TemplateMerge:
         - Applies descriptions if provided or derived
         - Applies category only when override is present
         - Keeps all other fields from the template intact
+        - Ensures NCM, CEST, and tipo_item are always present
         """
         base = deepcopy(template_payload) if template_payload else {}
 
@@ -66,10 +67,17 @@ class TemplateMerge:
         if overrides.category_override_id is not None:
             base["categoria_id"] = overrides.category_override_id
 
-        # Fiscal classification overrides
-        if overrides.ncm:
-            base["ncm"] = overrides.ncm
-        if overrides.cest:
-            base["cest"] = overrides.cest
+        # Ensure tributacao is a dict before writing fiscal fields.
+        if not isinstance(base.get("tributacao"), dict):
+            base["tributacao"] = {}
+
+        # Fiscal classification must come from Wizard fields (overrides), not template values.
+        # NCM and CEST live inside tributacao in Bling V3 API.
+        base["tributacao"]["ncm"] = "" if overrides.ncm is None else str(overrides.ncm)
+        base["tributacao"]["cest"] = "" if overrides.cest is None else str(overrides.cest)
+
+        # Ensure spedTipoItem is present in tributacao
+        if not base["tributacao"].get("spedTipoItem"):
+            base["tributacao"]["spedTipoItem"] = "04"  # Default: merchandise/item comercial
 
         return base

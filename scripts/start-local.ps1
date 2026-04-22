@@ -45,10 +45,26 @@ function Ensure-BackendReady {
     Write-Step 'Instalando dependencias Python (backend)...'
     Push-Location $backendPath
     try {
-        & $venvPython -m pip install -r requirements.txt | Out-Host
+        $previousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        & $venvPython -m pip install -r requirements.txt 2>&1 | Out-Host
+        $pipExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $previousErrorActionPreference
+        if ($pipExitCode -ne 0) {
+            throw "Falha ao instalar dependencias Python (exit code: $pipExitCode)."
+        }
+
         Write-Step 'Aplicando migrations Alembic...'
-        & $venvPython -m alembic upgrade head | Out-Host
+        $previousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        & $venvPython -m alembic upgrade head 2>&1 | Out-Host
+        $alembicExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $previousErrorActionPreference
+        if ($alembicExitCode -ne 0) {
+            throw "Falha ao aplicar migrations Alembic (exit code: $alembicExitCode)."
+        }
     } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
         Pop-Location
     }
 }
@@ -57,8 +73,16 @@ function Ensure-FrontendReady {
     Write-Step 'Instalando dependencias Node (frontend)...'
     Push-Location $frontendPath
     try {
-        npm install | Out-Host
+        $previousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        npm install 2>&1 | Out-Host
+        $npmExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $previousErrorActionPreference
+        if ($npmExitCode -ne 0) {
+            throw "Falha ao instalar dependencias Node (exit code: $npmExitCode)."
+        }
     } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
         Pop-Location
     }
 }

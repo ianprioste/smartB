@@ -1,0 +1,97 @@
+# 🔗 Webhooks do Bling - Guia Rápido
+
+## 4 Webhooks Suportados
+
+### 1️⃣ Pedidos de Vendas
+```
+URL: http://localhost:8000/webhooks/bling/orders
+Nome: SmartBling Order Sync
+Evento: pedido.atualizado
+```
+
+### 2️⃣ Produtos
+```
+URL: http://localhost:8000/webhooks/bling/products
+Nome: SmartBling Product Sync
+Evento: produto.atualizado
+```
+
+### 3️⃣ Estoque
+```
+URL: http://localhost:8000/webhooks/bling/stock
+Nome: SmartBling Stock Sync
+Evento: estoque.atualizado
+```
+
+### 4️⃣ Fornecedores
+```
+URL: http://localhost:8000/webhooks/bling/suppliers
+Nome: SmartBling Supplier Sync
+Evento: fornecedor.atualizado
+```
+
+---
+
+## ⚡ Registrar Todos de Uma Vez
+
+```powershell
+# Via script
+.\register-bling-webhook.ps1 -Command register
+
+# Via curl
+curl -X POST http://localhost:8000/webhooks/bling/register-all-webhooks
+```
+
+---
+
+## 📋 Tabela de Cópia/Cola
+
+```
+Pedidos     | http://localhost:8000/webhooks/bling/orders     | SmartBling Order Sync
+Produtos    | http://localhost:8000/webhooks/bling/products   | SmartBling Product Sync
+Estoque     | http://localhost:8000/webhooks/bling/stock      | SmartBling Stock Sync
+Fornecedores| http://localhost:8000/webhooks/bling/suppliers  | SmartBling Supplier Sync
+```
+
+---
+
+## ✅ Como Funciona
+
+```
+1. Dados mudam no Bling
+   ↓
+2. Bling envia POST para seu webhook
+   ↓
+3. App sincroniza automaticamente
+   ↓
+4. Dados atualizados em tempo real
+```
+
+---
+
+## 🧪 Teste Local
+
+```powershell
+.\register-bling-webhook.ps1 -Command test
+```
+
+Você deve ver: ✓ HTTP 202 - Aceito
+
+---
+
+## 📝 Passos no Bling (Para cada webhook)
+
+1. Vá para: **Configurações → Integrações → Webhooks**
+2. Clique em: **+ Novo Webhook**
+3. Preencha com os dados acima
+4. Clique em: **Salvar**
+
+Pronto! ✅ Repita para cada um dos 4 webhooks.
+
+---
+
+## 🔗 Links Úteis
+
+- Lista de webhooks registrados: GET /webhooks/bling/list-webhooks
+- Registrar tudo: POST /webhooks/bling/register-all-webhooks
+- Saúde: GET /webhooks/health

@@ -641,7 +641,10 @@ export function EventSalesPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ production_status: nextStatus, bling_order_id: orderId || null }),
       });
-      if (!resp.ok) throw new Error('Falha ao salvar status de produção');
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.detail || 'Falha ao salvar status de produção');
+      }
       markLocalMutation();
       handleProductionSaved(sku, nextStatus, undefined, orderId);
       setItemFeedback(sku, orderId, 'success');
@@ -679,7 +682,9 @@ export function EventSalesPage() {
             }),
           }).then((resp) => {
             if (!resp.ok) {
-              throw new Error(`Falha ao atualizar item ${item.sku || ''}`.trim());
+              return resp.json().catch(() => ({})).then((data) => {
+                throw new Error((data.detail || `Falha ao atualizar item ${item.sku || ''}`).trim());
+              });
             }
             return resp;
           })
@@ -692,7 +697,10 @@ export function EventSalesPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ situacao: newStatus }),
       });
-      if (!resp.ok) throw new Error('Falha ao atualizar status');
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.detail || 'Falha ao atualizar status');
+      }
       markLocalMutation();
       includeStatusInFilter(newStatus);
       setSalesData((prev) => {
@@ -1046,7 +1054,7 @@ export function EventSalesPage() {
 
   const availableStatuses = useMemo(() => {
     const allOrders = Array.isArray(salesData?.orders) ? salesData.orders : [];
-    const statusSet = new Set();
+    const statusSet = new Set(['Em aberto', 'Cancelado']);
     allOrders.forEach((order) => statusSet.add(normalizeStatusLabel(order.situacao)));
     return [...statusSet].sort();
   }, [salesData]);

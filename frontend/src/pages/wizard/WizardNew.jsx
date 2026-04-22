@@ -1,12 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Layout } from '../../components/Layout';
-import { summarizeDeletionMismatch, summarizePlannedDeletionRisk } from './planExecutionInsights';
+import {
+  summarizeDeletionMismatch,
+  summarizeOrphanCompositionDiagnostics,
+  summarizePlannedDeletionRisk,
+} from './planExecutionInsights';
 import '../../styles/wizard.css';
 
 const API_BASE = '/api';
 const PRODUCTS_CACHE_KEY = 'smartb_products_catalog_v1';
 const PRODUCTS_CACHE_SAVED_AT_KEY = 'smartb_products_catalog_saved_at_v1';
+const PLAN_STATUS_POLL_INTERVAL_MS = 2000;
 
 export function WizardNewPage() {
   const navigate = useNavigate();
@@ -43,6 +48,19 @@ export function WizardNewPage() {
   const shortDescriptionRef = useRef(null);
   const shortDescriptionHtmlRef = useRef(null);
   const [showHtmlEditor, setShowHtmlEditor] = useState(false);
+  const [resolvedEditParentId, setResolvedEditParentId] = useState(editProduct?.id || null);
+
+  function normalizeEditorHtml(input) {
+    const value = String(input || '');
+    if (!value) return '';
+    // Decode escaped html (&lt;p&gt;...) when it arrives as text.
+    if (value.includes('&lt;') && !value.includes('<')) {
+      const textarea = document.createElement('textarea');
+      textarea.innerHTML = value;
+      return textarea.value;
+    }
+    return value;
+  }
 
   // Plan data
   const [plan, setPlan] = useState(null);
@@ -54,12 +72,35 @@ export function WizardNewPage() {
   const [executionResultsModal, setExecutionResultsModal] = useState(null);
   const [lastExecutedPlan, setLastExecutedPlan] = useState(null);
 
+  async function fetchJsonWithTimeout(url, timeoutMs = 12000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const timeoutErrorPromise = new Promise((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`TIMEOUT:${url}`));
+      }, timeoutMs + 50);
+    });
+    try {
+      const response = await Promise.race([
+        fetch(url, {
+          credentials: 'include',
+          signal: controller.signal,
+        }),
+        timeoutErrorPromise,
+      ]);
+      return response;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
   useEffect(() => {
     fetchConfiguration();
   }, []);
 
   useEffect(() => {
     if (!editProduct?.id) return;
+    setResolvedEditParentId(editProduct.id);
     fetchEditProductDetails(editProduct.id);
   }, [editProduct?.id]);
 
@@ -71,6 +112,10 @@ export function WizardNewPage() {
     if (typeof errorData.message === 'string') return errorData.message;
     if (typeof errorData.error === 'string') return errorData.error;
     return fallbackMessage;
+  }
+
+  function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   function extractAffectedSkusFromExecutionResult(executionResult) {
@@ -229,7 +274,7 @@ export function WizardNewPage() {
   useEffect(() => {
     if (!shortDescriptionRef.current || showHtmlEditor) return;
     if (document.activeElement === shortDescriptionRef.current) return;
-    const nextHtml = overrides.short_description || '';
+    const nextHtml = normalizeEditorHtml(overrides.short_description || '');
     if (shortDescriptionRef.current.innerHTML !== nextHtml) {
       shortDescriptionRef.current.innerHTML = nextHtml;
     }
@@ -238,10 +283,24 @@ export function WizardNewPage() {
   async function fetchConfiguration() {
     try {
       setLoading(true);
-      const [modelsResp, colorsResp] = await Promise.all([
-        fetch(`${API_BASE}/config/models`),
-        fetch(`${API_BASE}/config/colors`),
+      setError(null);
+
+      const [modelsResult, colorsResult] = await Promise.allSettled([
+        fetchJsonWithTimeout(`${API_BASE}/config/models`),
+        fetchJsonWithTimeout(`${API_BASE}/config/colors`),
       ]);
+
+      if (modelsResult.status !== 'fulfilled' || colorsResult.status !== 'fulfilled') {
+        throw new Error('Tempo limite ao carregar configuração. Verifique backend e tente novamente.');
+      }
+
+      const modelsResp = modelsResult.value;
+      const colorsResp = colorsResult.value;
+
+      if (modelsResp.status === 401 || colorsResp.status === 401) {
+        navigate('/login', { replace: true });
+        return;
+      }
 
       if (!modelsResp.ok || !colorsResp.ok) {
         throw new Error('Failed to fetch configuration');
@@ -256,7 +315,11 @@ export function WizardNewPage() {
       setModels(activeModels);
       setColors(activeColors);
     } catch (err) {
-      setError(err.message);
+      if (err.name === 'AbortError' || String(err.message || '').startsWith('TIMEOUT:')) {
+        setError('Tempo limite ao carregar configuração. Tente novamente.');
+      } else {
+        setError(err.message);
+      }
     } finally {
       setLoading(false);
     }
@@ -264,10 +327,18 @@ export function WizardNewPage() {
 
   async function fetchEditProductDetails(productId) {
     try {
-      const resp = await fetch(`${API_BASE}/bling/products/${productId}`);
-      if (!resp.ok) return;
+      const resp = await fetch(`${API_BASE}/bling/products/${productId}`, {
+        credentials: 'include',
+      });
+      if (!resp.ok) {
+        if (resp.status === 404) {
+          setResolvedEditParentId(null);
+        }
+        return;
+      }
 
       const detail = await resp.json();
+      setResolvedEditParentId(productId);
       const existingDescription =
         detail.descricao_curta || detail.descricaoCurta || detail.descricao || '';
 
@@ -279,6 +350,7 @@ export function WizardNewPage() {
       }
     } catch (err) {
       // Keep wizard usable even if detail fetch fails.
+      setResolvedEditParentId(null);
     }
   }
 
@@ -368,14 +440,19 @@ export function WizardNewPage() {
   function toggleHtmlEditor() {
     if (!showHtmlEditor) {
       // Switch to HTML mode - sync from visual to HTML textarea
+      const liveHtml = shortDescriptionRef.current?.innerHTML || overrides.short_description || '';
+      setOverrides(prev => ({ ...prev, short_description: liveHtml }));
       if (shortDescriptionHtmlRef.current) {
-        shortDescriptionHtmlRef.current.value = overrides.short_description || '';
+        shortDescriptionHtmlRef.current.value = liveHtml;
       }
     } else {
       // Switch back to visual mode - sync from HTML textarea to visual
       if (shortDescriptionHtmlRef.current) {
         const html = shortDescriptionHtmlRef.current.value || '';
         setOverrides(prev => ({ ...prev, short_description: html }));
+        if (shortDescriptionRef.current) {
+          shortDescriptionRef.current.innerHTML = normalizeEditorHtml(html);
+        }
       }
     }
     setShowHtmlEditor(!showHtmlEditor);
@@ -398,7 +475,7 @@ export function WizardNewPage() {
       })),
       colors: selectedColors,
       overrides: {
-        short_description: overrides.short_description || null,
+        short_description: normalizeEditorHtml(overrides.short_description || '') || null,
         complement_description: null,
         complement_same_as_short: true,
         category_override_id: null,
@@ -409,31 +486,84 @@ export function WizardNewPage() {
         auto_seed_base_plain: autoSeedBasePlain,
         stock_type: stockType,
       },
-      edit_parent_id: editProduct ? editProduct.id : null,
+      edit_parent_id: resolvedEditParentId,
     };
 
-    const resp = await fetch(`${API_BASE}/plans/new`, {
+    const generatePlanSync = async () => {
+      const resp = await fetch(`${API_BASE}/plans/new`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!resp.ok) {
+        const errorData = await resp.json().catch(() => ({}));
+
+        if (resp.status === 401 && errorData.detail?.code === 'BLING_TOKEN_EXPIRED') {
+          const error = new Error('Token expirado');
+          error.code = 'BLING_TOKEN_EXPIRED';
+          error.status = 401;
+          throw error;
+        }
+
+        throw new Error(extractApiErrorMessage(errorData, 'Falha ao gerar plano'));
+      }
+
+      return await resp.json();
+    };
+
+    const startResp = await fetch(`${API_BASE}/plans/new/async`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
 
-    if (!resp.ok) {
-      const errorData = await resp.json().catch(() => ({}));
-      
-      // Check for token expiration
-      if (resp.status === 401 && errorData.detail?.code === 'BLING_TOKEN_EXPIRED') {
+    if (startResp.status === 404 || startResp.status === 405) {
+      return await generatePlanSync();
+    }
+
+    if (!startResp.ok) {
+      const errorData = await startResp.json().catch(() => ({}));
+
+      if (startResp.status === 401 && errorData.detail?.code === 'BLING_TOKEN_EXPIRED') {
         const error = new Error('Token expirado');
         error.code = 'BLING_TOKEN_EXPIRED';
         error.status = 401;
         throw error;
       }
-      
-      throw new Error(extractApiErrorMessage(errorData, 'Falha ao gerar plano'));
+
+      throw new Error(extractApiErrorMessage(errorData, 'Falha ao iniciar geração do plano'));
     }
 
-    const planData = await resp.json();
-    return planData;
+    const startData = await startResp.json();
+    const taskId = startData?.task_id;
+    if (!taskId) {
+      throw new Error('Falha ao iniciar geração do plano');
+    }
+
+    while (true) {
+      await delay(PLAN_STATUS_POLL_INTERVAL_MS);
+      const statusResp = await fetch(`${API_BASE}/plans/new/status/${taskId}`);
+      const statusData = await statusResp.json().catch(() => ({}));
+
+      if (!statusResp.ok) {
+        throw new Error(extractApiErrorMessage(statusData, 'Falha ao consultar geração do plano'));
+      }
+
+      if (statusData?.status === 'completed' && statusData?.plan) {
+        return statusData.plan;
+      }
+
+      if (statusData?.status === 'failed') {
+        throw new Error(extractApiErrorMessage(statusData?.error, 'Falha ao gerar plano'));
+      }
+
+      if (statusData?.status === 'queued') {
+        setLoadingStatus('⏳ Plano enfileirado... aguardando processamento.');
+      } else {
+        setLoadingStatus('⚙️ Gerando plano no servidor... isso pode levar alguns minutos.');
+      }
+    }
   }
 
   async function handleGeneratePlan() {
@@ -479,7 +609,7 @@ export function WizardNewPage() {
       await new Promise(resolve => setTimeout(resolve, 300));
       setLoadingStatus('🎨 Calculando SKUs e variações...');
 
-      setLoadingStatus('⚙️ Gerando plano no servidor...');
+      setLoadingStatus('⚙️ Gerando plano no servidor... isso pode levar alguns minutos.');
       const planData = await generatePlanRequest(false);
 
       setLoadingStatus('📦 Processando itens do plano...');
@@ -496,6 +626,8 @@ export function WizardNewPage() {
         setShowReauthModal(true);
         setPendingRetryAfterReauth(true);
         setError('Token expirado. Renove o token para continuar.');
+      } else if (err.name === 'AbortError') {
+        setError('A geração do plano foi cancelada antes de terminar. Tente novamente.');
       } else {
         setError(err.message || 'Erro ao gerar plano');
       }
@@ -957,12 +1089,15 @@ export function WizardNewPage() {
             if (!lastExecutedPlan || !failedUpdateSkus?.length) return null;
 
             const confirmed = window.confirm(
-              `Nao foi possivel atualizar ${failedUpdateSkus.length} produto(s). Deseja apagar esses produtos e cria-los novamente?`
+              `Não foi possível atualizar ${failedUpdateSkus.length} produto(s). Tentar reparar esses produtos atualizando-os no mesmo ID?`
             );
             if (!confirmed) return null;
 
             setGeneratingPlan(true);
-            setLoadingStatus('Apagando e recriando produtos com falha de atualizacao...');
+            setLoadingStatus('Reparando produtos com falha de atualização...');
+
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
 
             try {
               const resp = await fetch('/api/plans/recreate-failed-updates', {
@@ -972,37 +1107,64 @@ export function WizardNewPage() {
                   plan: lastExecutedPlan,
                   failed_update_skus: failedUpdateSkus,
                 }),
+                signal: controller.signal,
               });
 
               const data = await resp.json().catch(() => ({}));
               if (!resp.ok) {
-                throw new Error(data?.detail?.message || data?.detail || data?.message || 'Falha ao recriar produtos');
+                throw new Error(data?.detail?.message || data?.detail || data?.message || 'Falha ao reparar produtos');
               }
 
-              const recreated = data?.summary?.recreated || 0;
+              const repaired = data?.summary?.repaired || 0;
               const failed = data?.summary?.failed || 0;
-              const inPlaceRecovered = (data?.results || []).filter(
-                (r) => r?.status === 'recreated' && r?.recovery_mode === 'in_place_update'
+              const inPlaceRepairs = (data?.results || []).filter(
+                (r) => r?.status === 'success' && r?.action === 'repaired_in_place'
               ).length;
+              const recreatedAfterDelete = (data?.results || []).filter(
+                (r) => r?.status === 'success' && r?.action === 'recreated_after_delete'
+              ).length;
+              const orphanDiagnostics = summarizeOrphanCompositionDiagnostics(data);
               const affectedSkus = extractAffectedSkusFromExecutionResult(data);
 
-              // Re-sync local product cache after delete/recreate flow.
+              // Re-sync local product cache after repair flow.
               try {
                 await refreshProductsCacheFromBling({ skus: affectedSkus });
               } catch (syncErr) {
                 console.warn('Falha ao sincronizar cache local de produtos:', syncErr);
               }
 
-              if (inPlaceRecovered > 0) {
-                alert(
-                  `Recriacao concluida: ${recreated} recuperado(s), ${failed} falha(s). ` +
-                  `${inPlaceRecovered} item(ns) foram recuperados no mesmo ID porque o Bling bloqueou a exclusao.`
-                );
-              } else {
-                alert(`Recriacao concluida: ${recreated} recriado(s), ${failed} falha(s).`);
+              if (repaired > 0 || recreatedAfterDelete > 0) {
+                let message = `Reparo concluído: ${repaired + recreatedAfterDelete} sucesso, ${failed} falha(s).`;
+                if (inPlaceRepairs > 0 && recreatedAfterDelete > 0) {
+                  message += ` ${inPlaceRepairs} produto(s) reparado(s) in-place, ${recreatedAfterDelete} recriado(s) após exclusão.`;
+                } else if (recreatedAfterDelete > 0) {
+                  message += ` ${recreatedAfterDelete} produto(s) foi necessário excluir e recriar.`;
+                }
+                if (orphanDiagnostics.rebuilt.length > 0) {
+                  message += ` ${orphanDiagnostics.rebuilt.length} SKU(s) com composição órfã foram reconstruídos automaticamente.`;
+                }
+                if (orphanDiagnostics.blocked.length > 0) {
+                  message += ` ${orphanDiagnostics.blocked.length} SKU(s) continuam bloqueados por falta de dependência/base.`;
+                }
+                alert(message);
+              } else if (failed > 0) {
+                let message = `Nenhum produto foi reparado. ${failed} falha(s) de reparo.`;
+                if (orphanDiagnostics.blocked.length > 0) {
+                  message += ` ${orphanDiagnostics.blocked.length} SKU(s) seguem bloqueados por falta de base/componente no Bling.`;
+                }
+                message += ' Verifique os detalhes no log.';
+                alert(message);
               }
               return data;
+            } catch (err) {
+              if (err.name === 'AbortError') {
+                setError('Tempo limite excedido ao reparar produtos (60s). Verifique o backend.');
+              } else {
+                setError(err.message || 'Erro ao reparar produtos');
+              }
+              return null;
             } finally {
+              clearTimeout(timeoutId);
               setGeneratingPlan(false);
               setLoadingStatus('');
             }
@@ -1391,8 +1553,8 @@ function PlanPreview({ plan: initialPlan, onBack, onExecute, onRegeneratePlan, o
                 <td>
                   {item.computed_payload_preview?.preco ?? item.overrides_used?.price ?? '-'}
                 </td>
-                <td>{item.computed_payload_preview?.ncm || '-'}</td>
-                <td>{item.computed_payload_preview?.cest || '-'}</td>
+                <td>{item.computed_payload_preview?.tributacao?.ncm || '-'}</td>
+                <td>{item.computed_payload_preview?.tributacao?.cest || '-'}</td>
                 <td className="desc-cell">
                   {item.computed_payload_preview?.descricaoCurta || '-'}
                 </td>
@@ -1649,6 +1811,7 @@ function ExecutionResultsModal({ results, executedPlan, onRecreateFailedUpdates,
   const updatedDisplayCount = (updatedVariationsCount > 0)
     ? updatedVariationsCount
     : updatedParentsCount;
+  const orphanDiagnostics = summarizeOrphanCompositionDiagnostics(results);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -1781,6 +1944,21 @@ function ExecutionResultsModal({ results, executedPlan, onRecreateFailedUpdates,
                         Falha ao excluir: {item.removed_variations_delete_failed.join(' | ')}
                       </div>
                     )}
+                    {Array.isArray(item.repaired_orphan_compositions) && item.repaired_orphan_compositions.length > 0 && (
+                      <div style={{ fontSize: '11px', color: '#115e59', marginTop: '4px', background: '#ecfeff', borderRadius: '4px', padding: '4px 6px' }}>
+                        Composição reconstruída: {item.repaired_orphan_compositions.join(', ')}
+                      </div>
+                    )}
+                    {Array.isArray(item.dropped_orphan_compositions) && item.dropped_orphan_compositions.length > 0 && (
+                      <div style={{ fontSize: '11px', color: '#991b1b', marginTop: '4px', background: '#fef2f2', borderRadius: '4px', padding: '4px 6px' }}>
+                        Órfãs descartadas do payload: {item.dropped_orphan_compositions.join(', ')}
+                      </div>
+                    )}
+                    {Array.isArray(item.retry_skipped_invalid_compositions) && item.retry_skipped_invalid_compositions.length > 0 && (
+                      <div style={{ fontSize: '11px', color: '#6b21a8', marginTop: '4px', background: '#faf5ff', borderRadius: '4px', padding: '4px 6px' }}>
+                        Puladas no retry: {item.retry_skipped_invalid_compositions.join(', ')}
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
@@ -1794,6 +1972,9 @@ function ExecutionResultsModal({ results, executedPlan, onRecreateFailedUpdates,
             <div style={{ background: '#fef2f2', borderRadius: '6px', padding: '12px', maxHeight: '300px', overflowY: 'auto' }}>
               {failedItems.map((item, idx) => {
                 const isOrphan = item.error_type === 'orphan_composition_variations';
+                const isBlockedOrphanDependency = item.error_type === 'missing_parent_dependency'
+                  || item.error_type === 'missing_base_dependency'
+                  || item.error_type === 'missing_base_for_composition';
                 const errorText = item.error || item.error_message || item.message || item.detail;
                 const mismatch = summarizeDeletionMismatch(item);
                 const isStrictDeletionMismatch = errorText === 'Strict planned deletions mismatch';
@@ -1832,6 +2013,24 @@ function ExecutionResultsModal({ results, executedPlan, onRecreateFailedUpdates,
                             ))}
                           </div>
                         )}
+                      </div>
+                    ) : isBlockedOrphanDependency ? (
+                      <div style={{ marginTop: '8px', marginLeft: '16px', background: '#fff7ed', border: '1px solid #fdba74', borderRadius: '6px', padding: '10px' }}>
+                        <div style={{ fontWeight: 600, color: '#9a3412', marginBottom: '6px', fontSize: '13px' }}>
+                          ⚠️ Não foi possível remontar a composição automaticamente
+                        </div>
+                        <div style={{ color: '#7c2d12', fontSize: '12px', marginBottom: '8px' }}>
+                          O SKU <strong>{item.sku}</strong> continua bloqueado porque o app não encontrou a dependência necessária para reconstruir a composição no Bling.
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#7c2d12', marginBottom: '6px' }}>
+                          <strong>Parent:</strong> {item.parent_sku || 'não informado'}
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#7c2d12', marginBottom: '6px' }}>
+                          <strong>Base:</strong> {item.base_sku || 'não informada'}
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#9a3412' }}>
+                          Verifique se a base física/virtual existe no Bling e se o plano foi gerado com as dependências corretas antes de tentar novamente.
+                        </div>
                       </div>
                     ) : isStrictDeletionMismatch ? (
                       <div style={{ marginTop: '8px', marginLeft: '16px', background: '#fff7ed', border: '1px solid #fdba74', borderRadius: '6px', padding: '10px' }}>
@@ -1894,7 +2093,7 @@ function ExecutionResultsModal({ results, executedPlan, onRecreateFailedUpdates,
                     cursor: 'pointer',
                   }}
                 >
-                  Apagar e recriar itens com falha de atualizacao
+                  Tentar reparar itens com falha de atualizacao
                 </button>
               </div>
             )}

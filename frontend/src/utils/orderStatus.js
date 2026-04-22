@@ -5,10 +5,11 @@
 
 /**
  * Normalize a raw production_status string to a canonical key.
- * Keys: 'impedimento' | 'entregue' | 'embalado' | 'em_producao' | 'pendente'
+ * Keys: 'cancelado' | 'impedimento' | 'entregue' | 'embalado' | 'em_producao' | 'pendente'
  */
 export function normalizeProductionStatus(value) {
   const status = (value || 'Pendente').toString().trim().toLowerCase();
+  if (status.includes('cancel')) return 'cancelado';
   if (status.includes('imped')) return 'impedimento';
   if (status.includes('entreg')) return 'entregue';
   if (status.includes('embalad')) return 'embalado';
@@ -47,6 +48,14 @@ export function deriveOrderStatusFromItems(items, hasFrete) {
     normalizeProductionStatus(item?.production_status),
   );
   if (statuses.length === 0) return 'Em aberto';
+  if (statuses.every((s) => s === 'cancelado')) return 'Cancelado';
+  const nonCancelled = statuses.filter((s) => s !== 'cancelado');
+  if (nonCancelled.length > 0) {
+    if (nonCancelled.every((s) => s === 'entregue')) return 'Atendido';
+    if (nonCancelled.every((s) => s === 'embalado')) {
+      return hasFrete ? 'Pronto para envio' : 'Pronto para retirada';
+    }
+  }
   if (statuses.some((s) => s === 'impedimento')) return 'Impedido';
   if (statuses.every((s) => s === 'pendente')) return 'Em aberto';
   if (statuses.every((s) => s === 'embalado' || s === 'entregue')) {

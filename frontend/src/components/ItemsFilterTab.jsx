@@ -20,6 +20,7 @@ export function ItemsFilterTab({
   renderStatus,
   onChangeStatus,
   onChangeNotes,
+  getStatusFeedback,
 }) {
   if (!groups || groups.length === 0) {
     return (
@@ -68,6 +69,7 @@ export function ItemsFilterTab({
                       <div style={{ marginBottom: 8 }}>
                         <ProductionStatusBadge
                           status={o.production_status}
+                          statusFeedback={getStatusFeedback ? getStatusFeedback(group.sku, o) : 'idle'}
                           onChangeStatus={(nextStatus) => onChangeStatus(group.sku, o, nextStatus)}
                         />
                       </div>
@@ -147,6 +149,7 @@ export function ItemsFilterTab({
                               <td style={{ padding: '7px 8px' }}>
                                 <ProductionStatusBadge
                                   status={o.production_status}
+                                  statusFeedback={getStatusFeedback ? getStatusFeedback(group.sku, o) : 'idle'}
                                   onChangeStatus={(nextStatus) => onChangeStatus(group.sku, o, nextStatus)}
                                 />
                               </td>

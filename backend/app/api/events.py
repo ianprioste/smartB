@@ -5,7 +5,7 @@ import re
 import asyncio
 from datetime import datetime, time, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from app.infra.db import get_db, SessionLocal
@@ -13,7 +13,7 @@ from app.infra.bling_client import BlingClient, BlingAuthError, BlingAPIError
 from app.infra.logging import get_logger
 from app.settings import settings
 from app.domain.order_local_cache import get_cached_order_detail, warm_order_details
-from app.domain.bling_situacoes import get_bling_status_ids
+from app.domain.bling_situacoes import get_bling_status_ids, get_all_bling_statuses, clear_cache as clear_bling_status_cache
 from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.order_snapshot_repo import OrderSnapshotRepository
 from app.repositories.order_tag_repo import OrderTagRepository, OrderTagSchemaError
@@ -51,7 +51,7 @@ _VALOR_LABEL = {0: "Em aberto", 1: "Atendido", 2: "Cancelado"}
 
 # Fallback mapping by known status IDs (used when 'valor' is unavailable).
 _ATENDIDO_IDS = {9}
-_CANCELADO_IDS = {12, 15}
+_CANCELADO_IDS = {12}
 
 STATUS_ID_NAME_MAP = {**{sid: "Atendido" for sid in _ATENDIDO_IDS}, **{sid: "Cancelado" for sid in _CANCELADO_IDS}}
 
@@ -61,6 +61,36 @@ def _field_was_provided(model, field_name: str) -> bool:
     if fields_set is None:
         fields_set = getattr(model, "__fields_set__", set())
     return field_name in fields_set
+
+
+def _resolve_bling_target_id_with_fallback(sit_ids: Dict[str, int], target_key: str) -> int | None:
+    target_id = sit_ids.get(target_key)
+    if target_id is not None:
+        return int(target_id)
+    return None
+
+
+def _match_status_id_from_all_statuses(all_statuses: List[Dict[str, Any]], target_key: str) -> int | None:
+    if not all_statuses:
+        return None
+
+    def _norm(value: Any) -> str:
+        return str(value or "").strip().lower()
+
+    for status in all_statuses:
+        sid = status.get("id")
+        name = _norm(status.get("nome"))
+        if sid is None or not name:
+            continue
+
+        if target_key == "pronto_retirada":
+            if "pronto" in name and ("retirada" in name or "retir" in name or "coleta" in name):
+                return int(sid)
+        elif target_key == "pronto_envio":
+            if "pronto" in name and ("envio" in name or "envi" in name):
+                return int(sid)
+
+    return None
 
 
 def _parse_since_cursor(since: str | None) -> datetime:
@@ -130,6 +160,8 @@ def _inject_production_data(db: Session, event_id: UUID, filtered_orders: list) 
 
 def _normalize_production_status(value: Any) -> str:
     lower = str(value or "Pendente").strip().lower()
+    if "cancel" in lower:
+        return "cancelado"
     if "imped" in lower:
         return "impedimento"
     if "entreg" in lower:
@@ -149,6 +181,18 @@ def _resolve_campaign_status_from_normalized(
 ) -> tuple[str, str]:
     if not statuses:
         return ("em_aberto", "Em aberto")
+
+    if all(status == "cancelado" for status in statuses):
+        return ("cancelado", "Cancelado")
+
+    non_cancelled = [status for status in statuses if status != "cancelado"]
+    if non_cancelled:
+        if all(status == "entregue" for status in non_cancelled):
+            return ("atendido", "Atendido")
+        if all(status == "embalado" for status in non_cancelled):
+            if has_frete:
+                return ("pronto_envio", "Pronto para envio")
+            return ("pronto_retirada", "Pronto para retirada")
 
     if any(status == "impedimento" for status in statuses):
         return ("impedido", "Impedido")
@@ -1027,9 +1071,6 @@ async def _get_event_sales_impl(event_id: UUID, enrich_emails: bool, db: Session
                 # Priorize status persistido localmente no snapshot quando disponível.
                 situacao_text = _status_to_text(row.status_name, row.status_id)
 
-                if situacao_text == "Cancelado":
-                    continue
-
                 filtered_order_map[key] = EventOrderResponse(
                     id=_to_optional_int(row.bling_order_id),
                     numero=row.numero,
@@ -1206,9 +1247,6 @@ async def _get_event_sales_impl(event_id: UUID, enrich_emails: bool, db: Session
             situacao = order.get("situacao") if isinstance(order.get("situacao"), dict) else {}
             key = order.get("id") or order.get("numero")
             situacao_text = _status_to_text(situacao if isinstance(situacao, dict) else order.get("situacao"))
-
-            if situacao_text == "Cancelado":
-                continue
 
             filtered_order_map[key] = EventOrderResponse(
                 id=order.get("id"),
@@ -1471,6 +1509,7 @@ async def update_item_production(
     event_id: UUID,
     sku: str,
     body: ItemProductionNoteUpdateRequest,
+    background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
 ):
     """Upsert production status and notes for an item in a campaign.
@@ -1494,11 +1533,18 @@ async def update_item_production(
         preserve_existing_notes=not _field_was_provided(body, "notes"),
     )
 
-    await _check_and_update_bling_orders(db, event, event_id)
-
+    # Persist local note first; sync failures are reported explicitly but do
+    # not discard local production updates.
     SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, scope_event_sales(event_id))
     SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
     db.commit()
+
+    await _check_and_update_bling_orders(
+        db,
+        event,
+        event_id,
+        only_bling_order_id=_to_optional_int(body.bling_order_id),
+    )
 
     return ItemProductionNoteResponse(
         sku=row.sku, production_status=row.production_status, notes=row.notes,
@@ -1506,7 +1552,12 @@ async def update_item_production(
     )
 
 
-async def _check_and_update_bling_orders(db: Session, event, event_id: UUID):
+async def _check_and_update_bling_orders(
+    db: Session,
+    event,
+    event_id: UUID,
+    only_bling_order_id: int | None = None,
+):
     """Recompute the general order status from matched-item production statuses."""
     from app.models.database import BlingOrderSnapshotModel
 
@@ -1548,6 +1599,12 @@ async def _check_and_update_bling_orders(db: Session, event, event_id: UUID):
         if row.status_id in _CANCELADO_IDS:
             continue
 
+        row_order_id = _to_optional_int(row.bling_order_id)
+        if row_order_id is None:
+            continue
+        if only_bling_order_id is not None and row_order_id != only_bling_order_id:
+            continue
+
         detail_payload = row.raw_detail if isinstance(row.raw_detail, dict) else {}
         order_payload = row.raw_order if isinstance(row.raw_order, dict) else {}
         order_items = _extract_order_items(detail_payload) or _extract_order_items(order_payload)
@@ -1560,13 +1617,20 @@ async def _check_and_update_bling_orders(db: Session, event, event_id: UUID):
             matched,
             note_map,
             sku_fallback_map,
-            row.bling_order_id,
+            row_order_id,
             frete,
         )
-        target_id = sit_ids.get(target_key)
+        target_id = _resolve_bling_target_id_with_fallback(sit_ids, target_key)
+        if target_id is None:
+            clear_bling_status_cache()
+            sit_ids = await get_bling_status_ids(client)
+            target_id = _resolve_bling_target_id_with_fallback(sit_ids, target_key)
+        if target_id is None and target_key in {"atendido", "em_aberto", "cancelado", "pronto_envio", "pronto_retirada"}:
+            all_statuses = await get_all_bling_statuses(client)
+            target_id = _match_status_id_from_all_statuses(all_statuses, target_key)
 
         snapshot = db.query(BlingOrderSnapshotModel).filter(
-            BlingOrderSnapshotModel.bling_order_id == row.bling_order_id,
+            BlingOrderSnapshotModel.bling_order_id == row_order_id,
             BlingOrderSnapshotModel.tenant_id == DEFAULT_TENANT_ID,
         ).first()
 
@@ -1574,42 +1638,63 @@ async def _check_and_update_bling_orders(db: Session, event, event_id: UUID):
         current_status_id = _to_optional_int(snapshot.status_id if snapshot else None)
         target_name_normalized = target_name.strip().lower()
 
-        # If we know target_id, compare by ID so failed patch attempts are retried.
-        if target_id is not None:
-            if current_status_id == int(target_id):
+        # For Bling: Atendido and Cancelado sync as-is; everything else becomes Em Aberto.
+        if target_key in {"atendido", "cancelado"}:
+            bling_key = target_key
+            bling_name = target_name
+            bling_id = target_id
+        else:
+            bling_key = "em_aberto"
+            bling_name = "Em aberto"
+            bling_id = sit_ids.get("em_aberto")
+
+        # Skip if Bling is already at the desired state.
+        if bling_id is not None:
+            if current_status_id == int(bling_id):
                 continue
-        elif str(current_status_name or "").strip().lower() == target_name_normalized:
+        elif str(current_status_name or "").strip().lower() == bling_name.lower():
             continue
 
-        if not can_update_bling or not target_id:
-            if snapshot:
-                snapshot.status_name = target_name
-                db.commit()
-            logger.info(
-                "order_status_local_fallback order_id=%s status=%s",
-                row.bling_order_id,
-                target_name,
+        if not can_update_bling or not bling_id:
+            logger.warning(
+                "bling_order_status_sync_skipped order_id=%s bling_target=%s can_update_bling=%s",
+                row_order_id,
+                bling_name,
+                can_update_bling,
             )
             continue
 
         try:
-            await client.patch(f"/pedidos/vendas/{row.bling_order_id}/situacoes/{target_id}", {})
-            # Update local snapshot.
+            await client.patch(f"/pedidos/vendas/{row_order_id}/situacoes/{bling_id}", {})
             if snapshot:
-                snapshot.status_id = target_id
-                snapshot.status_name = target_name
+                snapshot.status_id = bling_id
+                snapshot.status_name = bling_name
                 db.commit()
-            logger.info("bling_order_status_updated order_id=%s new_status_id=%s", row.bling_order_id, target_id)
+            logger.info("bling_order_status_updated order_id=%s bling_status=%s", row_order_id, bling_name)
         except Exception as exc:
-            if snapshot:
-                snapshot.status_name = target_name
-                db.commit()
             logger.warning(
-                "bling_order_status_update_failed order_id=%s error=%s local_status_applied=%s",
-                row.bling_order_id,
+                "bling_order_status_update_failed order_id=%s error=%s bling_target=%s",
+                row_order_id,
                 str(exc),
-                target_name,
+                bling_name,
             )
+
+
+async def _check_and_update_bling_orders_background(event_db_id: UUID, event_id: UUID) -> None:
+    db = SessionLocal()
+    try:
+        event = SalesEventRepository.get_by_id(db, event_db_id, DEFAULT_TENANT_ID)
+        if not event:
+            return
+        await _check_and_update_bling_orders(db, event, event_id)
+    except Exception as exc:
+        logger.warning(
+            "campaign_order_status_background_sync_failed event_id=%s error=%s",
+            event_id,
+            str(exc),
+        )
+    finally:
+        db.close()
 
 
 @router.put("/{event_id}/orders/{order_id}/status")
@@ -1627,10 +1712,8 @@ async def update_order_status(
         raise HTTPException(status_code=404, detail="Campanha não encontrada")
 
     client = _make_client(db)
-    if not client:
-        raise HTTPException(status_code=401, detail="Bling não autenticado")
 
-    sit_ids = await get_bling_status_ids(client)
+    sit_ids = await get_bling_status_ids(client) if client else {}
 
     target_key = body.situacao.strip().lower()
     target_id = None
@@ -1650,33 +1733,79 @@ async def update_order_status(
         target_id = sit_ids.get("pronto_envio")
     elif "retirada" in target_key:
         target_id = sit_ids.get("pronto_retirada")
+    
+    # Retry logic for critical statuses if not found in initial cache
+    if target_id is None and client:
+        clear_bling_status_cache()
+        sit_ids = await get_bling_status_ids(client)
+        if "atendido" in target_key:
+            target_id = sit_ids.get("atendido")
+        elif "cancel" in target_key:
+            target_id = sit_ids.get("cancelado")
+        elif "aberto" in target_key:
+            target_id = sit_ids.get("em_aberto")
+        elif "envio" in target_key:
+            target_id = sit_ids.get("pronto_envio")
+        elif "retirada" in target_key:
+            target_id = sit_ids.get("pronto_retirada")
+        elif "parcial" in target_key and "entreg" in target_key:
+            target_id = sit_ids.get("parcialmente_entregue")
+        elif "imped" in target_key:
+            target_id = sit_ids.get("impedido")
+        elif "andamento" in target_key:
+            target_id = sit_ids.get("em_andamento")
+    
+    # Final fallback to all_statuses if still not found
+    if target_id is None and client and target_key in {"atendido", "em_aberto", "cancelado", "pronto_envio", "pronto_retirada", "parcialmente_entregue", "impedido", "em_andamento"}:
+        all_statuses = await get_all_bling_statuses(client)
+        target_id = _match_status_id_from_all_statuses(all_statuses, target_key)
 
-    if not target_id:
-        raise HTTPException(status_code=400, detail=f"Situação '{body.situacao}' não encontrada no Bling")
+    # Atendido and Cancelado sync as-is; everything else becomes Em Aberto in Bling.
+    if "atendido" in target_key or "cancel" in target_key:
+        bling_target_id = target_id
+        bling_target_name = body.situacao
+    else:
+        bling_target_id = sit_ids.get("em_aberto")
+        bling_target_name = "Em aberto"
 
-    local_only = False
-    try:
-        await client.patch(f"/pedidos/vendas/{order_id}/situacoes/{target_id}", {})
-    except BlingAPIError as exc:
-        logger.warning(
-            "update_order_status_bling_error order_id=%s target_id=%s error=%s fallback_local=true",
-            order_id,
-            target_id,
-            str(exc),
-        )
-        local_only = True
+    should_sync_bling = True
+    bling_sync_applied = False
+    bling_sync_error: str | None = None
 
-    # Update local snapshot.
+    if should_sync_bling:
+        if not client:
+            bling_sync_error = "Bling não autenticado"
+        elif not bling_target_id:
+            bling_sync_error = f"Situação '{bling_target_name}' não encontrada no Bling"
+        else:
+            try:
+                await client.patch(f"/pedidos/vendas/{order_id}/situacoes/{bling_target_id}", {})
+                bling_sync_applied = True
+            except BlingAPIError as exc:
+                bling_sync_error = str(exc)
+                logger.warning(
+                    "campaign_manual_status_sync_failed order_id=%s bling_target=%s error=%s",
+                    order_id,
+                    bling_target_name,
+                    str(exc),
+                )
+
+    # Update local snapshot with what was actually sent to Bling.
     snapshot = db.query(BlingOrderSnapshotModel).filter(
         BlingOrderSnapshotModel.bling_order_id == order_id,
         BlingOrderSnapshotModel.tenant_id == DEFAULT_TENANT_ID,
     ).first()
     if snapshot:
-        snapshot.status_id = target_id
-        snapshot.status_name = body.situacao
-
-    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, scope_event_sales(event_id))
+        if bling_target_id:
+            snapshot.status_id = bling_target_id
+        snapshot.status_name = bling_target_name
     SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
     db.commit()
 
-    return {"ok": True, "order_id": order_id, "new_status": body.situacao, "local_only": local_only}
+    return {
+        "ok": True,
+        "order_id": order_id,
+        "new_status": body.situacao,
+        "bling_sync_applied": bling_sync_applied,
+        "bling_sync_error": bling_sync_error,
+    }

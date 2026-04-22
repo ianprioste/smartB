@@ -421,7 +421,13 @@ def process_webhook_order_task(self, event_id: str, bling_order_id: int):
 
 
 @celery_app.task(bind=True, name="process_webhook_product_task", max_retries=5)
-def process_webhook_product_task(self, event_id: str, bling_product_id: int, event_kind: str = "product"):
+def process_webhook_product_task(
+    self,
+    event_id: str,
+    bling_product_id: int,
+    event_kind: str = "product",
+    event_type: str = "product.updated",
+):
     """Process product/stock webhook events and upsert product snapshot."""
     from app.repositories.webhook_repo import WebhookEventRepository
 
@@ -435,19 +441,33 @@ def process_webhook_product_task(self, event_id: str, bling_product_id: int, eve
         if not client:
             raise RuntimeError("Bling nao autenticado - token ausente")
 
-        result = asyncio.run(sync_single_product(db, DEFAULT_TENANT_ID, client, bling_product_id))
+        result = asyncio.run(
+            sync_single_product(
+                db,
+                DEFAULT_TENANT_ID,
+                client,
+                bling_product_id,
+                event_type=event_type,
+            )
+        )
 
         if not result.get("ok"):
             raise RuntimeError(result.get("error", "sync_single_product returned not ok"))
 
         WebhookEventRepository.mark_processed(db, event_uuid)
         logger.info(
-            "webhook_%s_processed event_id=%s bling_product_id=%s",
+            "webhook_%s_processed event_id=%s bling_product_id=%s event_type=%s",
             event_kind,
             event_id,
             bling_product_id,
+            event_type,
         )
-        return {"ok": True, "bling_product_id": bling_product_id, "event_kind": event_kind}
+        return {
+            "ok": True,
+            "bling_product_id": bling_product_id,
+            "event_kind": event_kind,
+            "event_type": event_type,
+        }
 
     except Exception as exc:
         error_str = str(exc)
@@ -501,4 +521,74 @@ def process_plan_execution_task(self, plan_payload: dict):
             "error": str(exc),
         }
     finally:
+        db.close()
+
+
+@celery_app.task(bind=True, name="sync_full_product_catalog_task")
+def sync_full_product_catalog_task(self):
+    """Full sync of all Bling products to local snapshot (bling_product_snapshots table).
+
+    Fetches every page from Bling's /produtos endpoint and upserts each product into the
+    snapshot table. No N+1 detail requests — hierarchy is inferred from the list payload.
+    Invalidates the in-memory catalog cache when complete so the next list/all request
+    returns fresh data from the snapshot.
+    """
+    from app.repositories.product_snapshot_repo import ProductSnapshotRepository
+    from app.api.bling_products import _fetch_all_products, invalidate_catalog_cache
+
+    db = SessionLocal()
+    client = None
+    synced = 0
+    errors = 0
+
+    try:
+        client = _make_bling_client(db)
+        if not client:
+            logger.warning("sync_full_product_catalog_skipped reason=no_bling_token")
+            return {"ok": False, "reason": "no_bling_token"}
+
+        # Fetch all pages (no query filter = full catalog)
+        raw_products = asyncio.run(_fetch_all_products(client, None))
+        total = len(raw_products)
+        logger.info("sync_full_product_catalog_fetched total=%s", total)
+
+        self.update_state(state="PROGRESS", meta={"synced": 0, "total": total})
+
+        for i, product in enumerate(raw_products):
+            try:
+                ProductSnapshotRepository.upsert_product_detail(db, DEFAULT_TENANT_ID, product)
+                synced += 1
+            except Exception as exc:
+                errors += 1
+                logger.warning(
+                    "sync_catalog_upsert_failed product_id=%s error=%s",
+                    product.get("id"),
+                    str(exc),
+                )
+
+            # Commit in batches and report progress
+            if (i + 1) % 50 == 0:
+                db.commit()
+                self.update_state(state="PROGRESS", meta={"synced": synced, "total": total})
+
+        db.commit()
+        invalidate_catalog_cache()
+
+        logger.info("sync_full_product_catalog_done synced=%s errors=%s", synced, errors)
+        return {"ok": True, "synced": synced, "errors": errors}
+
+    except Exception as exc:
+        logger.error("sync_full_product_catalog_failed error=%s", str(exc), exc_info=True)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return {"ok": False, "error": str(exc), "synced": synced}
+
+    finally:
+        if client is not None:
+            try:
+                asyncio.run(client.client.aclose())
+            except Exception:
+                pass
         db.close()

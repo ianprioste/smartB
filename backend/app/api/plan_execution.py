@@ -154,31 +154,126 @@ async def create_product_with_error(client: BlingClient, payload: Dict[str, Any]
 # Payload Building
 # ====================================
 
-def _prepare_base_payload(sku: str, name: Optional[str] = None) -> Dict[str, Any]:
-    """Build base payload (formato S or V)."""
-    return {
+def _prepare_base_payload(sku: str, name: Optional[str] = None, computed: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build base payload (formato S or V).
+    
+    Applies template fields from computed payload (marca, condição, tipo, unidade, 
+    peso, altura, largura, etc.) to ensure new products inherit template attributes.
+    """
+    computed = computed or {}
+    payload = {
         "codigo": sku,
         "nome": name or f"Base {sku}",
         "tipo": "P",
         "situacao": "A",
         "preco": 0,
     }
+    
+    _apply_template_fields(payload, computed)
+    
+    return payload
 
 
 def _apply_fiscal_fields(payload: Dict[str, Any], computed: Dict[str, Any]) -> None:
-    """Apply optional fiscal fields from computed payload."""
-    if computed.get("ncm"):
-        payload["ncm"] = computed.get("ncm")
-    if computed.get("cest"):
-        payload["cest"] = computed.get("cest")
+    """Apply fiscal fields from computed payload into tributacao (Bling V3 structure).
+
+    In Bling V3 API, NCM and CEST are nested inside ``tributacao``, not top-level.
+    This function always writes them to ``payload["tributacao"]``.
+    """
+    # Ensure tributacao exists in payload
+    if not isinstance(payload.get("tributacao"), dict):
+        payload["tributacao"] = {}
+
+    computed_trib = computed.get("tributacao") or {}
+
+    # NCM from computed.tributacao (Wizard form value placed there by TemplateMerge)
+    ncm_value = computed_trib.get("ncm")
+    if ncm_value is not None:
+        payload["tributacao"]["ncm"] = str(ncm_value)
+    elif "ncm" not in payload["tributacao"]:
+        payload["tributacao"]["ncm"] = ""
+
+    # CEST from computed.tributacao
+    cest_value = computed_trib.get("cest")
+    if cest_value is not None:
+        payload["tributacao"]["cest"] = str(cest_value)
+    elif "cest" not in payload["tributacao"]:
+        payload["tributacao"]["cest"] = ""
+
+    # spedTipoItem - default to "04" if not set
+    sped = computed_trib.get("spedTipoItem")
+    if sped:
+        payload["tributacao"]["spedTipoItem"] = sped
+    elif not payload["tributacao"].get("spedTipoItem"):
+        payload["tributacao"]["spedTipoItem"] = "04"
 
 
+_ESTOQUE_SETTINGS_KEYS = ("minimo", "maximo", "crossdocking", "localizacao")
+
+
+def _apply_template_fields(payload: Dict[str, Any], computed: Dict[str, Any]) -> None:
+    """Apply template/computed fields using Bling-compatible keys.
+
+    Handles Bling V3 nested objects:
+    - ``dimensoes`` for largura/altura/profundidade
+    - ``estoque`` for minimo/maximo/crossdocking
+    - ``tributacao`` for ncm/cest/spedTipoItem (handled separately by _apply_fiscal_fields)
+    """
+    if not isinstance(computed, dict):
+        return
+
+    direct_fields = {
+        "nome", "descricaoCurta", "descricaoComplementar", "preco", "precoCusto",
+        "marca", "condicao", "unidade", "unidadeMedida", "peso", "pesoLiquido", "pesoBruto",
+        "tributacao", "linkExterno", "observacoes",
+        "categoria", "tipoProducao", "freteGratis", "volumes", "itensPorCaixa", "gtin", "gtinEmbalagem",
+    }
+
+    for field in direct_fields:
+        if field in computed and computed[field] is not None:
+            payload[field] = computed[field]
+
+    # Category override may arrive as categoria_id.
+    categoria_id = computed.get("categoria_id")
+    if categoria_id is not None and not payload.get("categoria"):
+        payload["categoria"] = {"id": categoria_id}
+
+    # Dimensions (largura, altura, profundidade) live inside ``dimensoes`` in Bling V3.
+    if isinstance(computed.get("dimensoes"), dict):
+        payload["dimensoes"] = computed["dimensoes"]
+
+    # Stock settings (minimo, maximo, crossdocking, localizacao) live inside ``estoque``.
+    computed_estoque = computed.get("estoque")
+    if isinstance(computed_estoque, dict):
+        settings = {k: v for k, v in computed_estoque.items() if k in _ESTOQUE_SETTINGS_KEYS and v is not None}
+        if settings:
+            if not isinstance(payload.get("estoque"), dict):
+                payload["estoque"] = {}
+            payload["estoque"].update(settings)
+
+
+# Bling V3 field names that can be written in PUT/POST requests.
+# Note: ncm/cest are inside ``tributacao``, largura/altura/profundidade are inside
+# ``dimensoes``. ``estoque`` (minimo/maximo/crossdocking) is NOT copied from existing product
+# to avoid sending the computed ``saldo`` field; it is always applied from the template
+# via _apply_template_fields.
 _WRITABLE_PRODUCT_FIELDS = {
     "nome", "codigo", "tipo", "formato", "situacao", "preco", "precoCusto",
-    "descricaoCurta", "descricaoComplementar", "ncm", "cest",
-    "peso", "largura", "altura", "comprimento",
-    "categoria", "marca", "tributacao", "estoqueMinimo", "estoqueMaximo",
-    "unidadeMedida", "linkExterno", "observacoes",
+    "descricaoCurta", "descricaoComplementar",
+    "peso", "pesoLiquido", "pesoBruto",
+    "categoria", "marca", "tributacao",
+    "unidade", "unidadeMedida", "dimensoes", "condicao", "linkExterno", "observacoes",
+    "tipoProducao", "freteGratis", "volumes", "itensPorCaixa", "gtin", "gtinEmbalagem",
+}
+
+_WRITABLE_VARIATION_FIELDS = {
+    "id",
+    "codigo", "nome", "tipo", "formato", "situacao", "preco", "precoCusto",
+    "descricaoCurta", "descricaoComplementar",
+    "peso", "pesoLiquido", "pesoBruto",
+    "categoria", "marca", "tributacao", "unidade", "unidadeMedida", "dimensoes", "condicao",
+    "variacao", "estrutura", "utilizarDadosDoPai", "observacoes",
+    "tipoProducao", "freteGratis", "volumes", "itensPorCaixa", "gtin", "gtinEmbalagem",
 }
 
 
@@ -188,6 +283,9 @@ def _prepare_parent_payload(item: Dict[str, Any], existing_product: Dict[str, An
     Uses a strict whitelist of writable fields taken from existing_product
     so that read-only Bling fields (saldo, imagens, depositos, etc.) are
     never sent in PUT requests, which causes 400 errors.
+    
+    Applies all template fields (marca, condição, tipo, unidade, peso, altura, largura, etc.)
+    ensuring data integrity from base template.
     """
     computed = item.get("computed_payload_preview") or {}
 
@@ -206,19 +304,11 @@ def _prepare_parent_payload(item: Dict[str, Any], existing_product: Dict[str, An
     payload["formato"] = "V"
     payload["situacao"] = "A"
 
-    # Apply computed-preview values (these are the desired new values)
-    if "nome" in computed:
-        payload["nome"] = computed["nome"]
-    if "descricaoCurta" in computed:
-        payload["descricaoCurta"] = computed.get("descricaoCurta", "")
-    if "descricaoComplementar" in computed:
-        payload["descricaoComplementar"] = computed.get("descricaoComplementar", "")
-    if "preco" in computed:
-        payload["preco"] = computed.get("preco", 0)
-    if "ncm" in computed:
-        payload["ncm"] = computed.get("ncm")
-    if "cest" in computed:
-        payload["cest"] = computed.get("cest")
+    # Apply template/computed values preserving Bling field names.
+    _apply_template_fields(payload, computed)
+
+    # Ensure fiscal fields are properly set
+    _apply_fiscal_fields(payload, computed)
 
     return payload
 
@@ -229,7 +319,11 @@ def _build_variation_item(
     formato: str = "S",
     variacao: Dict[str, Any] = None
 ) -> Dict[str, Any]:
-    """Build a variation/simple product item."""
+    """Build a variation/simple product item.
+    
+    Applies all template fields to ensure variation inherits attributes from base template
+    (marca, condição, tipo, unidade, peso, altura, largura, etc.)
+    """
     item = {
         "codigo": sku,
         "nome": computed.get("nome", sku),
@@ -238,13 +332,101 @@ def _build_variation_item(
         "formato": formato,
         "situacao": "A",
     }
-    
-    if variacao:
-        item["variacao"] = variacao
+
+    _apply_template_fields(item, computed)
+
+    raw_variacao = variacao if isinstance(variacao, dict) else {}
+    fallback_variacao = computed.get("variacao") if isinstance(computed.get("variacao"), dict) else {}
+    variacao_nome = str(
+        raw_variacao.get("nome")
+        or fallback_variacao.get("nome")
+        or f"SKU: {sku}"
+    ).strip()
+    variacao_ordem = raw_variacao.get("ordem")
+    if variacao_ordem is None:
+        variacao_ordem = fallback_variacao.get("ordem", 0)
+
+    item["variacao"] = {
+        "nome": variacao_nome,
+        "ordem": variacao_ordem,
+    }
 
     _apply_fiscal_fields(item, computed)
-    
+
     return item
+
+
+def _sanitize_variation_for_put(variation: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep only writable variation fields before sending PUT/POST to Bling."""
+    cleaned = {
+        k: v for k, v in (variation or {}).items()
+        if k in _WRITABLE_VARIATION_FIELDS
+    }
+
+    # Preserve variation id when available so parent PUT updates existing
+    # variations instead of attempting duplicate creations by code/name.
+    raw_id = cleaned.get("id")
+    if raw_id is not None:
+        try:
+            cleaned["id"] = int(raw_id)
+        except (TypeError, ValueError):
+            cleaned.pop("id", None)
+
+    sku = str(cleaned.get("codigo") or _variation_code(variation) or "").strip()
+    raw_variacao = cleaned.get("variacao")
+    raw_nome = ""
+    raw_ordem = 0
+    if isinstance(raw_variacao, dict):
+        raw_nome = str(raw_variacao.get("nome") or "").strip()
+        raw_ordem = raw_variacao.get("ordem", 0)
+    elif isinstance(raw_variacao, str):
+        raw_nome = raw_variacao.strip()
+
+    cleaned["variacao"] = {
+        "nome": raw_nome or (f"SKU: {sku}" if sku else "Variação"),
+        "ordem": raw_ordem,
+    }
+
+    formato = str(cleaned.get("formato") or "S").strip().upper()
+    cleaned["formato"] = formato
+
+    if formato == "E":
+        estrutura = cleaned.get("estrutura") if isinstance(cleaned.get("estrutura"), dict) else {}
+        componentes = estrutura.get("componentes") if isinstance(estrutura, dict) else []
+        safe_componentes = []
+        for componente in componentes or []:
+            if not isinstance(componente, dict):
+                continue
+            produto = componente.get("produto") if isinstance(componente.get("produto"), dict) else {}
+            produto_id = produto.get("id")
+            quantidade = componente.get("quantidade", 1)
+            if not produto_id:
+                continue
+            safe_componentes.append({
+                "produto": {"id": produto_id},
+                "quantidade": quantidade,
+            })
+
+        if safe_componentes:
+            cleaned["estrutura"] = {
+                "componentes": safe_componentes,
+                "tipoEstoque": (estrutura.get("tipoEstoque") or "V"),
+                "lancamentoEstoque": (estrutura.get("lancamentoEstoque") or "A"),
+            }
+        else:
+            cleaned.pop("estrutura", None)
+    else:
+        cleaned.pop("estrutura", None)
+
+    return cleaned
+
+
+def _log_variation_payload_shape(tag: str, sku: str, variations: List[Dict[str, Any]]) -> None:
+    """Log only payload shape (keys/counts) to troubleshoot 400 without leaking content."""
+    sample_keys = sorted({k for v in (variations or []) for k in (v.keys() if isinstance(v, dict) else [])})
+    logger.info(
+        f"[{tag}] sku={sku} variacoes={len(variations or [])} keys={sample_keys}"
+    )
 
 
 def _build_variation_with_composition(
@@ -332,6 +514,56 @@ def _variation_ids_by_code(variations: List[Dict[str, Any]]) -> Dict[str, int]:
     return result
 
 
+def _orphan_composition_codes(variations: List[Dict[str, Any]]) -> Set[str]:
+    """Collect variation codes that are composition-like but missing components."""
+    orphan_codes: Set[str] = set()
+    for variation in variations or []:
+        code = _variation_code(variation)
+        if not code:
+            continue
+        formato = str(variation.get("formato") or "").strip().upper()
+        estrutura = variation.get("estrutura") if isinstance(variation.get("estrutura"), dict) else None
+        componentes = estrutura.get("componentes") if isinstance(estrutura, dict) else []
+        if formato == "E" and not componentes:
+            orphan_codes.add(code)
+    return orphan_codes
+
+
+def _reconcile_orphan_diagnostics(
+    existing_orphan_codes: Set[str],
+    merged_variations: List[Dict[str, Any]],
+    diagnostics: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Reconcile orphan diagnostics against the pre-merge state.
+
+    Some orphans are fixed during merge itself, before the diagnostics helper can
+    observe the missing structure. This reconciliation step preserves the fact
+    that those variations were orphaned in the original Bling payload.
+    """
+    if not existing_orphan_codes:
+        diagnostics["had_orphan_composition_issue"] = diagnostics.get("had_orphan_composition_issue", False)
+        return diagnostics
+
+    merged_with_structure: Set[str] = set()
+    for variation in merged_variations:
+        code = _variation_code(variation)
+        estrutura = variation.get("estrutura") if isinstance(variation.get("estrutura"), dict) else None
+        componentes = estrutura.get("componentes") if isinstance(estrutura, dict) else []
+        if code and componentes:
+            merged_with_structure.add(code)
+
+    repaired = set(diagnostics.get("repaired_orphan_compositions") or [])
+    dropped = set(diagnostics.get("dropped_orphan_compositions") or [])
+
+    repaired.update(existing_orphan_codes & merged_with_structure)
+    dropped.update(existing_orphan_codes - merged_with_structure)
+
+    diagnostics["repaired_orphan_compositions"] = sorted(repaired)
+    diagnostics["dropped_orphan_compositions"] = sorted(dropped)
+    diagnostics["had_orphan_composition_issue"] = bool(repaired or dropped)
+    return diagnostics
+
+
 def _normalize_skus(values: Optional[List[str]]) -> Set[str]:
     """Normalize SKU values to uppercase set without empty entries."""
     normalized: Set[str] = set()
@@ -388,7 +620,13 @@ def _dedupe_variations_by_code(variations: List[Dict[str, Any]]) -> List[Dict[st
 
         # New variation payload is the source of truth for mutable business fields.
         # This allows switching stock mode (physical <-> virtual) on updates.
-        for field in ["variacao", "formato", "nome", "preco", "ncm", "cest", "utilizarDadosDoPai"]:
+        # Note: ncm/cest are inside tributacao (Bling V3), not top-level.
+        for field in [
+            "variacao", "formato", "nome", "preco", "utilizarDadosDoPai",
+            "descricaoCurta", "descricaoComplementar", "marca", "condicao", "categoria",
+            "tributacao", "unidade", "unidadeMedida", "dimensoes", "peso", "pesoLiquido", "pesoBruto",
+            "largura", "altura", "comprimento", "linkExterno", "observacoes",
+        ]:
             if field in variation:
                 kept[field] = variation[field]
 
@@ -433,31 +671,13 @@ def _merge_variations(
             new_var = new_map[existing_code]
             # Start with complete copy of existing variation (preserves all metadata)
             updated = existing_var.copy()
-            
-            # Only update these specific fields if provided in new_var
-            if "estrutura" in new_var:
-                updated["estrutura"] = new_var["estrutura"]
-            if "formato" in new_var:
-                updated["formato"] = new_var["formato"]
-            if "nome" in new_var:
-                updated["nome"] = new_var["nome"]
-            if "preco" in new_var:
-                updated["preco"] = new_var["preco"]
-            if "variacao" in new_var:
-                updated["variacao"] = new_var["variacao"]
-            if "ncm" in new_var:
-                updated["ncm"] = new_var["ncm"]
-            if "cest" in new_var:
-                updated["cest"] = new_var["cest"]
-            
-            # Explicitly ensure image fields are preserved
-            image_fields = ["imagens", "imageUrl", "foto", "fotos", "imagemUrl", "imagemUrls",
-                           "imagemPrincipal", "links", "urlImagem", "urlFoto"]
-            for image_field in image_fields:
-                if image_field in existing_var and image_field not in new_var:
-                    # Keep existing image field if not overridden in new_var
-                    updated[image_field] = existing_var[image_field]
-            
+
+            # Overlay ALL writable fields from the computed/template payload.
+            # Skip "id" to preserve the existing Bling variation id.
+            for upd_field in _WRITABLE_VARIATION_FIELDS - {"id"}:
+                if upd_field in new_var and new_var[upd_field] is not None:
+                    updated[upd_field] = new_var[upd_field]
+
             merged.append(updated)
             del new_map[existing_code]
         else:
@@ -465,9 +685,16 @@ def _merge_variations(
             if not sync_selected_only:
                 merged.append(existing_var)
     
-    # Add new variations
-    merged.extend(new_map.values())
-    return _dedupe_variations_by_code(merged)
+    # Add new variations (truly new - not found in existing)
+    for new_var in new_map.values():
+        if not isinstance(new_var.get("tributacao"), dict):
+            new_var["tributacao"] = {}
+        if not new_var["tributacao"].get("spedTipoItem"):
+            new_var["tributacao"]["spedTipoItem"] = "04"
+        merged.append(new_var)
+
+    cleaned = [_sanitize_variation_for_put(v) for v in merged]
+    return _dedupe_variations_by_code(cleaned)
 
 
 def _merge_variations_by_name(
@@ -493,21 +720,13 @@ def _merge_variations_by_name(
         if var_name and var_name in new_name_map:
             new_var = new_name_map.pop(var_name)
             updated = existing_var.copy()  # preserves id, images, etc.
-            updated["codigo"] = new_var["codigo"]  # update SKU to new value
-            if "estrutura" in new_var:
-                updated["estrutura"] = new_var["estrutura"]
-            if "formato" in new_var:
-                updated["formato"] = new_var["formato"]
-            if "nome" in new_var:
-                updated["nome"] = new_var["nome"]
-            if "preco" in new_var:
-                updated["preco"] = new_var["preco"]
-            if "variacao" in new_var:
-                updated["variacao"] = new_var["variacao"]
-            if "ncm" in new_var:
-                updated["ncm"] = new_var["ncm"]
-            if "cest" in new_var:
-                updated["cest"] = new_var["cest"]
+
+            # Overlay ALL writable fields from the computed/template payload.
+            # Skip "id" to preserve the existing Bling variation id.
+            for upd_field in _WRITABLE_VARIATION_FIELDS - {"id"}:
+                if upd_field in new_var and new_var[upd_field] is not None:
+                    updated[upd_field] = new_var[upd_field]
+
             merged.append(updated)
         else:
             # Fallback match by code for cases where variacao.nome is missing.
@@ -517,15 +736,24 @@ def _merge_variations_by_name(
             )
             if matched_by_code:
                 updated = existing_var.copy()
-                for field in ["codigo", "estrutura", "formato", "nome", "preco", "variacao", "ncm", "cest"]:
-                    if field in matched_by_code:
-                        updated[field] = matched_by_code[field]
+                # Overlay ALL writable fields from the computed/template payload.
+                # Skip "id" to preserve the existing Bling variation id.
+                for upd_field in _WRITABLE_VARIATION_FIELDS - {"id"}:
+                    if upd_field in matched_by_code and matched_by_code[upd_field] is not None:
+                        updated[upd_field] = matched_by_code[upd_field]
                 merged.append(updated)
             elif not sync_selected_only:
                 merged.append(existing_var)
     # Append truly new variations (no name match found)
-    merged.extend(new_name_map.values())
-    return _dedupe_variations_by_code(merged)
+    for new_var in new_name_map.values():
+        if not isinstance(new_var.get("tributacao"), dict):
+            new_var["tributacao"] = {}
+        if not new_var["tributacao"].get("spedTipoItem"):
+            new_var["tributacao"]["spedTipoItem"] = "04"
+        merged.append(new_var)
+    
+    cleaned = [_sanitize_variation_for_put(v) for v in merged]
+    return _dedupe_variations_by_code(cleaned)
 
 
 def _fill_missing_variation_structure(
@@ -588,11 +816,72 @@ def _fill_missing_variation_structure(
     return clean
 
 
+def _fill_missing_variation_structure_with_diagnostics(
+    merged_variations: List[Dict[str, Any]],
+    new_variations: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Backfill composition structure and return structured diagnostics.
+
+    The update flow needs to distinguish between orphan composition variations
+    that were automatically rebuilt from the desired payload and those that had
+    to be dropped because no valid structure could be recovered.
+    """
+    structure_by_name: Dict[str, Dict[str, Any]] = {}
+    for new_var in new_variations:
+        var_name = (new_var.get("variacao") or {}).get("nome", "")
+        estrutura = new_var.get("estrutura")
+        if var_name and isinstance(estrutura, dict):
+            componentes = estrutura.get("componentes") or []
+            if componentes:
+                structure_by_name[var_name] = estrutura
+
+    rebuilt_variations: List[str] = []
+    clean: List[Dict[str, Any]] = []
+    dropped_orphan_variations: List[str] = []
+    new_codes = {_variation_code(v) for v in new_variations}
+
+    for variation in merged_variations:
+        var_name = (variation.get("variacao") or {}).get("nome", "")
+        current_estrutura = variation.get("estrutura")
+        current_componentes = current_estrutura.get("componentes") if isinstance(current_estrutura, dict) else []
+
+        target_estrutura = structure_by_name.get(var_name)
+        if target_estrutura and not current_componentes:
+            variation["estrutura"] = target_estrutura
+            current_estrutura = variation.get("estrutura")
+            current_componentes = current_estrutura.get("componentes") if isinstance(current_estrutura, dict) else []
+            rebuilt_code = _variation_code(variation)
+            if rebuilt_code:
+                rebuilt_variations.append(rebuilt_code)
+
+        componentes = current_estrutura.get("componentes") if isinstance(current_estrutura, dict) else None
+        if isinstance(current_estrutura, dict) and not componentes and _variation_code(variation) not in new_codes:
+            orphan_code = _variation_code(variation)
+            if orphan_code:
+                dropped_orphan_variations.append(orphan_code)
+            logger.warning(
+                f"[MERGE] Dropping orphan composition variation "
+                f"'{orphan_code}' — empty estrutura.componentes"
+            )
+            continue
+
+        clean.append(variation)
+
+    diagnostics = {
+        "repaired_orphan_compositions": sorted(set(rebuilt_variations)),
+        "dropped_orphan_compositions": sorted(set(dropped_orphan_variations)),
+    }
+    diagnostics["had_orphan_composition_issue"] = bool(
+        diagnostics["repaired_orphan_compositions"] or diagnostics["dropped_orphan_compositions"]
+    )
+    return clean, diagnostics
+
+
 def _sanitize_variations_for_retry(
     merged_variations: List[Dict[str, Any]],
     new_variations: List[Dict[str, Any]],
     is_physical: bool,
-) -> List[Dict[str, Any]]:
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Build a safer variations payload for one retry attempt.
 
     Strategy:
@@ -612,15 +901,17 @@ def _sanitize_variations_for_retry(
     }
 
     sanitized: List[Dict[str, Any]] = []
+    skipped_invalid_compositions: List[str] = []
     for current in merged_variations:
-        candidate = current.copy()
+        candidate = _sanitize_variation_for_put(current)
         code = _variation_code(candidate)
         name = (candidate.get("variacao") or {}).get("nome", "")
         desired = desired_by_code.get(code) or desired_by_name.get(name)
 
         if desired:
-            for field in ["codigo", "nome", "preco", "variacao", "ncm", "cest", "formato", "utilizarDadosDoPai"]:
-                if field in desired:
+            # Overlay ALL writable fields from desired payload (skip "id" to preserve existing id)
+            for field in _WRITABLE_VARIATION_FIELDS - {"id"}:
+                if field in desired and desired[field] is not None:
                     candidate[field] = desired[field]
             desired_estrutura = desired.get("estrutura")
             desired_componentes = desired_estrutura.get("componentes") if isinstance(desired_estrutura, dict) else []
@@ -639,6 +930,8 @@ def _sanitize_variations_for_retry(
             componentes = estrutura.get("componentes") if isinstance(estrutura, dict) else []
             if formato == "E" and not componentes:
                 # Still invalid for virtual composition; skip in retry payload.
+                if code:
+                    skipped_invalid_compositions.append(code)
                 continue
 
         sanitized.append(candidate)
@@ -647,9 +940,13 @@ def _sanitize_variations_for_retry(
     existing_codes = {_variation_code(v) for v in sanitized}
     for code, desired in desired_by_code.items():
         if code and code not in existing_codes:
-            sanitized.append(desired.copy())
+            sanitized.append(_sanitize_variation_for_put(desired.copy()))
 
-    return _dedupe_variations_by_code(sanitized)
+    diagnostics = {
+        "retry_skipped_invalid_compositions": sorted(set(skipped_invalid_compositions)),
+        "had_retry_sanitization": bool(skipped_invalid_compositions),
+    }
+    return _dedupe_variations_by_code(sanitized), diagnostics
 
 
 # ====================================
@@ -762,6 +1059,75 @@ def _build_children_map(
         children_map.setdefault(parent_sku, []).append(variation)
     
     return children_map
+
+
+def _build_repair_payload_for_item(
+    item: Dict[str, Any],
+    sku_cache: Dict[str, Optional[Dict[str, Any]]],
+    color_map: Dict[str, str],
+    is_physical: bool,
+) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Build a repair payload for non-parent items.
+
+    For VARIATION_PRINTED in virtual stock, repair must rebuild the composition
+    structure from the plan dependencies. Returning a structured error allows the
+    caller to fail fast with a business-meaningful reason instead of sending an
+    invalid simple payload to Bling.
+    """
+    sku = str(item.get("sku") or "").strip()
+    entity = str(item.get("entity") or "").strip().upper()
+    computed = item.get("computed_payload_preview")
+    if not isinstance(computed, dict):
+        computed = {}
+
+    if entity != "VARIATION_PRINTED":
+        return _build_variation_item(sku, computed), None
+
+    parent_sku, base_sku = extract_dependencies(item)
+
+    if is_physical:
+        if not parent_sku:
+            return None, {
+                "error_type": "missing_parent_dependency",
+                "message": "Variacao impressa sem parent_sku para repair fisico",
+                "entity": entity,
+            }
+        return _build_variation_physical(sku, computed, parent_sku, color_map), None
+
+    if not parent_sku:
+        return None, {
+            "error_type": "missing_parent_dependency",
+            "message": "Variacao impressa sem parent_sku para reconstruir composicao",
+            "entity": entity,
+        }
+
+    if not base_sku:
+        return None, {
+            "error_type": "missing_base_dependency",
+            "message": "Variacao impressa sem base_sku para reconstruir composicao",
+            "entity": entity,
+            "parent_sku": parent_sku,
+        }
+
+    base_product = sku_cache.get(base_sku) if isinstance(sku_cache, dict) else None
+    base_id = base_product.get("id") if isinstance(base_product, dict) else None
+    if not base_id:
+        return None, {
+            "error_type": "missing_base_for_composition",
+            "message": "Base da composicao nao encontrada no Bling para repair",
+            "entity": entity,
+            "parent_sku": parent_sku,
+            "base_sku": base_sku,
+        }
+
+    payload = _build_variation_with_composition(item, int(base_id), parent_sku, color_map)
+    return payload, {
+        "repair_action": "orphan_composition_rebuilt",
+        "entity": entity,
+        "parent_sku": parent_sku,
+        "base_sku": base_sku,
+        "base_id": int(base_id),
+    }
 
 
 def _get_error_message(error: Exception) -> str:
@@ -971,7 +1337,7 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
         sku = item["sku"]
         product_kind = _product_kind_for_entity(item.get("entity"))
         computed = item.get("computed_payload_preview") or {}
-        payload = _prepare_base_payload(sku, computed.get("nome"))
+        payload = _prepare_base_payload(sku, computed.get("nome"), computed)
         payload["formato"] = "V"
         if "preco" in computed:
             payload["preco"] = computed.get("preco", 0)
@@ -985,7 +1351,7 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
                 if var_sku.startswith(sku):
                     computed = var_item.get("computed_payload_preview") or {}
                     var = _build_variation_item(var_sku, computed, formato="S", variacao=computed.get("variacao", {}))
-                    base_variations.append(var)
+                    base_variations.append(_sanitize_variation_for_put(var))
         
         payload["variacoes"] = base_variations
         logger.debug(f"Creating base {sku}")
@@ -1005,7 +1371,8 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
                 "entity": "BASE_PARENT",
                 "action": "CREATE",
                 "id": created_id,
-                "status": "success"
+                "status": "success",
+                "variations_count": len(base_variations),
             })
         else:
             results.append({
@@ -1014,6 +1381,126 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
                 "action": "CREATE",
                 "status": "failed",
                 "error": create_error or "Falha ao criar base no Bling",
+            })
+
+    # ========== STEP 1b: UPDATE BASE_PARENT (plain products already in Bling) ==========
+    for item in items:
+        if item.get("entity") != "BASE_PARENT" or item.get("action") != "UPDATE":
+            continue
+
+        sku = item["sku"]
+        product_kind = _product_kind_for_entity(item.get("entity"))
+
+        # Resolve the existing product ID (plan carries it in existing_product when available)
+        existing_product_data: Dict[str, Any] = item.get("existing_product") or {}
+        existing_id: Optional[int] = existing_product_data.get("id") or get_id_from_cache(sku)
+
+        if not existing_id:
+            existing_id = await fetch_id_by_sku(client, sku)
+
+        if not existing_id:
+            results.append({
+                "sku": sku,
+                "entity": "BASE_PARENT",
+                "action": "UPDATE",
+                "status": "failed",
+                "error": "Produto não encontrado no Bling",
+            })
+            continue
+
+        try:
+            # Fetch full product to preserve read-only metadata (images, etc.)
+            full_resp = await client.get(f"/produtos/{existing_id}")
+            full_data = (full_resp or {}).get("data", {})
+            existing_variations = full_data.get("variacoes", [])
+
+            # Build parent payload reusing the same helper as printed UPDATE,
+            # so ALL template fields from computed_payload_preview are applied.
+            payload = _prepare_parent_payload(item, full_data)
+            payload["formato"] = "V"  # plain parent is always formato V
+
+            # Build desired variation payloads using the same helper as STEP 1 CREATE.
+            # This guarantees identical structure (variacao.nome, ncm, cest, etc.).
+            new_variations: List[Dict[str, Any]] = []
+            for var_item in items:
+                if var_item.get("entity") != "BASE_VARIATION":
+                    continue
+                var_deps = var_item.get("hard_dependencies") or []
+                if not var_deps or var_deps[0] != sku:
+                    continue
+                var_sku = var_item.get("sku", "")
+                var_computed = var_item.get("computed_payload_preview") or {}
+                var_entry = _build_variation_item(
+                    var_sku, var_computed, formato="S",
+                    variacao=var_computed.get("variacao") or {},
+                )
+                # Also carry description fields from computed (template-derived)
+                for desc_field in ["descricaoCurta", "descricaoComplementar"]:
+                    if desc_field in var_computed:
+                        var_entry[desc_field] = var_computed[desc_field]
+                new_variations.append(var_entry)
+
+            # Merge: for existing variations preserve their IDs/images/variacao.nome
+            # and overlay only the mutable computed fields (nome, preco, descriptions).
+            existing_by_code = {
+                _variation_code(v): v for v in existing_variations if _variation_code(v)
+            }
+            merged: List[Dict[str, Any]] = []
+            new_codes = {_variation_code(v) for v in new_variations if _variation_code(v)}
+
+            for new_var in new_variations:
+                code = _variation_code(new_var)
+                if code and code in existing_by_code:
+                    # Start from existing (preserves id, images)
+                    merged_var = existing_by_code[code].copy()
+                    # Overlay ALL writable fields from the computed/template payload
+                    # so that marca, peso, dimensoes, tributacao, unidade, etc. are applied.
+                    # Skip "id" to preserve the existing Bling variation id.
+                    for upd_field in _WRITABLE_VARIATION_FIELDS - {"id"}:
+                        if upd_field in new_var and new_var[upd_field] is not None:
+                            merged_var[upd_field] = new_var[upd_field]
+                    # Remove utilizarDadosDoPai if accidentally set
+                    merged_var.pop("utilizarDadosDoPai", None)
+                    merged.append(merged_var)
+                else:
+                    # Brand-new variation not yet in Bling
+                    merged.append(new_var)
+
+            # Preserve existing variations outside the selected set
+            for existing_var in existing_variations:
+                code = _variation_code(existing_var)
+                if code and code not in new_codes:
+                    merged.append(existing_var)
+
+            payload["variacoes"] = [
+                _sanitize_variation_for_put(v)
+                for v in _dedupe_variations_by_code(merged)
+            ]
+
+            logger.info(f"[UPDATE BASE_PARENT] {sku} (id={existing_id}), {len(payload['variacoes'])} variation(s)")
+            _log_variation_payload_shape("UPDATE_BASE_PARENT", sku, payload.get("variacoes") or [])
+            await client.put(f"/produtos/{existing_id}", payload)
+            base_ids[sku] = existing_id
+            await _sync_snapshot_with_kind(
+                client, db, existing_id, product_kind, force_direct=force_direct_product_sync
+            )
+            results.append({
+                "sku": sku,
+                "entity": "BASE_PARENT",
+                "action": "UPDATE",
+                "id": existing_id,
+                "status": "success",
+                "variations_count": len(payload["variacoes"]),
+            })
+        except Exception as e:
+            logger.error(f"[UPDATE BASE_PARENT] Error updating {sku}: {e}", exc_info=True)
+            results.append({
+                "sku": sku,
+                "entity": "BASE_PARENT",
+                "action": "UPDATE",
+                "status": "failed",
+                "error": _get_error_message(e),
+                "target_id": existing_id,
             })
 
     # ========== STEP 2: CREATE PRODUTO (printed parent with variations) ==========
@@ -1025,7 +1512,10 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
         planned_deletions = item.get("planned_deletions") or []
         product_kind = _product_kind_for_entity(item.get("entity"))
         payload = _prepare_parent_payload(item)
-        payload["variacoes"] = children_map.get(sku, [])
+        payload["variacoes"] = [
+            _sanitize_variation_for_put(v)
+            for v in (children_map.get(sku, []) or [])
+        ]
         
         logger.debug(f"Creating produto {sku}")
         
@@ -1084,6 +1574,7 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
                         existing_parent = await client.get(f"/produtos/{candidate_parent_id}")
                         existing_parent_data = existing_parent.get("data", {})
                         existing_variations = existing_parent_data.get("variacoes", [])
+                        existing_orphan_codes = _orphan_composition_codes(existing_variations)
                         existing_codes = _variation_codes_set(existing_variations)
                         selected_codes = _variation_codes_set(payload.get("variacoes", []))
 
@@ -1092,9 +1583,14 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
                             payload.get("variacoes", []),
                             sync_selected_only=True,
                         )
-                        merged_variations = _fill_missing_variation_structure(
+                        merged_variations, merge_diagnostics = _fill_missing_variation_structure_with_diagnostics(
                             merged_variations,
                             payload.get("variacoes", []),
+                        )
+                        merge_diagnostics = _reconcile_orphan_diagnostics(
+                            existing_orphan_codes,
+                            merged_variations,
+                            merge_diagnostics,
                         )
                         merged_codes = _variation_codes_set(merged_variations)
                         removed_codes = sorted(existing_codes - merged_codes)
@@ -1147,7 +1643,10 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
                             )
 
                         retry_payload = _prepare_parent_payload(item, existing_parent_data)
-                        retry_payload["variacoes"] = merged_variations
+                        retry_payload["variacoes"] = [
+                            _sanitize_variation_for_put(v)
+                            for v in merged_variations
+                        ]
 
                         await client.put(f"/produtos/{candidate_parent_id}", retry_payload)
                         await _sync_snapshot_with_kind(
@@ -1174,6 +1673,8 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
                             "planned_deletions": deletion_alignment["planned_deletions"],
                             "unexpected_removed_variations": deletion_alignment["unexpected_removed"],
                             "missing_planned_deletions": deletion_alignment["missing_planned"],
+                            "repaired_orphan_compositions": merge_diagnostics.get("repaired_orphan_compositions", []),
+                            "dropped_orphan_compositions": merge_diagnostics.get("dropped_orphan_compositions", []),
                             "recovery_mode": "create_conflict_updated_existing_parent",
                         })
                         recovered = True
@@ -1278,9 +1779,15 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
         
         try:
             existing_variations = existing_product_data.get("variacoes", [])
+            existing_orphan_codes = _orphan_composition_codes(existing_variations)
             new_variations = children_map.get(sku, [])
             existing_codes = _variation_codes_set(existing_variations)
             selected_codes = _variation_codes_set(new_variations)
+            orphan_diagnostics: Dict[str, Any] = {
+                "repaired_orphan_compositions": [],
+                "dropped_orphan_compositions": [],
+                "retry_skipped_invalid_compositions": [],
+            }
             
             # Merge variations (by name when editing by ID to handle SKU renames)
             if force_update_id:
@@ -1295,7 +1802,16 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
                     new_variations,
                     sync_selected_only=True,
                 )
-            merged_variations = _fill_missing_variation_structure(merged_variations, new_variations)
+            merged_variations, merge_diagnostics = _fill_missing_variation_structure_with_diagnostics(
+                merged_variations,
+                new_variations,
+            )
+            merge_diagnostics = _reconcile_orphan_diagnostics(
+                existing_orphan_codes,
+                merged_variations,
+                merge_diagnostics,
+            )
+            orphan_diagnostics.update(merge_diagnostics)
             merged_codes = _variation_codes_set(merged_variations)
             removed_codes = sorted(existing_codes - merged_codes)
             deletion_alignment = _deletion_alignment(removed_codes, planned_deletions)
@@ -1395,19 +1911,43 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
                             f"composição inválida. Tentando atualizar com payload saneado."
                         ),
                     }
+            if orphan_diagnostics.get("had_orphan_composition_issue"):
+                orphan_warning = orphan_warning or {
+                    "error_type": "orphan_composition_variations",
+                    "bling_product_id": existing_id,
+                }
+                orphan_warning.update({
+                    "repaired_orphan_compositions": orphan_diagnostics.get("repaired_orphan_compositions", []),
+                    "dropped_orphan_compositions": orphan_diagnostics.get("dropped_orphan_compositions", []),
+                })
+                if orphan_diagnostics.get("repaired_orphan_compositions"):
+                    orphan_warning["repair_action"] = "orphan_composition_rebuilt"
 
             # Pass existing product to preserve images/links
             payload = _prepare_parent_payload(item, existing_product_data)
-            payload["variacoes"] = merged_variations
+            payload["variacoes"] = [
+                _sanitize_variation_for_put(v)
+                for v in merged_variations
+            ]
+            _log_variation_payload_shape("UPDATE_PARENT_PRINTED", sku, payload.get("variacoes") or [])
             try:
                 resp = await client.put(f"/produtos/{existing_id}", payload)
             except Exception as first_put_error:
                 # One automatic retry with sanitized variations before surfacing error.
-                retry_variations = _sanitize_variations_for_retry(
+                retry_variations, retry_diagnostics = _sanitize_variations_for_retry(
                     merged_variations=merged_variations,
                     new_variations=new_variations,
                     is_physical=is_physical,
                 )
+                orphan_diagnostics.update(retry_diagnostics)
+                if retry_diagnostics.get("retry_skipped_invalid_compositions"):
+                    orphan_warning = orphan_warning or {
+                        "error_type": "orphan_composition_variations",
+                        "bling_product_id": existing_id,
+                    }
+                    orphan_warning["retry_skipped_invalid_compositions"] = retry_diagnostics.get(
+                        "retry_skipped_invalid_compositions", []
+                    )
 
                 if retry_variations and retry_variations != merged_variations:
                     logger.warning(
@@ -1445,6 +1985,9 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
                     "planned_deletions": deletion_alignment["planned_deletions"],
                     "unexpected_removed_variations": deletion_alignment["unexpected_removed"],
                     "missing_planned_deletions": deletion_alignment["missing_planned"],
+                    "repaired_orphan_compositions": orphan_diagnostics.get("repaired_orphan_compositions", []),
+                    "dropped_orphan_compositions": orphan_diagnostics.get("dropped_orphan_compositions", []),
+                    "retry_skipped_invalid_compositions": orphan_diagnostics.get("retry_skipped_invalid_compositions", []),
                 }
                 if orphan_warning:
                     result_item.update(orphan_warning)
@@ -1457,6 +2000,9 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
                     "status": "failed",
                     "target_id": existing_id,
                     "error": "Falha ao atualizar produto no Bling",
+                    "repaired_orphan_compositions": orphan_diagnostics.get("repaired_orphan_compositions", []),
+                    "dropped_orphan_compositions": orphan_diagnostics.get("dropped_orphan_compositions", []),
+                    "retry_skipped_invalid_compositions": orphan_diagnostics.get("retry_skipped_invalid_compositions", []),
                 }
                 if orphan_warning:
                     result_item.update(orphan_warning)
@@ -1470,6 +2016,9 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
                 "status": "failed",
                 "error": _get_error_message(e),
                 "target_id": existing_id,
+                "repaired_orphan_compositions": orphan_diagnostics.get("repaired_orphan_compositions", []) if 'orphan_diagnostics' in locals() else [],
+                "dropped_orphan_compositions": orphan_diagnostics.get("dropped_orphan_compositions", []) if 'orphan_diagnostics' in locals() else [],
+                "retry_skipped_invalid_compositions": orphan_diagnostics.get("retry_skipped_invalid_compositions", []) if 'orphan_diagnostics' in locals() else [],
             }
             # Keep context if orphan cleanup was attempted in this run.
             if 'orphan_warning' in locals() and orphan_warning:
@@ -1478,10 +2027,66 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
 
     # No STEP 4 needed - all variations handled in STEP 2/3
 
+    # ========== STEP 5: Register NOOP items (no action needed) ==========
+    # Add result entries for items that were skipped because they were already
+    # up-to-date, so the frontend can show the complete picture.
+    processed_skus = {r["sku"] for r in results}
+    for item in items:
+        sku = item.get("sku")
+        if not sku or sku in processed_skus:
+            continue
+        action = item.get("action", "")
+        entity = item.get("entity", "")
+        if action == "NOOP":
+            results.append({
+                "sku": sku,
+                "entity": entity,
+                "action": "NOOP",
+                "status": "noop",
+                "message": item.get("message", "Sem alteração necessária"),
+            })
+        elif action == "UPDATE" and entity == "BASE_VARIATION":
+            # BASE_VARIATION UPDATE items are patched inline as part of their parent's PUT.
+            # Register them as success so the count reflects all touched items.
+            results.append({
+                "sku": sku,
+                "entity": entity,
+                "action": "UPDATE",
+                "status": "success",
+                "message": "Atualizado como parte do produto pai",
+            })
+
     await client.client.aclose()
     
     # Summary
-    success = [r for r in results if r.get("status") == "success"]
+    success = [r for r in results if r.get("status") in ("success", "noop")]
+    created_success_items = [
+        r for r in results
+        if r.get("status") == "success" and r.get("action") == "CREATE"
+    ]
+    created_variations = sum(int(r.get("variations_count") or 0) for r in created_success_items)
+    created_items_total = len(created_success_items) + created_variations
+
+    updated_items = [
+        r for r in results
+        if r.get("status") == "success" and r.get("action") == "UPDATE"
+    ]
+    noop_items = [r for r in results if r.get("status") == "noop"]
+    repaired_orphan_compositions = sorted({
+        code
+        for r in results
+        for code in (r.get("repaired_orphan_compositions") or [])
+    })
+    dropped_orphan_compositions = sorted({
+        code
+        for r in results
+        for code in (r.get("dropped_orphan_compositions") or [])
+    })
+    retry_skipped_invalid_compositions = sorted({
+        code
+        for r in results
+        for code in (r.get("retry_skipped_invalid_compositions") or [])
+    })
     return {
         "status": "completed",
         "total_items": len(items),
@@ -1489,8 +2094,17 @@ async def execute_plan_direct(plan: Dict[str, Any], db: Session = Depends(get_db
         "summary": {
             "total": len(results),
             "success": len(success),
+            "created_products": len(created_success_items),
+            "created_variations": created_variations,
+            "created_items": created_items_total,
+            "updated_items": len(updated_items),
+            "noop_items": len(noop_items),
             "failed": len([r for r in results if r.get("status") == "failed"]),
+            "repaired_orphan_compositions": repaired_orphan_compositions,
+            "dropped_orphan_compositions": dropped_orphan_compositions,
+            "retry_skipped_invalid_compositions": retry_skipped_invalid_compositions,
         }
+    }
 
 
 @router.get("/execute/status/{task_id}")
@@ -1521,7 +2135,6 @@ async def get_execute_plan_status(task_id: str):
         "task_id": task_id,
         "state": state,
     }
-    }
 
 
 @router.post("/{plan_id}/execute")
@@ -1535,171 +2148,303 @@ async def execute_plan(plan_id: str, db: Session = Depends(get_db)):
 
 @router.post("/recreate-failed-updates")
 async def recreate_failed_updates(payload: Dict[str, Any], db: Session = Depends(get_db)):
-    """Delete and recreate products that failed in UPDATE step (only when explicitly requested)."""
-    client = await _get_bling_client(db)
-    if not client:
-        raise HTTPException(status_code=401, detail="Bling token not configured")
-
-    plan = payload.get("plan") or {}
-    failed_update_skus = set(payload.get("failed_update_skus") or [])
-
-    if not failed_update_skus:
-        raise HTTPException(status_code=400, detail="Nenhum SKU de falha informado para recriação")
-
-    items = plan.get("items", [])
-    if not items:
-        raise HTTPException(status_code=400, detail="Plano inválido: sem itens")
-
-    stock_type = (plan.get("options") or {}).get("stock_type", "virtual")
-    is_physical = stock_type == "physical"
-
-    all_skus = _collect_all_skus(items)
-    from app.api.plans import _check_bling_products_bulk
-    sku_cache = await _check_bling_products_bulk(client, list(all_skus))
-
-    color_map = _build_color_map(plan, db)
-    if is_physical:
-        children_map = _build_children_map_physical(items, color_map)
-    else:
-        children_map = _build_children_map(items, sku_cache, color_map)
-
-    def get_id_from_cache(sku: str) -> Optional[int]:
-        product = sku_cache.get(sku)
-        return product.get("id") if product else None
-
-    candidates = [
-        item for item in items
-        if item.get("entity") == "PARENT_PRINTED"
-        and item.get("action") == "UPDATE"
-        and item.get("sku") in failed_update_skus
-    ]
-
-    if not candidates:
-        await client.client.aclose()
-        return {
-            "results": [],
-            "summary": {
-                "requested": len(failed_update_skus),
-                "processed": 0,
-                "recreated": 0,
-                "failed": 0,
-            }
-        }
-
+    """Repair products that failed in UPDATE step by updating in-place (idempotent).
+    
+    New strategy: Update existing products in-place without deletion. Only deletes as last resort.
+    Returns repaired_in_place status for successful repairs.
+    """
     results = []
-
+    processed_target_ids = set()
+    
     try:
-        for item in candidates:
+        client = await _get_bling_client(db)
+        if not client:
+            raise HTTPException(status_code=401, detail="Bling token not configured")
+
+        plan = payload.get("plan") or {}
+        failed_update_skus = set(payload.get("failed_update_skus") or [])
+
+        if not failed_update_skus:
+            raise HTTPException(status_code=400, detail="Nenhum SKU de falha informado para reparo")
+
+        items = plan.get("items", [])
+        if not items:
+            raise HTTPException(status_code=400, detail="Plano inválido: sem itens")
+
+        candidates = [
+            item for item in items
+            if item.get("action") == "UPDATE"
+            and item.get("sku") in failed_update_skus
+        ]
+
+        if not candidates:
+            await client.client.aclose()
+            return {
+                "results": [],
+                "summary": {
+                    "requested": len(failed_update_skus),
+                    "processed": 0,
+                    "repaired": 0,
+                    "failed": 0,
+                }
+            }
+
+        # Build children map for parent products (variations)
+        stock_type = (plan.get("options") or {}).get("stock_type", "virtual")
+        is_physical = stock_type == "physical"
+        candidate_parent_skus = {
+            item.get("sku") for item in candidates
+            if item.get("entity") in {"PARENT_PRINTED", "BASE_PARENT"} and item.get("sku")
+        }
+        relevant_items: List[Dict[str, Any]] = []
+        for item in items:
             sku = item.get("sku")
-            target_id = item.get("force_update_id") or get_id_from_cache(sku)
-
-            if not target_id:
-                target_id = await fetch_id_by_sku(client, sku)
-
-            if not target_id:
-                results.append({
-                    "sku": sku,
-                    "status": "failed",
-                    "error": "Produto não encontrado para excluir antes da recriação",
-                })
+            if sku in failed_update_skus:
+                relevant_items.append(item)
                 continue
+            if item.get("entity") == "VARIATION_PRINTED":
+                hard = item.get("hard_dependencies") or []
+                parent_sku = hard[0] if hard else None
+                if parent_sku in candidate_parent_skus:
+                    relevant_items.append(item)
 
-            if target_id in processed_target_ids:
-                results.append({
-                    "sku": sku,
-                    "status": "skipped",
-                    "target_id": target_id,
-                    "reason": "Mesmo produto já processado nesta recriação",
-                })
-                continue
-            processed_target_ids.add(target_id)
+        children_map: Dict[str, List[Dict[str, Any]]] = {}
+        sku_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+        color_map: Dict[str, str] = {}
+        try:
+            all_skus = _collect_all_skus(relevant_items)
+            from app.api.plans import _check_bling_products_bulk
+            sku_cache = await _check_bling_products_bulk(client, list(all_skus))
+            
+            color_map = _build_color_map(plan, db)
+            if is_physical:
+                children_map = _build_children_map_physical(relevant_items, color_map)
+            else:
+                children_map = _build_children_map(relevant_items, sku_cache, color_map)
+        except Exception as prep_error:
+            logger.warning(
+                "[REPAIR] Pre-processing failed; continuing without full children map: %s",
+                _get_error_message(prep_error),
+            )
+            children_map = {}
 
-            create_payload = _prepare_parent_payload(item)
-            create_payload["variacoes"] = children_map.get(sku, [])
-
-            deleted = False
-            delete_error_message = None
-
+        # Process each failed SKU with repair-first strategy
+        for item in candidates:
             try:
-                await client.delete(f"/produtos/{target_id}")
-                deleted = True
-            except Exception as e:
-                delete_error_message = _get_error_message(e)
-                logger.warning(
-                    f"[RECREATE] Delete blocked for {sku} (id={target_id}): {delete_error_message}. "
-                    f"Trying in-place rebuild as fallback."
-                )
+                sku = item.get("sku")
+                entity = item.get("entity", "UNKNOWN")
+                target_id = item.get("force_update_id")
+                
+                logger.info(f"[REPAIR] Processing failed UPDATE for sku={sku}, entity={entity}, target_id={target_id}")
 
-            if not deleted:
-                # Fallback when Bling blocks delete (e.g. product not in excluded state):
-                # try to rebuild in-place using PUT on the same product id.
-                try:
-                    existing_product = await client.get(f"/produtos/{target_id}")
-                    existing_product_data = existing_product.get("data", {})
+                # Resolve target_id if not provided
+                if not target_id:
+                    try:
+                        target_id = await fetch_id_by_sku(client, sku)
+                    except Exception as lookup_error:
+                        logger.warning(f"[REPAIR] Could not lookup {sku}: {_get_error_message(lookup_error)}")
+                        target_id = None
 
-                    in_place_payload = _prepare_parent_payload(item, existing_product_data)
-                    # In-place recovery must keep the current code to avoid duplicate-SKU
-                    # validation when another product already uses item.sku.
-                    in_place_payload["codigo"] = existing_product_data.get("codigo") or item.get("sku")
-                    in_place_payload["variacoes"] = create_payload.get("variacoes", [])
-
-                    await client.put(f"/produtos/{target_id}", in_place_payload)
-                    results.append({
-                        "sku": sku,
-                        "status": "recreated",
-                        "old_id": target_id,
-                        "new_id": target_id,
-                        "recovery_mode": "in_place_update",
-                        "warning": (
-                            "Exclusão bloqueada no Bling; produto foi reconstruído no mesmo ID "
-                            "com atualização direta."
-                        ),
-                        "delete_error": delete_error_message,
-                    })
-                    continue
-                except Exception as in_place_error:
+                if not target_id:
                     results.append({
                         "sku": sku,
                         "status": "failed",
-                        "error": (
-                            f"Falha ao excluir produto {target_id}: {delete_error_message}. "
-                            f"Fallback de reconstrução no mesmo ID também falhou: "
-                            f"{_get_error_message(in_place_error)}"
-                        ),
-                        "old_id": target_id,
+                        "error": "Produto não encontrado no Bling",
                     })
                     continue
 
-            created_id = await create_product(client, create_payload)
-            if created_id:
+                # Skip if already processed in this batch (idempotency)
+                if target_id in processed_target_ids:
+                    results.append({
+                        "sku": sku,
+                        "status": "skipped",
+                        "target_id": target_id,
+                        "reason": "Mesmo produto já processado nesta operação",
+                    })
+                    continue
+                processed_target_ids.add(target_id)
+
+                # PRIMARY STRATEGY: Repair in-place via PUT
+                try:
+                    logger.info(f"[REPAIR] Fetching existing product {sku} (id={target_id})")
+                    existing_resp = await client.get(f"/produtos/{target_id}")
+                    existing_product_data = existing_resp.get("data", {})
+                    
+                    if not isinstance(existing_product_data, dict):
+                        raise ValueError(f"Invalid product data structure from Bling for id={target_id}")
+                    
+                    # Build repair payload based on entity type
+                    if entity in ["PARENT_PRINTED", "BASE_PARENT"]:
+                        # Parent product with variations
+                        repair_payload = _prepare_parent_payload(item, existing_product_data)
+                        repair_payload["variacoes"] = [
+                            _sanitize_variation_for_put(v)
+                            for v in (children_map.get(sku, []) or [])
+                        ]
+                        logger.info(f"[REPAIR] Built parent repair payload with {len(repair_payload.get('variacoes', []))} variations")
+                    else:
+                        repair_payload, repair_context = _build_repair_payload_for_item(
+                            item=item,
+                            sku_cache=sku_cache,
+                            color_map=color_map,
+                            is_physical=is_physical,
+                        )
+                        if repair_payload is None:
+                            logger.warning(
+                                "[REPAIR] Cannot rebuild payload for %s: %s",
+                                sku,
+                                repair_context,
+                            )
+                            failure_item = {
+                                "sku": sku,
+                                "entity": entity,
+                                "status": "failed",
+                                "target_id": target_id,
+                                "error": (repair_context or {}).get("message") or "Payload de repair invalido",
+                            }
+                            if repair_context:
+                                failure_item.update(repair_context)
+                            results.append(failure_item)
+                            continue
+
+                        logger.info(
+                            "[REPAIR] Built %s repair payload for %s",
+                            (repair_context or {}).get("repair_action", "simple_product"),
+                            sku,
+                        )
+
+                    # Execute in-place repair via PUT
+                    logger.info(f"[REPAIR] Executing PUT repair for {sku} (id={target_id})")
+                    await client.put(f"/produtos/{target_id}", repair_payload)
+                    
+                    success_item = {
+                        "sku": sku,
+                        "entity": entity,
+                        "status": "success",
+                        "action": "repaired_in_place",
+                        "target_id": target_id,
+                        "message": "Produto reparado com sucesso no mesmo ID",
+                    }
+                    if entity not in ["PARENT_PRINTED", "BASE_PARENT"] and repair_context:
+                        success_item.update(repair_context)
+                    results.append(success_item)
+                    logger.info(f"[REPAIR] Successfully repaired {sku} (id={target_id})")
+                    
+                except Exception as repair_error:
+                    # FALLBACK: If PUT fails, try DELETE+CREATE as last resort
+                    logger.warning(
+                        f"[REPAIR] In-place repair failed for {sku} (id={target_id}), attempting delete+recreate: {_get_error_message(repair_error)}"
+                    )
+                    
+                    try:
+                        # Try to delete
+                        try:
+                            await client.delete(f"/produtos/{target_id}")
+                            logger.info(f"[REPAIR] Deleted {sku} (id={target_id}) successfully")
+                        except Exception as delete_error:
+                            logger.warning(f"[REPAIR] Delete failed for {sku} (id={target_id}): {_get_error_message(delete_error)}")
+                            # If delete fails, give up
+                            raise delete_error
+                        
+                        # Try to recreate
+                        if entity in ["PARENT_PRINTED", "BASE_PARENT"]:
+                            create_payload = _prepare_parent_payload(item)
+                            create_payload["variacoes"] = [
+                                _sanitize_variation_for_put(v)
+                                for v in (children_map.get(sku, []) or [])
+                            ]
+                        else:
+                            computed = item.get("computed_payload_preview") or {}
+                            create_payload = _build_variation_item(sku, computed)
+                        
+                        created_id = await create_product(client, create_payload)
+                        if created_id:
+                            results.append({
+                                "sku": sku,
+                                "entity": entity,
+                                "status": "success",
+                                "action": "recreated_after_delete",
+                                "old_id": target_id,
+                                "new_id": created_id,
+                                "message": "Produto excluído e recriado com novo ID (PUT falhou)",
+                            })
+                            logger.info(f"[REPAIR] Recreated {sku} with new id={created_id} after delete")
+                        else:
+                            results.append({
+                                "sku": sku,
+                                "status": "failed",
+                                "error": f"Produto excluído mas recriação falhou: {_get_error_message(repair_error)}",
+                                "old_id": target_id,
+                            })
+                    except Exception as fallback_error:
+                        results.append({
+                            "sku": sku,
+                            "status": "failed",
+                            "error": f"Reparo falhou (PUT) e fallback (DELETE+CREATE) também: {_get_error_message(fallback_error)}",
+                            "target_id": target_id,
+                        })
+                        logger.error(
+                            f"[REPAIR] Both repair and fallback failed for {sku} (id={target_id}): {_get_error_message(fallback_error)}",
+                            exc_info=True
+                        )
+            
+            except Exception as item_error:
+                # Unexpected error for this item - log and continue
+                logger.error(
+                    f"[REPAIR] Unexpected error processing {item.get('sku')}: {_get_error_message(item_error)}",
+                    exc_info=True
+                )
                 results.append({
-                    "sku": sku,
-                    "status": "recreated",
-                    "old_id": target_id,
-                    "new_id": created_id,
-                })
-            else:
-                results.append({
-                    "sku": sku,
+                    "sku": item.get("sku", "UNKNOWN"),
                     "status": "failed",
-                    "error": "Produto excluído, mas recriação falhou",
-                    "old_id": target_id,
+                    "error": f"Erro inesperado: {_get_error_message(item_error)}",
                 })
 
-        recreated = [r for r in results if r.get("status") == "recreated"]
-        failed = [r for r in results if r.get("status") == "failed"]
-
+        # Summary
+        success_count = len([r for r in results if r.get("status") == "success"])
+        failed_count = len([r for r in results if r.get("status") == "failed"])
+        rebuilt_orphan_compositions = sorted({
+            r.get("sku")
+            for r in results
+            if r.get("repair_action") == "orphan_composition_rebuilt" and r.get("sku")
+        })
+        blocked_orphan_compositions = sorted({
+            r.get("sku")
+            for r in results
+            if r.get("error_type") in {"missing_parent_dependency", "missing_base_dependency", "missing_base_for_composition"}
+            and r.get("sku")
+        })
+        
         return {
             "results": results,
             "summary": {
                 "requested": len(failed_update_skus),
                 "processed": len(results),
-                "recreated": len(recreated),
-                "failed": len(failed),
+                "repaired": success_count,
+                "failed": failed_count,
+                "rebuilt_orphan_compositions": rebuilt_orphan_compositions,
+                "blocked_orphan_compositions": blocked_orphan_compositions,
             }
         }
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as outer_error:
+        # Catch any unhandled exception and return structured error
+        logger.error(
+            f"[REPAIR] Unexpected outer exception in recreate_failed_updates: {_get_error_message(outer_error)}",
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao reparar produtos: {_get_error_message(outer_error)}"
+        )
     finally:
-        await client.client.aclose()
+        try:
+            await client.client.aclose()
+        except Exception as close_error:
+            logger.warning(f"[REPAIR] Error closing client: {_get_error_message(close_error)}")
 
 
 # ====================================
@@ -1852,7 +2597,7 @@ async def seed_missing_bases(plan: Dict[str, Any], db: Session = Depends(get_db)
                             "ordem": len(variacoes)
                         }
                     )
-                    variacoes.append(var)
+                    variacoes.append(_sanitize_variation_for_put(var))
                 
                 payload = _prepare_base_payload(parent_sku)
                 payload["formato"] = "V"
@@ -1874,7 +2619,10 @@ async def seed_missing_bases(plan: Dict[str, Any], db: Session = Depends(get_db)
                         
                         payload["nome"] = existing_product.get("data", {}).get("nome", f"Base {parent_sku}")
                         payload["preco"] = existing_product.get("data", {}).get("preco", 0)
-                        payload["variacoes"] = new_variacoes
+                        payload["variacoes"] = [
+                            _sanitize_variation_for_put(v)
+                            for v in new_variacoes
+                        ]
                         
                         logger.debug(f"Updating {parent_sku}")
                         await client.put(f"/produtos/{existing_id}", payload)
@@ -1895,7 +2643,10 @@ async def seed_missing_bases(plan: Dict[str, Any], db: Session = Depends(get_db)
                         })
                 else:
                     # Create new
-                    payload["variacoes"] = variacoes
+                    payload["variacoes"] = [
+                        _sanitize_variation_for_put(v)
+                        for v in variacoes
+                    ]
                     
                     logger.debug(f"Creating {parent_sku}")
                     created_id = await create_product(client, payload)

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Layout } from '../../components/Layout';
 import useIsMobile from '../../hooks/useIsMobile';
@@ -6,6 +6,41 @@ import useIsMobile from '../../hooks/useIsMobile';
 const API_BASE = '/api';
 const PRODUCTS_CACHE_KEY = 'smartb_products_catalog_v3';
 const PRODUCTS_CACHE_SAVED_AT_KEY = 'smartb_products_catalog_saved_at_v3';
+const SIZE_ORDER = ['P', 'M', 'G', 'GG', 'XG'];
+
+function extractSizeFromSku(sku) {
+  const normalized = String(sku || '').trim().toUpperCase();
+  if (!normalized) return null;
+
+  // Longest-first prevents matching G before GG/XG.
+  const candidates = ['XG', 'GG', 'P', 'M', 'G'];
+  return candidates.find((size) => normalized.endsWith(size)) || null;
+}
+
+function compareSkuWithSizePriority(aSku, bSku) {
+  const a = String(aSku || '').trim().toUpperCase();
+  const b = String(bSku || '').trim().toUpperCase();
+
+  const sizeA = extractSizeFromSku(a);
+  const sizeB = extractSizeFromSku(b);
+
+  if (sizeA && sizeB) {
+    const baseA = a.slice(0, -sizeA.length);
+    const baseB = b.slice(0, -sizeB.length);
+
+    if (baseA === baseB) {
+      const idxA = SIZE_ORDER.indexOf(sizeA);
+      const idxB = SIZE_ORDER.indexOf(sizeB);
+      if (idxA !== idxB) return idxA - idxB;
+    }
+  }
+
+  return a.localeCompare(b, 'pt-BR', { sensitivity: 'base' });
+}
+
+function compareProductsBySku(a, b) {
+  return compareSkuWithSizePriority(a?.codigo, b?.codigo);
+}
 
 function groupProductsByParent(products) {
   if (!products || products.length === 0) return [];
@@ -28,7 +63,8 @@ function groupProductsByParent(products) {
 
   for (const [parentId, children] of variations.entries()) {
     if (!parents.has(parentId)) {
-      orphans.push(...children.map((child) => ({
+      const sortedOrphans = [...children].sort(compareProductsBySku);
+      orphans.push(...sortedOrphans.map((child) => ({
         parent: child,
         children: [],
         expanded: false,
@@ -38,11 +74,11 @@ function groupProductsByParent(products) {
 
   const grouped = Array.from(parents.values()).map((parent) => ({
     parent,
-    children: variations.get(parent.id) || [],
+    children: [...(variations.get(parent.id) || [])].sort(compareProductsBySku),
     expanded: false,
   }));
 
-  return [...grouped, ...orphans];
+  return [...grouped, ...orphans].sort((a, b) => compareProductsBySku(a.parent, b.parent));
 }
 
 function getProductTypeLabel(product, childrenCount = 0) {
@@ -64,7 +100,7 @@ function getDisplayTypeLabel(product, childrenCount = 0) {
 }
 
 function getStockTypeLabel(product) {
-  const type = (product?.tipo_estoque || '').toUpperCase();
+  const type = (product?.tipo_estoque || product?.tipoEstoque || '').toUpperCase();
   if (type === 'V') return 'virtual';
   if (type === 'F') return 'físico';
   return 'não informado';
@@ -74,7 +110,19 @@ function getSubproductTypeLabel(product) {
   if (product?.formato === 'E') {
     return `🧩 Composição (${getStockTypeLabel(product)}) • ${getProductKindLabel(product)}`;
   }
-  return `📄 Variação (físico) • ${getProductKindLabel(product)}`;
+  const stockLabel = childHasPhysicalStock(product) ? 'físico' : 'virtual';
+  return `📄 Variação (${stockLabel}) • ${getProductKindLabel(product)}`;
+}
+
+function getWizardAvailability(product) {
+  const kind = String(product?.product_kind || '').toUpperCase();
+  if (kind === 'PLAIN') {
+    return { showPrintedWizard: false, showPlainWizard: true };
+  }
+  if (kind === 'PRINTED') {
+    return { showPrintedWizard: true, showPlainWizard: false };
+  }
+  return { showPrintedWizard: true, showPlainWizard: true };
 }
 
 function productMatchesQuery(product, query) {
@@ -101,15 +149,36 @@ function filterGroupedProducts(groups, query) {
 }
 
 function childHasPhysicalStock(product) {
-  // Variations (formato !== 'E') are always physical
-  if ((product.formato || '').toUpperCase() !== 'E') return true;
-  // Compositions: only physical when tipoEstoque === 'F'
-  return (product.tipo_estoque || '').toUpperCase() === 'F';
+  const explicitStockType = String(product?.tipo_estoque || product?.tipoEstoque || '').toUpperCase();
+  if (explicitStockType === 'F') return true;
+  if (explicitStockType === 'V') return false;
+
+  const formato = (product.formato || '').toUpperCase();
+  if (formato === 'E') {
+    // Composition without explicit stock metadata: prefer virtual fallback.
+    return false;
+  }
+
+  const kind = String(product?.product_kind || '').toLowerCase();
+  if (kind === 'printed') return false;
+  if (kind === 'plain') return true;
+
+  if (formato === 'V') {
+    // product_kind unknown: fall back to physical (backwards-compatible)
+    return true;
+  }
+  // formato 'S' or other simple variation = physical
+  return true;
 }
 
 function groupHasPhysicalStock(group) {
   if (!group?.children?.length) {
-    return childHasPhysicalStock(group?.parent || {});
+    // No children yet: classify by parent's product_kind when available.
+    const parent = group?.parent || {};
+    const kind = String(parent.product_kind || '').toLowerCase();
+    if (kind === 'printed') return false;
+    if (kind === 'plain') return true;
+    return childHasPhysicalStock(parent);
   }
   return group.children.some((child) => childHasPhysicalStock(child));
 }
@@ -153,6 +222,9 @@ export function ProductsListPage() {
   const [totalItems, setTotalItems] = useState(0);
   const [expandedGroups, setExpandedGroups] = useState(new Set());
   const [cacheSavedAt, setCacheSavedAt] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState(null);
+  const syncPollRef = useRef(null);
   const navigate = useNavigate();
 
   function loadProductsFromCache() {
@@ -183,6 +255,52 @@ export function ProductsListPage() {
     setCacheSavedAt(savedAt || null);
   }
 
+  const fetchCatalogFromApi = useCallback(async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+    }
+    setError(null);
+
+    const pageSize = 100;
+    const firstParams = new URLSearchParams({ page: 1, limit: pageSize });
+    const firstResp = await fetch(`${API_BASE}/bling/products/list/all?${firstParams}`);
+
+    if (!firstResp.ok) {
+      const err = await firstResp.json();
+      const msg = err.detail?.message || 'Erro ao buscar produtos';
+      throw new Error(msg);
+    }
+
+    const firstData = await firstResp.json();
+    const firstItems = firstData.items || [];
+    const totalCatalogPages = Math.ceil((firstData.total || 0) / pageSize);
+
+    const restItems = [];
+    if (totalCatalogPages > 1) {
+      const pagePromises = [];
+      for (let pageNum = 2; pageNum <= totalCatalogPages; pageNum += 1) {
+        const params = new URLSearchParams({ page: pageNum, limit: pageSize });
+        pagePromises.push(
+          fetch(`${API_BASE}/bling/products/list/all?${params}`)
+            .then(async (resp) => (resp.ok ? resp.json() : { items: [] }))
+            .catch(() => ({ items: [] }))
+        );
+      }
+      const pageResults = await Promise.all(pagePromises);
+      pageResults.forEach((data) => {
+        restItems.push(...(data.items || []));
+      });
+    }
+
+    const dedupedById = new Map();
+    [...firstItems, ...restItems].forEach((item) => dedupedById.set(item.id, item));
+    const catalog = Array.from(dedupedById.values());
+
+    setAllProducts(catalog);
+    saveProductsToCache(catalog);
+    return catalog;
+  }, []);
+
   const loadCatalog = useCallback(async (forceRefresh = false) => {
     try {
       if (!forceRefresh) {
@@ -192,53 +310,15 @@ export function ProductsListPage() {
           setError(null);
           setLoading(false);
           loadCacheTimestamp();
+
+          // Stale-while-revalidate: refresh silently so local cache mirrors Bling deletions.
+          fetchCatalogFromApi(true).catch(() => {
+            // Keep cached data visible even if background refresh fails.
+          });
           return;
         }
       }
-
-      setLoading(true);
-      setError(null);
-
-      const pageSize = 100;
-      const firstParams = new URLSearchParams({ page: 1, limit: pageSize });
-      const firstResp = await fetch(`${API_BASE}/bling/products/list/all?${firstParams}`);
-
-      if (!firstResp.ok) {
-        const err = await firstResp.json();
-        const msg = err.detail?.message || 'Erro ao buscar produtos';
-        setError(msg);
-        setAllProducts([]);
-        setProducts([]);
-        setGroupedProducts([]);
-      } else {
-        const firstData = await firstResp.json();
-        const firstItems = firstData.items || [];
-        const totalCatalogPages = Math.ceil((firstData.total || 0) / pageSize);
-
-        const restItems = [];
-        if (totalCatalogPages > 1) {
-          const pagePromises = [];
-          for (let pageNum = 2; pageNum <= totalCatalogPages; pageNum += 1) {
-            const params = new URLSearchParams({ page: pageNum, limit: pageSize });
-            pagePromises.push(
-              fetch(`${API_BASE}/bling/products/list/all?${params}`)
-                .then(async (resp) => (resp.ok ? resp.json() : { items: [] }))
-                .catch(() => ({ items: [] }))
-            );
-          }
-          const pageResults = await Promise.all(pagePromises);
-          pageResults.forEach((data) => {
-            restItems.push(...(data.items || []));
-          });
-        }
-
-        const dedupedById = new Map();
-        [...firstItems, ...restItems].forEach((item) => dedupedById.set(item.id, item));
-        const catalog = Array.from(dedupedById.values());
-
-        setAllProducts(catalog);
-        saveProductsToCache(catalog);
-      }
+      await fetchCatalogFromApi(false);
     } catch (err) {
       setError(err.message);
       setAllProducts([]);
@@ -247,7 +327,7 @@ export function ProductsListPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [fetchCatalogFromApi]);
 
   const applyLocalFilterAndPagination = useCallback(() => {
     const allGroups = groupProductsByParent(allProducts);
@@ -288,6 +368,57 @@ export function ProductsListPage() {
     setActiveQuery(nextQuery);
   }, [activeQuery, searchQuery]);
 
+  const triggerSync = useCallback(async () => {
+    if (syncing) return;
+    setSyncing(true);
+    setSyncStatus({ state: 'PENDING', synced: 0, total: 0 });
+    setError(null);
+
+    try {
+      const resp = await fetch(`${API_BASE}/bling/products/sync`, { method: 'POST' });
+      if (!resp.ok) {
+        const err = await resp.json();
+        setError(err.detail?.message || err.detail || 'Erro ao iniciar sincronização');
+        setSyncing(false);
+        return;
+      }
+      const { job_id } = await resp.json();
+
+      const poll = async () => {
+        try {
+          const statusResp = await fetch(`${API_BASE}/bling/products/sync/status/${job_id}`);
+          if (!statusResp.ok) {
+            setSyncing(false);
+            return;
+          }
+          const statusData = await statusResp.json();
+          setSyncStatus(statusData);
+
+          if (statusData.state === 'SUCCESS') {
+            setSyncing(false);
+            localStorage.removeItem(PRODUCTS_CACHE_KEY);
+            localStorage.removeItem(PRODUCTS_CACHE_SAVED_AT_KEY);
+            setExpandedGroups(new Set());
+            setPage(1);
+            loadCatalog(false);
+          } else if (statusData.state === 'FAILURE') {
+            setSyncing(false);
+            setError('Sincronização falhou. Tente novamente.');
+          } else {
+            syncPollRef.current = setTimeout(poll, 2000);
+          }
+        } catch (pollErr) {
+          setSyncing(false);
+        }
+      };
+
+      syncPollRef.current = setTimeout(poll, 2000);
+    } catch (err) {
+      setSyncing(false);
+      setError(err.message);
+    }
+  }, [syncing, loadCatalog]);
+
   const toggleGroup = useCallback((parentId) => {
     setExpandedGroups((prev) => {
       const next = new Set(prev);
@@ -308,6 +439,12 @@ export function ProductsListPage() {
   useEffect(() => {
     loadCatalog();
   }, [loadCatalog]);
+
+  useEffect(() => {
+    return () => {
+      if (syncPollRef.current) clearTimeout(syncPollRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     setExpandedGroups(new Set());
@@ -342,11 +479,15 @@ export function ProductsListPage() {
             onClick={() => {
               setExpandedGroups(new Set());
               setPage(1);
-              loadCatalog(true);
+              triggerSync();
             }}
-            disabled={loading}
+            disabled={loading || syncing}
           >
-            {loading ? 'Atualizando...' : 'Atualizar do Bling'}
+            {syncing
+              ? (syncStatus?.state === 'PROGRESS' && syncStatus?.total > 0
+                ? `Sincronizando... ${syncStatus.synced}/${syncStatus.total}`
+                : 'Sincronizando...')
+              : 'Atualizar do Bling'}
           </button>
         </div>
 
@@ -444,6 +585,7 @@ export function ProductsListPage() {
                   {groupedProducts.map((group) => {
                     const expanded = expandedGroups.has(group.parent.id);
                     const hasChildren = group.children.length > 0;
+                    const { showPrintedWizard, showPlainWizard } = getWizardAvailability(group.parent);
                     return (
                       <div key={group.parent.id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
                         <button
@@ -462,20 +604,24 @@ export function ProductsListPage() {
                         </button>
 
                         <div style={{ borderTop: '1px solid #e2e8f0', padding: 12, display: 'flex', gap: 8, flexWrap: 'wrap', background: '#f8fafc' }}>
-                          <button
-                            onClick={() => navigate('/wizard/new', { state: { editProduct: group.parent } })}
-                            style={{ padding: '6px 12px', fontSize: 12, background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}
-                            title="Abrir Wizard de estampados"
-                          >
-                            🪄 Wizard
-                          </button>
-                          <button
-                            onClick={() => navigate('/wizard/plain', { state: { editProduct: group.parent } })}
-                            style={{ padding: '6px 12px', fontSize: 12, background: '#0f766e', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}
-                            title="Abrir Wizard de produto liso"
-                          >
-                            🧩 Wizard Liso
-                          </button>
+                          {showPrintedWizard && (
+                            <button
+                              onClick={() => navigate('/wizard/new', { state: { editProduct: group.parent } })}
+                              style={{ padding: '6px 12px', fontSize: 12, background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                              title="Abrir Wizard de estampados"
+                            >
+                              🪄 Wizard
+                            </button>
+                          )}
+                          {showPlainWizard && (
+                            <button
+                              onClick={() => navigate('/wizard/plain', { state: { editProduct: group.parent } })}
+                              style={{ padding: '6px 12px', fontSize: 12, background: '#0f766e', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                              title="Abrir Wizard de produto liso"
+                            >
+                              🧩 Wizard Liso
+                            </button>
+                          )}
                         </div>
 
                         {expanded && hasChildren && (
@@ -546,40 +692,49 @@ export function ProductsListPage() {
                               {formatStock(getGroupStockQuantity(group))}
                             </td>
                             <td onClick={(e) => e.stopPropagation()}>
+                              {(() => {
+                                const { showPrintedWizard, showPlainWizard } = getWizardAvailability(group.parent);
+                                return (
                               <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                                <button
-                                  onClick={() => navigate('/wizard/new', { state: { editProduct: group.parent } })}
-                                  style={{
-                                    padding: '4px 10px',
-                                    fontSize: 12,
-                                    background: '#3b82f6',
-                                    color: '#fff',
-                                    border: 'none',
-                                    borderRadius: 6,
-                                    cursor: 'pointer',
-                                    whiteSpace: 'nowrap',
-                                  }}
-                                  title="Abrir Wizard de estampados"
-                                >
-                                  🪄 Wizard
-                                </button>
-                                <button
-                                  onClick={() => navigate('/wizard/plain', { state: { editProduct: group.parent } })}
-                                  style={{
-                                    padding: '4px 10px',
-                                    fontSize: 12,
-                                    background: '#0f766e',
-                                    color: '#fff',
-                                    border: 'none',
-                                    borderRadius: 6,
-                                    cursor: 'pointer',
-                                    whiteSpace: 'nowrap',
-                                  }}
-                                  title="Abrir Wizard de produto liso"
-                                >
-                                  🧩 Wizard Liso
-                                </button>
+                                {showPrintedWizard && (
+                                  <button
+                                    onClick={() => navigate('/wizard/new', { state: { editProduct: group.parent } })}
+                                    style={{
+                                      padding: '4px 10px',
+                                      fontSize: 12,
+                                      background: '#3b82f6',
+                                      color: '#fff',
+                                      border: 'none',
+                                      borderRadius: 6,
+                                      cursor: 'pointer',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                    title="Abrir Wizard de estampados"
+                                  >
+                                    🪄 Wizard
+                                  </button>
+                                )}
+                                {showPlainWizard && (
+                                  <button
+                                    onClick={() => navigate('/wizard/plain', { state: { editProduct: group.parent } })}
+                                    style={{
+                                      padding: '4px 10px',
+                                      fontSize: 12,
+                                      background: '#0f766e',
+                                      color: '#fff',
+                                      border: 'none',
+                                      borderRadius: 6,
+                                      cursor: 'pointer',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                    title="Abrir Wizard de produto liso"
+                                  >
+                                    🧩 Wizard Liso
+                                  </button>
+                                )}
                               </div>
+                                );
+                              })()}
                             </td>
                           </tr>
 

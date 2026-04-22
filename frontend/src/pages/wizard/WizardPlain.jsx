@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Layout } from '../../components/Layout';
 import { summarizeDeletionMismatch, summarizePlannedDeletionRisk } from './planExecutionInsights';
@@ -36,10 +36,62 @@ export function WizardPlainPage() {
   const [executing, setExecuting] = useState(false);
   const [strictPlannedDeletions, setStrictPlannedDeletions] = useState(false);
   const [executionResultsModal, setExecutionResultsModal] = useState(null);
+  const shortDescriptionRef = useRef(null);
+  const shortDescriptionHtmlRef = useRef(null);
+  const [showHtmlEditor, setShowHtmlEditor] = useState(false);
+
+  function normalizeEditorHtml(input) {
+    const value = String(input || '');
+    if (!value) return '';
+    // Decode escaped html (&lt;p&gt;...) when it arrives as text.
+    if (value.includes('&lt;') && !value.includes('<')) {
+      const textarea = document.createElement('textarea');
+      textarea.innerHTML = value;
+      return textarea.value;
+    }
+    return value;
+  }
+
+  async function fetchJsonWithTimeout(url, timeoutMs = 12000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const timeoutErrorPromise = new Promise((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`TIMEOUT:${url}`));
+      }, timeoutMs + 50);
+    });
+    try {
+      const response = await Promise.race([
+        fetch(url, {
+          credentials: 'include',
+          signal: controller.signal,
+        }),
+        timeoutErrorPromise,
+      ]);
+      return response;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
 
   useEffect(() => {
     fetchConfiguration();
   }, []);
+
+  useEffect(() => {
+    if (step !== 3) return;
+    if (!shortDescriptionRef.current || showHtmlEditor) return;
+    if (document.activeElement === shortDescriptionRef.current) return;
+    const nextHtml = normalizeEditorHtml(overrides.short_description || '');
+    if (shortDescriptionRef.current.innerHTML !== nextHtml) {
+      shortDescriptionRef.current.innerHTML = nextHtml;
+    }
+  }, [overrides.short_description, showHtmlEditor, step]);
+
+  useEffect(() => {
+    if (!editProduct?.id) return;
+    fetchEditProductDetails(editProduct.id);
+  }, [editProduct?.id]);
 
   useEffect(() => {
     if (!editProduct?.id) return;
@@ -59,10 +111,22 @@ export function WizardPlainPage() {
     try {
       setLoading(true);
       setError(null);
-      const [modelsResp, colorsResp] = await Promise.all([
-        fetch(`${API_BASE}/config/models`),
-        fetch(`${API_BASE}/config/colors`),
+      const [modelsResult, colorsResult] = await Promise.allSettled([
+        fetchJsonWithTimeout(`${API_BASE}/config/models`),
+        fetchJsonWithTimeout(`${API_BASE}/config/colors`),
       ]);
+
+      if (modelsResult.status !== 'fulfilled' || colorsResult.status !== 'fulfilled') {
+        throw new Error('Tempo limite ao carregar configuração. Verifique backend e tente novamente.');
+      }
+
+      const modelsResp = modelsResult.value;
+      const colorsResp = colorsResult.value;
+
+      if (modelsResp.status === 401 || colorsResp.status === 401) {
+        navigate('/login', { replace: true });
+        return;
+      }
 
       if (!modelsResp.ok || !colorsResp.ok) {
         throw new Error('Falha ao carregar configuração');
@@ -77,10 +141,120 @@ export function WizardPlainPage() {
       setModels(activeModels);
       setColors(activeColors);
     } catch (e) {
-      setError(e.message || 'Erro ao carregar configuração');
+      if (e.name === 'AbortError' || String(e.message || '').startsWith('TIMEOUT:')) {
+        setError('Tempo limite ao carregar configuração. Tente novamente.');
+      } else {
+        setError(e.message || 'Erro ao carregar configuração');
+      }
     } finally {
       setLoading(false);
     }
+  }
+
+  async function fetchEditProductDetails(productId) {
+    try {
+      const resp = await fetchJsonWithTimeout(`${API_BASE}/bling/products/${productId}`);
+      if (resp.status === 401) {
+        navigate('/login', { replace: true });
+        return;
+      }
+      if (!resp.ok) return;
+
+      const detail = await resp.json();
+      const existingDescription = sanitizeImportedHtml(
+        detail.descricao_curta || detail.descricaoCurta || detail.descricao || ''
+      );
+
+      if (existingDescription) {
+        setOverrides((prev) => ({
+          ...prev,
+          short_description: existingDescription,
+        }));
+      }
+    } catch {
+      // Keep wizard usable even if detail fetch fails.
+    }
+  }
+
+  function sanitizeImportedHtml(rawHtml) {
+    const source = String(rawHtml || '');
+    if (!source.trim()) return '';
+
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(`<div>${source}</div>`, 'text/html');
+      const root = doc.body.firstElementChild || doc.body;
+
+      root.querySelectorAll('*').forEach((el) => {
+        Array.from(el.attributes).forEach((attr) => {
+          const name = (attr.name || '').toLowerCase();
+          if (name.startsWith('data-')) {
+            el.removeAttribute(attr.name);
+          }
+        });
+      });
+
+      root.querySelectorAll('p').forEach((p) => {
+        const text = (p.textContent || '').replace(/\u00a0/g, '').trim();
+        if (!text && p.children.length === 0) {
+          p.remove();
+        }
+      });
+
+      return root.innerHTML.trim();
+    } catch {
+      return source;
+    }
+  }
+
+  function simplifyShortDescriptionHtml() {
+    if (!shortDescriptionRef.current) return;
+    const html = shortDescriptionRef.current.innerHTML;
+    setOverrides((prev) => ({ ...prev, short_description: html || '' }));
+  }
+
+  function handleShortDescriptionInput() {
+    simplifyShortDescriptionHtml();
+  }
+
+  function handleShortDescriptionPaste() {
+    setTimeout(() => {
+      simplifyShortDescriptionHtml();
+    }, 0);
+  }
+
+  function applyShortDescriptionFormat(command) {
+    if (!shortDescriptionRef.current) return;
+    shortDescriptionRef.current.focus();
+    try {
+      document.execCommand(command, false, null);
+    } catch (e) {}
+    simplifyShortDescriptionHtml();
+  }
+
+  function toggleHtmlEditor() {
+    if (!showHtmlEditor) {
+      // Always read current visual content before switching to HTML mode.
+      const liveHtml = shortDescriptionRef.current?.innerHTML || overrides.short_description || '';
+      setOverrides((prev) => ({ ...prev, short_description: liveHtml }));
+      if (shortDescriptionHtmlRef.current) {
+        shortDescriptionHtmlRef.current.value = liveHtml;
+      }
+    } else {
+      if (shortDescriptionHtmlRef.current) {
+        const html = shortDescriptionHtmlRef.current.value || '';
+        setOverrides((prev) => ({ ...prev, short_description: html }));
+        // Apply immediately to visual editor to avoid stale rendering.
+        if (shortDescriptionRef.current) {
+          shortDescriptionRef.current.innerHTML = normalizeEditorHtml(html);
+        }
+      }
+    }
+    setShowHtmlEditor(!showHtmlEditor);
+  }
+
+  function handleHtmlChange(event) {
+    setOverrides((prev) => ({ ...prev, short_description: event.target.value }));
   }
 
   function handleSelectModel(code) {
@@ -118,7 +292,7 @@ export function WizardPlainPage() {
       colors: selectedColors,
       price: parseFloat(price),
       overrides: {
-        short_description: overrides.short_description || null,
+        short_description: normalizeEditorHtml(overrides.short_description || '') || null,
         complement_description: null,
         complement_same_as_short: true,
         category_override_id: null,
@@ -133,7 +307,8 @@ export function WizardPlainPage() {
       edit_parent_id: editProduct ? editProduct.id : null,
     };
 
-    const resp = await fetch(`${API_BASE}/plans/new-plain`, {
+    let resp;
+    resp = await fetch(`${API_BASE}/plans/new-plain`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -173,14 +348,18 @@ export function WizardPlainPage() {
 
     try {
       setGeneratingPlan(true);
-      setLoadingStatus('⚙️ Gerando preview do plano liso...');
+      setLoadingStatus('⚙️ Gerando preview do plano liso... isso pode levar alguns minutos.');
       setError(null);
       const planData = await generatePlanRequest();
       setPlan(planData);
       setLoadingStatus('✅ Preview gerado com sucesso!');
       setStep(4);
     } catch (e) {
-      setError(e.message || 'Erro ao gerar plano');
+      if (e.name === 'AbortError') {
+        setError('A geração do plano foi cancelada antes de terminar. Tente novamente.');
+      } else {
+        setError(e.message || 'Erro ao gerar plano');
+      }
     } finally {
       setGeneratingPlan(false);
       setLoadingStatus('');
@@ -333,12 +512,54 @@ export function WizardPlainPage() {
             </div>
 
             <div className="form-group" style={{ marginTop: 16 }}>
-              <label>Descrição Curta (opcional)</label>
-              <textarea
-                value={overrides.short_description}
-                onChange={(e) => setOverrides((prev) => ({ ...prev, short_description: e.target.value }))}
-                rows={3}
-              />
+              <div className="description-header">
+                <label>Descrição Curta (opcional)</label>
+                <button
+                  type="button"
+                  className="html-toggle-btn"
+                  onClick={toggleHtmlEditor}
+                  title={showHtmlEditor ? 'Voltar para editor visual' : 'Editar HTML diretamente'}
+                >
+                  &lt;/&gt;
+                </button>
+              </div>
+
+              {!showHtmlEditor ? (
+                <div className="richtext-editor">
+                  <div className="richtext-toolbar">
+                    <button type="button" onClick={() => applyShortDescriptionFormat('undo')} title="Desfazer">↶</button>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('redo')} title="Refazer">↷</button>
+                    <div className="richtext-divider"></div>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('bold')} title="Negrito">B</button>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('italic')} title="Itálico"><em>I</em></button>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('underline')} title="Sublinhado"><u>U</u></button>
+                    <div className="richtext-divider"></div>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('insertUnorderedList')} title="Lista com Marcadores">• Lista</button>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('insertOrderedList')} title="Lista Numerada">1. Lista</button>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('justifyLeft')} title="Alinhar à Esquerda">⬅</button>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('justifyCenter')} title="Centralizar">⬍</button>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('justifyRight')} title="Alinhar à Direita">➡</button>
+                    <button type="button" onClick={() => applyShortDescriptionFormat('justifyFull')} title="Justificar">⬌</button>
+                  </div>
+                  <div
+                    ref={shortDescriptionRef}
+                    className="richtext-input"
+                    contentEditable
+                    suppressContentEditableWarning
+                    onInput={handleShortDescriptionInput}
+                    onPaste={handleShortDescriptionPaste}
+                  />
+                </div>
+              ) : (
+                <textarea
+                  ref={shortDescriptionHtmlRef}
+                  className="html-editor"
+                  value={overrides.short_description || ''}
+                  onChange={handleHtmlChange}
+                  placeholder="Digite o HTML aqui..."
+                  spellCheck="false"
+                />
+              )}
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
@@ -426,8 +647,8 @@ export function WizardPlainPage() {
                         </span>
                       </td>
                       <td>{item.computed_payload_preview?.preco ?? '-'}</td>
-                      <td>{item.computed_payload_preview?.ncm || '-'}</td>
-                      <td>{item.computed_payload_preview?.cest || '-'}</td>
+                      <td>{item.computed_payload_preview?.tributacao?.ncm || '-'}</td>
+                      <td>{item.computed_payload_preview?.tributacao?.cest || '-'}</td>
                       <td>{(item.hard_dependencies || []).join(', ') || '-'}</td>
                       <td>{item.template ? `${item.template.model} / ${item.template.kind}` : '-'}</td>
                       <td>{item.reason || item.message || '-'}</td>
@@ -463,25 +684,44 @@ function PlainExecutionResultsModal({ results, onClose, onGoProducts }) {
 
   const items = Array.isArray(results.results) ? results.results : [];
   const successItems = items.filter((item) => item.status === 'success');
+  const createdItems = successItems.filter((item) => item.action === 'CREATE');
+  const updatedItems = successItems.filter((item) => item.action === 'UPDATE');
+  const noopItems = items.filter((item) => item.status === 'noop');
   const failedItems = items.filter((item) => item.status === 'failed');
+
+  const createdFallback = createdItems.reduce(
+    (acc, item) => acc + 1 + Number(item?.variations_count || 0),
+    0,
+  );
+  const createdCount = Number(results?.summary?.created_items ?? createdFallback);
+  const updatedCount = Number(results?.summary?.updated_items ?? updatedItems.length);
+  const noopCount = Number(results?.summary?.noop_items ?? noopItems.length);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '700px' }}>
         <h3>{failedItems.length > 0 ? '⚠️ Execução concluída com falhas' : '✅ Plano executado com sucesso'}</h3>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginBottom: '20px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '10px', marginBottom: '20px' }}>
           <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
-            <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#16a34a' }}>{successItems.length}</div>
-            <div style={{ color: '#15803d', marginTop: '2px', fontSize: '11px' }}>Sucesso</div>
+            <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#16a34a' }}>{createdCount}</div>
+            <div style={{ color: '#15803d', marginTop: '2px', fontSize: '11px' }}>🟢 Criados</div>
+          </div>
+          <div style={{ background: '#ecfeff', border: '1px solid #67e8f9', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
+            <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#0e7490' }}>{updatedCount}</div>
+            <div style={{ color: '#155e75', marginTop: '2px', fontSize: '11px' }}>✅ Atualizados</div>
+          </div>
+          <div style={{ background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
+            <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#2563eb' }}>{noopCount}</div>
+            <div style={{ color: '#1e40af', marginTop: '2px', fontSize: '11px' }}>🔵 Sem mudança</div>
           </div>
           <div style={{ background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
             <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#2563eb' }}>{items.length}</div>
-            <div style={{ color: '#1e40af', marginTop: '2px', fontSize: '11px' }}>Itens processados</div>
+            <div style={{ color: '#1e40af', marginTop: '2px', fontSize: '11px' }}>Total processados</div>
           </div>
           <div style={{ background: failedItems.length > 0 ? '#fef2f2' : '#f9fafb', border: failedItems.length > 0 ? '1px solid #fca5a5' : '1px solid #e5e7eb', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
             <div style={{ fontSize: '20px', fontWeight: 'bold', color: failedItems.length > 0 ? '#dc2626' : '#6b7280' }}>{failedItems.length}</div>
-            <div style={{ color: failedItems.length > 0 ? '#b91c1c' : '#6b7280', marginTop: '2px', fontSize: '11px' }}>Falhas</div>
+            <div style={{ color: failedItems.length > 0 ? '#b91c1c' : '#6b7280', marginTop: '2px', fontSize: '11px' }}>❌ Falhas</div>
           </div>
         </div>
 

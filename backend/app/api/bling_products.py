@@ -1,13 +1,17 @@
 """Router for Bling product search endpoints."""
 import asyncio
 import logging
+import threading
 import time
+import uuid as _uuid_mod
+from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from app.infra.db import get_db
+from app.infra.db import get_db, SessionLocal
 from app.infra.bling_client import BlingClient
+from app.settings import settings
 from app.models.schemas import BlingProductSearchResponse, BlingProductDetailResponse, BlingProductSearchItem
 from app.repositories.bling_token_repo import BlingTokenRepository
 from app.repositories.product_snapshot_repo import ProductSnapshotRepository
@@ -16,10 +20,57 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/bling/products", tags=["bling"])
 
+# In-memory status store for direct (non-Celery) catalog sync runs.
+_direct_sync_tasks: dict[str, dict] = {}
+
 # Fixed tenant ID for Sprint 1 (single-tenant)
 DEFAULT_TENANT_ID = UUID("00000000-0000-0000-0000-000000000001")
-CATALOG_CACHE_TTL_SECONDS = 180
+CATALOG_CACHE_TTL_SECONDS = 600
 _catalog_cache: dict[str, tuple[float, list[BlingProductSearchItem]]] = {}
+_last_catalog_reconcile_trigger_at: float = 0.0
+
+
+def _is_webhook_first_mode() -> bool:
+    mode = (settings.PRODUCT_SYNC_MODE or "").strip().lower()
+    return mode in {"webhook", "webhook_first"}
+
+
+def _trigger_catalog_reconcile_if_due(db: Session, reason: str, force: bool = False) -> None:
+    """Trigger background full-sync to keep snapshot mirrored with Bling.
+
+    Safe to call from async contexts: the Celery .delay() call runs in a daemon
+    thread so it never blocks the event loop even if Redis is unavailable.
+    """
+    global _last_catalog_reconcile_trigger_at
+
+    if not settings.WEBHOOKS_ENABLED:
+        return
+
+    now = time.monotonic()
+    cooldown_s = max(30, int(settings.PRODUCT_CATALOG_RECONCILE_MINUTES) * 60)
+    if not force and (now - _last_catalog_reconcile_trigger_at) < cooldown_s:
+        return
+
+    bling_token = BlingTokenRepository.get_by_tenant(db, DEFAULT_TENANT_ID)
+    if not bling_token:
+        return
+
+    _last_catalog_reconcile_trigger_at = now  # optimistic update before thread starts
+
+    def _dispatch():
+        try:
+            from app.workers.tasks import sync_full_product_catalog_task
+            task = sync_full_product_catalog_task.delay()
+            logger.info(
+                "catalog_reconcile_triggered reason=%s task_id=%s cooldown_s=%s",
+                reason,
+                task.id,
+                cooldown_s,
+            )
+        except Exception as exc:
+            logger.warning("catalog_reconcile_trigger_failed reason=%s error=%s", reason, str(exc))
+
+    threading.Thread(target=_dispatch, daemon=True).start()
 
 
 def invalidate_catalog_cache() -> None:
@@ -711,20 +762,47 @@ async def list_all_products(
         "limit": limit,
         "include_hierarchy": include_hierarchy,
     })
-    
-    # Get Bling OAuth2 token from database
+
+    # PRIMARY PATH: serve from local snapshot (DB) — fast, no Bling API calls.
+    snapshot_response = _list_from_snapshot(db, q, page, limit)
+    # Keep snapshot in sync in webhook-first mode via periodic background reconciliation.
+    if _is_webhook_first_mode() and settings.WEBHOOKS_ENABLED:
+        try:
+            stats = ProductSnapshotRepository.snapshot_stats(db, DEFAULT_TENANT_ID)
+            latest = stats.get("latest_updated_at")
+            threshold = max(1, int(settings.PRODUCT_CATALOG_RECONCILE_MINUTES))
+            stale = False
+            if isinstance(latest, datetime):
+                stale = (datetime.utcnow() - latest).total_seconds() >= (threshold * 60)
+            if stale:
+                _trigger_catalog_reconcile_if_due(db, reason="snapshot_stale")
+        except Exception as exc:
+            logger.warning("snapshot_stats_failed error=%s", str(exc))
+
+    if snapshot_response.total_items and snapshot_response.total_items > 0:
+        logger.info("list_all_products_snapshot_hit", extra={"total_items": snapshot_response.total_items})
+        return snapshot_response
+
+    # In webhook-first mode, bootstrap snapshot asynchronously and avoid synchronous
+    # dependency on direct Bling listing unless direct fallback is explicitly enabled.
+    if _is_webhook_first_mode() and settings.WEBHOOKS_ENABLED:
+        _trigger_catalog_reconcile_if_due(db, reason="snapshot_empty", force=True)
+        if not settings.PRODUCT_SYNC_DIRECT_FALLBACK:
+            logger.info(
+                "list_all_products_snapshot_empty_webhook_first",
+                extra={"query": q, "fallback_direct": False},
+            )
+            return snapshot_response
+
+    # FALLBACK PATH: snapshot empty → fetch from Bling API (first time / bootstrap).
+    logger.info("list_all_products_snapshot_empty_bling_fallback", extra={"query": q})
     bling_token = BlingTokenRepository.get_by_tenant(db, DEFAULT_TENANT_ID)
     if not bling_token:
-        # No Bling token: serve from local snapshot when available.
-        snapshot_response = _list_from_snapshot(db, q, page, limit)
-        if snapshot_response.total_items and snapshot_response.total_items > 0:
-            logger.info("list_all_products_no_token_snapshot_fallback", extra={"total_items": snapshot_response.total_items})
-            return snapshot_response
         raise HTTPException(
             status_code=401,
             detail="Nenhum token OAuth2 encontrado. Por favor, autentique-se primeiro em /auth/callback."
         )
-    
+
     # Callback to save refreshed token back to database
     def save_refreshed_token(access_token: str, refresh_token: str, expires_at):
         BlingTokenRepository.create_or_update(
@@ -780,8 +858,6 @@ async def list_all_products(
                 _catalog_cache.pop(_get_catalog_cache_key(q, include_hierarchy), None)
 
         paged_items, total_groups = _paginate_grouped_items(enriched_items, page, limit)
-        paged_items = await _fill_missing_stock_quantities(bling_client, paged_items)
-        
         return BlingProductSearchResponse(
             total=total_groups,
             page=page,
@@ -818,6 +894,8 @@ async def list_all_products(
         else:
             # Graceful degradation: return empty snapshot response.
             logger.warning("bling_list_products_returning_empty_fallback", extra={"query": q, "error": error_msg})
+            if _is_webhook_first_mode() and settings.WEBHOOKS_ENABLED:
+                _trigger_catalog_reconcile_if_due(db, reason="fallback_exception", force=True)
             return snapshot_response
         
         raise HTTPException(
@@ -828,6 +906,140 @@ async def list_all_products(
                 "details": error_msg,
             },
         )
+
+async def _run_direct_catalog_sync(task_id: str, access_token: str, refresh_token: str, expires_at) -> None:
+    """Background coroutine: sync full catalog without Celery (fallback when Redis is unavailable)."""
+    _direct_sync_tasks[task_id] = {"state": "PROGRESS", "synced": 0, "total": 0}
+    db = SessionLocal()
+    client = None
+    synced = 0
+    errors = 0
+    try:
+        def _save_token(at: str, rt: str, ea):
+            BlingTokenRepository.create_or_update(
+                db=db,
+                tenant_id=DEFAULT_TENANT_ID,
+                access_token=at,
+                refresh_token=rt,
+                expires_at=ea,
+            )
+
+        client = BlingClient(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            token_expires_at=expires_at,
+            on_token_refresh=_save_token,
+        )
+        raw_products = await _fetch_all_products(client, None)
+        total = len(raw_products)
+        _direct_sync_tasks[task_id] = {"state": "PROGRESS", "synced": 0, "total": total}
+
+        for i, product in enumerate(raw_products):
+            try:
+                ProductSnapshotRepository.upsert_product_detail(db, DEFAULT_TENANT_ID, product)
+                synced += 1
+            except Exception as exc:
+                errors += 1
+                logger.warning(
+                    "direct_sync_upsert_failed product_id=%s error=%s",
+                    product.get("id"),
+                    str(exc),
+                )
+            if (i + 1) % 50 == 0:
+                db.commit()
+                _direct_sync_tasks[task_id] = {"state": "PROGRESS", "synced": synced, "total": total}
+
+        db.commit()
+        invalidate_catalog_cache()
+        logger.info("direct_catalog_sync_done task_id=%s synced=%s errors=%s", task_id, synced, errors)
+        _direct_sync_tasks[task_id] = {"state": "SUCCESS", "synced": synced, "errors": errors}
+    except Exception as exc:
+        logger.error("direct_catalog_sync_failed task_id=%s error=%s", task_id, str(exc), exc_info=True)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        _direct_sync_tasks[task_id] = {"state": "FAILURE", "error": str(exc)}
+    finally:
+        if client:
+            try:
+                client.close()
+            except Exception:
+                pass
+        db.close()
+
+
+@router.post("/sync")
+async def trigger_catalog_sync(db: Session = Depends(get_db)):
+    """Enqueue a full Bling product catalog sync from the Bling API to local snapshot."""
+    bling_token = BlingTokenRepository.get_by_tenant(db, DEFAULT_TENANT_ID)
+    if not bling_token:
+        raise HTTPException(
+            status_code=401,
+            detail="Não autenticado no Bling. Autentique-se primeiro.",
+        )
+
+    # Try to enqueue via Celery (non-blocking, with timeout to avoid hanging the event loop).
+    from app.workers.tasks import sync_full_product_catalog_task
+    loop = asyncio.get_running_loop()
+    try:
+        task = await asyncio.wait_for(
+            loop.run_in_executor(None, sync_full_product_catalog_task.delay),
+            timeout=5.0,
+        )
+        logger.info("catalog_sync_triggered task_id=%s mode=celery", task.id)
+        return {"job_id": task.id, "state": "PENDING"}
+    except Exception as exc:
+        # Redis/Celery not available — fall back to a direct async background task.
+        logger.warning("celery_unavailable_falling_back_to_direct_sync error=%s", str(exc))
+
+    task_id = f"direct-{_uuid_mod.uuid4().hex}"
+    asyncio.create_task(
+        _run_direct_catalog_sync(
+            task_id,
+            bling_token.access_token,
+            bling_token.refresh_token,
+            bling_token.expires_at,
+        )
+    )
+    logger.info("catalog_sync_triggered task_id=%s mode=direct", task_id)
+    return {"job_id": task_id, "state": "PENDING"}
+
+
+@router.get("/sync/status/{job_id}")
+async def get_catalog_sync_status(job_id: str):
+    """Get the status of a catalog sync job."""
+    # Check in-memory status for direct (non-Celery) runs first.
+    if job_id in _direct_sync_tasks:
+        return _direct_sync_tasks[job_id]
+
+    try:
+        from celery.result import AsyncResult
+        from app.workers.celery_app import celery_app as _celery_app
+
+        def _fetch_celery_status():
+            result = AsyncResult(job_id, app=_celery_app)
+            state = result.state
+            info = result.info or {}
+            return state, info
+
+        state, info = await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(None, _fetch_celery_status),
+            timeout=5.0,
+        )
+
+        if state == "PROGRESS":
+            return {"state": state, "synced": info.get("synced", 0), "total": info.get("total", 0)}
+        if state == "SUCCESS":
+            payload = info if isinstance(info, dict) else {}
+            return {"state": state, "synced": payload.get("synced", 0), "errors": payload.get("errors", 0)}
+        if state == "FAILURE":
+            return {"state": state, "error": str(info)}
+        return {"state": state}
+    except Exception as exc:
+        logger.warning("catalog_sync_status_failed job_id=%s error=%s", job_id, str(exc))
+        raise HTTPException(status_code=404, detail="Job não encontrado ou expirado.")
+
 
 @router.get("/{product_id}", response_model=BlingProductDetailResponse)
 async def get_product(

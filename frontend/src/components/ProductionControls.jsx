@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
-const PRODUCTION_STATUSES = ['Pendente', 'Em produção', 'Produzido', 'Embalado', 'Entregue', 'Impedimento'];
+const PRODUCTION_STATUSES = ['Pendente', 'Em produção', 'Produzido', 'Embalado', 'Entregue', 'Impedimento', 'Cancelado'];
 const IMPEDIMENT_LABEL = 'Motivo do Impedimento:';
 
 const PROD_COLORS = {
@@ -11,6 +11,7 @@ const PROD_COLORS = {
   Embalado: { bg: '#f3e8ff', color: '#6b21a8', border: '#c4b5fd' },
   Entregue: { bg: '#ecfccb', color: '#3f6212', border: '#bef264' },
   Impedimento: { bg: '#fee2e2', color: '#991b1b', border: '#fca5a5' },
+  Cancelado: { bg: '#fef2f2', color: '#b91c1c', border: '#fca5a5' },
 };
 
 export function ProductionStatusBadge({ status, onChangeStatus, statusFeedback = 'idle' }) {

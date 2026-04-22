@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { Layout } from '../../components/Layout';
 import { ProductionStatusBadge, ProductionNotesInput } from '../../components/ProductionControls';
+import { ItemsFilterTab } from '../../components/ItemsFilterTab';
 import useIsMobile from '../../hooks/useIsMobile';
 import { useVersionPolling } from '../../hooks/useVersionPolling';
 import { normalizeProductionStatus, deriveOrderStatusFromItems, countFinalizedItems } from '../../utils/orderStatus.js';
@@ -107,6 +108,7 @@ function readSavedOrdersUiState() {
       search: typeof parsed?.search === 'string' ? parsed.search : '',
       selectedStatuses: new Set(restoredStatuses),
       page: Number.isFinite(Number(parsed?.page)) && Number(parsed.page) > 0 ? Number(parsed.page) : 1,
+      groupBy: parsed?.groupBy === 'item' ? 'item' : 'pedido',
       expandedOrderId: normalizeExpandedKey(parsed?.expandedOrderId),
       scrollY: Number.isFinite(Number(parsed?.scrollY)) ? Math.max(0, Number(parsed.scrollY)) : 0,
     };
@@ -122,6 +124,7 @@ function persistOrdersUiState(state) {
       search: state.search || '',
       selectedStatuses: Array.from(state.selectedStatuses || []),
       page: Number(state.page) > 0 ? Number(state.page) : 1,
+      groupBy: state.groupBy === 'item' ? 'item' : 'pedido',
       expandedOrderId: state.expandedOrderId ?? null,
       scrollY: Number.isFinite(Number(state.scrollY)) ? Math.max(0, Number(state.scrollY)) : 0,
     }));
@@ -660,6 +663,7 @@ export function OrdersPage() {
   const [syncMessage, setSyncMessage] = useState('');
   const [availableTags, setAvailableTags] = useState([]);
   const [selectedTagFilter, setSelectedTagFilter] = useState('');
+  const [groupBy, setGroupBy] = useState(savedUiState?.groupBy || 'pedido');
   const [draftTagsByOrder, setDraftTagsByOrder] = useState({});
   const [tagSavingByOrder, setTagSavingByOrder] = useState({});
   const [tagErrorByOrder, setTagErrorByOrder] = useState({});
@@ -757,7 +761,10 @@ export function OrdersPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ production_status: nextStatus, ...(blingOrderId ? { bling_order_id: blingOrderId } : {}) }),
       });
-      if (!resp.ok) throw new Error('Falha ao salvar status de produção');
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.detail || 'Falha ao salvar status de produção');
+      }
       markLocalMutation();
       handleProductionSaved(sku, nextStatus, undefined);
       setItemFeedback(sku, blingOrderId, 'success');
@@ -786,7 +793,10 @@ export function OrdersPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ situacao: newStatus }),
       });
-      if (!resp.ok) throw new Error('Falha ao atualizar status');
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.detail || 'Falha ao atualizar status');
+      }
       markLocalMutation();
       includeStatusInFilter(newStatus);
       setOrders((prev) =>
@@ -1098,10 +1108,11 @@ export function OrdersPage() {
       search,
       selectedStatuses,
       page,
+      groupBy,
       expandedOrderId,
       scrollY: getCurrentScrollY(),
     });
-  }, [search, selectedStatuses, page, expandedOrderId]);
+  }, [search, selectedStatuses, page, groupBy, expandedOrderId]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -1110,13 +1121,14 @@ export function OrdersPage() {
         search,
         selectedStatuses,
         page,
+        groupBy,
         expandedOrderId,
         scrollY: getCurrentScrollY(),
       });
     };
     window.addEventListener('beforeunload', persistOnUnload);
     return () => window.removeEventListener('beforeunload', persistOnUnload);
-  }, [search, selectedStatuses, page, expandedOrderId]);
+  }, [search, selectedStatuses, page, groupBy, expandedOrderId]);
 
   useEffect(() => {
     if (loading || hasRestoredScrollRef.current || typeof window === 'undefined') return;
@@ -1193,6 +1205,55 @@ export function OrdersPage() {
   const isEmptyDb = sourceMode === 'empty-db';
   const syncOk = syncStatus?.sync?.last_sync_status === 'ok';
   const localCount = syncStatus?.snapshot?.total_orders ?? 0;
+
+  const groupedByItem = useMemo(() => {
+    if (groupBy !== 'item') return [];
+
+    const itemMap = {};
+    (orders || []).forEach((order) => {
+      const itens = Array.isArray(order?.itens) ? order.itens : [];
+      itens.forEach((item) => {
+        const key = item?.sku || item?.product_name;
+        if (!key) return;
+        if (!itemMap[key]) {
+          itemMap[key] = {
+            sku: item?.sku,
+            product_name: item?.product_name,
+            total_qty: 0,
+            total_paid: 0,
+            orders: [],
+          };
+        }
+        const paidTotal = Number(item?.paid_total ?? item?.total ?? 0);
+        itemMap[key].total_qty += Number(item?.quantity || 0);
+        itemMap[key].total_paid += paidTotal;
+        itemMap[key].orders.push({
+          order_id: order?.id,
+          numero: order?.numero || order?.id,
+          numero_loja: order?.numeroLoja,
+          data: order?.data,
+          cliente: order?.cliente,
+          situacao: order?.situacao,
+          quantity: Number(item?.quantity || 0),
+          paid_total: paidTotal,
+          production_status: item?.production_status || 'Pendente',
+          notes: item?.notes || '',
+        });
+      });
+    });
+
+    return Object.values(itemMap).sort((a, b) => {
+      const aName = String(a.product_name || a.sku || '').toLowerCase();
+      const bName = String(b.product_name || b.sku || '').toLowerCase();
+      if (aName < bName) return -1;
+      if (aName > bName) return 1;
+      const aSku = String(a.sku || '').toLowerCase();
+      const bSku = String(b.sku || '').toLowerCase();
+      if (aSku < bSku) return -1;
+      if (aSku > bSku) return 1;
+      return 0;
+    });
+  }, [groupBy, orders]);
 
   return (
     <Layout>
@@ -1335,6 +1396,35 @@ export function OrdersPage() {
 
         {/* ── Table ── */}
         <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', overflow: 'hidden' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, padding: '12px 16px', borderBottom: '1px solid #f1f5f9' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 12, color: '#94a3b8' }}>Visualização:</span>
+              {[{ key: 'pedido', label: 'Por Pedido' }, { key: 'item', label: 'Por Item' }].map((opt) => (
+                <button
+                  key={opt.key}
+                  onClick={() => {
+                    setGroupBy(opt.key);
+                    setExpandedOrderId(null);
+                  }}
+                  style={{
+                    cursor: 'pointer',
+                    border: groupBy === opt.key ? '2px solid #3b82f6' : '2px solid transparent',
+                    padding: '4px 12px',
+                    borderRadius: 16,
+                    fontSize: 12,
+                    fontWeight: groupBy === opt.key ? 600 : 400,
+                    background: groupBy === opt.key ? '#dbeafe' : '#f1f5f9',
+                    color: groupBy === opt.key ? '#1d4ed8' : '#475569',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            {!loading && <span style={{ fontSize: 13, color: '#94a3b8' }}>{total} pedido(s)</span>}
+          </div>
+
           {loading && <div style={{ padding: 48, textAlign: 'center', color: '#94a3b8' }}>Carregando pedidos…</div>}
 
           {!loading && orders.length === 0 && (
@@ -1346,7 +1436,27 @@ export function OrdersPage() {
 
           {!loading && orders.length > 0 && (
             <>
-              {isMobile ? (
+              {groupBy === 'item' ? (
+                <ItemsFilterTab
+                  groups={groupedByItem}
+                  isMobile={isMobile}
+                  expandedKey={expandedOrderId}
+                  onToggle={(key) => setExpandedOrderId(isExpandedMatch(expandedOrderId, key) ? null : String(key))}
+                  formatCurrency={formatBRL}
+                  renderStatus={(situacao) => (
+                    <StatusBadge text={situacao} availableStatuses={availableStatuses} />
+                  )}
+                  onChangeStatus={(sku, orderEntry, nextStatus) => (
+                    handleProductionStatusChange(sku, orderEntry?.production_status, nextStatus, orderEntry?.order_id)
+                  )}
+                  onChangeNotes={(sku, orderEntry, notes) => (
+                    handleProductionNotesChange(sku, orderEntry?.production_status, notes, orderEntry?.order_id)
+                  )}
+                  getStatusFeedback={(sku, orderEntry) => (
+                    statusFeedbackByItem[itemFeedbackKey(sku, orderEntry?.order_id)] || 'idle'
+                  )}
+                />
+              ) : isMobile ? (
                 <div style={{ padding: 12, display: 'grid', gap: 12 }}>
                   {orders.map((order) => {
                     const itens = order.itens || [];
