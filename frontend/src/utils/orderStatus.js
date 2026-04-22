@@ -49,6 +49,10 @@ export function deriveOrderStatusFromItems(items, hasFrete) {
   if (statuses.length === 0) return 'Em aberto';
   if (statuses.some((s) => s === 'impedimento')) return 'Impedido';
   if (statuses.every((s) => s === 'pendente')) return 'Em aberto';
+  if (statuses.every((s) => s === 'embalado' || s === 'entregue')) {
+    if (statuses.every((s) => s === 'entregue')) return 'Atendido';
+    return hasFrete ? 'Pronto para envio' : 'Pronto para retirada';
+  }
   if (statuses.every((s) => s === 'entregue')) return 'Atendido';
   if (statuses.some((s) => s === 'entregue')) return 'Parcialmente entregue';
   if (statuses.every((s) => s === 'embalado')) return hasFrete ? 'Pronto para envio' : 'Pronto para retirada';

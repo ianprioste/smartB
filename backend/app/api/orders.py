@@ -588,6 +588,13 @@ def _resolve_order_target_status(statuses: List[str], has_frete: bool) -> tuple[
     if all(status == "pendente" for status in statuses):
         return ("em_aberto", "Em aberto")
 
+    if all(status in {"embalado", "entregue"} for status in statuses):
+        if all(status == "entregue" for status in statuses):
+            return ("atendido", "Atendido")
+        if has_frete:
+            return ("pronto_envio", "Pronto para envio")
+        return ("pronto_retirada", "Pronto para retirada")
+
     if any(status == "em_producao" for status in statuses):
         return ("em_andamento", "Em andamento")
 
