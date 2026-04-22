@@ -558,11 +558,35 @@ export function EventSalesPage() {
   const [draftTagsByOrder, setDraftTagsByOrder] = useState({});
   const [tagSavingByOrder, setTagSavingByOrder] = useState({});
   const [tagErrorByOrder, setTagErrorByOrder] = useState({});
+  const [statusFeedbackByItem, setStatusFeedbackByItem] = useState({});
   const deltaCursorRef = useRef(null);
   const salesInFlightRef = useRef(new Set());
   const suppressDeltaUntilRef = useRef(0);
   const initialScrollYRef = useRef(savedUiState?.scrollY || 0);
   const hasRestoredScrollRef = useRef(false);
+
+  const itemFeedbackKey = useCallback((sku, orderId) => {
+    const normalizedSku = String(sku || '').trim().toUpperCase();
+    const normalizedOrderId = String(orderId || '').trim();
+    return `${normalizedOrderId}::${normalizedSku}`;
+  }, []);
+
+  const setItemFeedback = useCallback((sku, orderId, feedback) => {
+    const key = itemFeedbackKey(sku, orderId);
+    setStatusFeedbackByItem((prev) => ({ ...prev, [key]: feedback }));
+  }, [itemFeedbackKey]);
+
+  const clearItemFeedbackLater = useCallback((sku, orderId, delayMs = 1500) => {
+    const key = itemFeedbackKey(sku, orderId);
+    window.setTimeout(() => {
+      setStatusFeedbackByItem((prev) => {
+        if (!prev[key]) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    }, delayMs);
+  }, [itemFeedbackKey]);
 
   const markLocalMutation = useCallback(() => {
     suppressDeltaUntilRef.current = Date.now() + 4000;
@@ -611,17 +635,23 @@ export function EventSalesPage() {
   const handleProductionStatusChange = useCallback(async (sku, orderId, currentStatus, nextStatus) => {
     if (nextStatus === currentStatus) return;
     try {
-      await fetch(`${API_BASE}/events/${selectedEventId}/items/${encodeURIComponent(sku)}/production`, {
+      setItemFeedback(sku, orderId, 'saving');
+      const resp = await fetch(`${API_BASE}/events/${selectedEventId}/items/${encodeURIComponent(sku)}/production`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ production_status: nextStatus, bling_order_id: orderId || null }),
       });
+      if (!resp.ok) throw new Error('Falha ao salvar status de produção');
       markLocalMutation();
       handleProductionSaved(sku, nextStatus, undefined, orderId);
+      setItemFeedback(sku, orderId, 'success');
+      clearItemFeedbackLater(sku, orderId);
     } catch (err) {
       console.error('Failed to save production status', err);
+      setItemFeedback(sku, orderId, 'error');
+      clearItemFeedbackLater(sku, orderId, 2500);
     }
-  }, [selectedEventId, handleProductionSaved, markLocalMutation]);
+  }, [clearItemFeedbackLater, handleProductionSaved, markLocalMutation, selectedEventId, setItemFeedback]);
 
   const handleProductionNotesChange = useCallback((sku, orderId, productionStatus, notes) => {
     fetch(`${API_BASE}/events/${selectedEventId}/items/${encodeURIComponent(sku)}/production`, {
@@ -1718,6 +1748,7 @@ export function EventSalesPage() {
                                     <div style={{ marginBottom: 8 }}>
                                       <ProductionStatusBadge
                                         status={o.production_status}
+                                        statusFeedback={statusFeedbackByItem[itemFeedbackKey(group.sku, o.order_id)] || 'idle'}
                                         onChangeStatus={(nextStatus) => handleProductionStatusChange(group.sku, o.order_id, o.production_status, nextStatus)}
                                       />
                                     </div>
@@ -1797,6 +1828,7 @@ export function EventSalesPage() {
                                             <td style={{ padding: '8px' }}>
                                               <ProductionStatusBadge
                                                 status={o.production_status}
+                                                statusFeedback={statusFeedbackByItem[itemFeedbackKey(group.sku, o.order_id)] || 'idle'}
                                                 onChangeStatus={(nextStatus) => handleProductionStatusChange(group.sku, o.order_id, o.production_status, nextStatus)}
                                               />
                                             </td>
@@ -1897,6 +1929,7 @@ export function EventSalesPage() {
                                   <div style={{ marginBottom: 8 }}>
                                     <ProductionStatusBadge
                                       status={item.production_status}
+                                      statusFeedback={statusFeedbackByItem[itemFeedbackKey(item.sku, order.id)] || 'idle'}
                                       onChangeStatus={(nextStatus) => handleProductionStatusChange(item.sku, order.id, item.production_status, nextStatus)}
                                     />
                                   </div>
@@ -2007,6 +2040,7 @@ export function EventSalesPage() {
                                           <td style={{ padding: '8px' }}>
                                             <ProductionStatusBadge
                                               status={item.production_status}
+                                              statusFeedback={statusFeedbackByItem[itemFeedbackKey(item.sku, order.id)] || 'idle'}
                                               onChangeStatus={(nextStatus) => handleProductionStatusChange(item.sku, order.id, item.production_status, nextStatus)}
                                             />
                                           </td>

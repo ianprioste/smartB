@@ -13,12 +13,16 @@ const PROD_COLORS = {
   Impedimento: { bg: '#fee2e2', color: '#991b1b', border: '#fca5a5' },
 };
 
-export function ProductionStatusBadge({ status, onChangeStatus }) {
+export function ProductionStatusBadge({ status, onChangeStatus, statusFeedback = 'idle' }) {
   const [open, setOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0, minWidth: 140, maxHeight: 260 });
   const ref = useRef(null);
   const menuRef = useRef(null);
   const colors = PROD_COLORS[status] || PROD_COLORS.Pendente;
+  const isSaving = statusFeedback === 'saving';
+  const isSuccess = statusFeedback === 'success';
+  const isError = statusFeedback === 'error';
+  const badgeLabel = isSaving ? 'Salvando...' : (status || 'Pendente');
 
   useEffect(() => {
     if (!open) return;
@@ -33,6 +37,12 @@ export function ProductionStatusBadge({ status, onChangeStatus }) {
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
+
+  useEffect(() => {
+    if (isSaving && open) {
+      setOpen(false);
+    }
+  }, [isSaving, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -92,24 +102,40 @@ export function ProductionStatusBadge({ status, onChangeStatus }) {
     <span ref={ref} style={{ position: 'relative', display: 'inline-block' }}>
       <button
         onClick={(e) => {
+          if (isSaving) return;
           e.stopPropagation();
           setOpen((prev) => !prev);
         }}
+        disabled={isSaving}
         style={{
-          cursor: 'pointer',
-          border: `1.5px solid ${colors.border}`,
+          cursor: isSaving ? 'not-allowed' : 'pointer',
+          border: `1.5px solid ${isError ? '#fca5a5' : (isSuccess ? '#86efac' : colors.border)}`,
           padding: '3px 10px',
           borderRadius: 12,
           fontSize: 12,
           fontWeight: 600,
-          background: colors.bg,
-          color: colors.color,
+          background: isError ? '#fef2f2' : (isSuccess ? '#f0fdf4' : colors.bg),
+          color: isError ? '#b91c1c' : (isSuccess ? '#166534' : colors.color),
+          opacity: isSaving ? 0.85 : 1,
           transition: 'all 0.15s ease',
           lineHeight: '18px',
         }}
       >
-        {status || 'Pendente'}
+        {badgeLabel}
       </button>
+
+      {(isSuccess || isError) && (
+        <span
+          style={{
+            marginLeft: 6,
+            fontSize: 11,
+            fontWeight: 600,
+            color: isError ? '#b91c1c' : '#15803d',
+          }}
+        >
+          {isError ? 'Erro ao salvar' : 'Salvo'}
+        </span>
+      )}
 
       {open && (
         createPortal(

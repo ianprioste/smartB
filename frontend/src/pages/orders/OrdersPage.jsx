@@ -663,6 +663,7 @@ export function OrdersPage() {
   const [draftTagsByOrder, setDraftTagsByOrder] = useState({});
   const [tagSavingByOrder, setTagSavingByOrder] = useState({});
   const [tagErrorByOrder, setTagErrorByOrder] = useState({});
+  const [statusFeedbackByItem, setStatusFeedbackByItem] = useState({});
   const [expandedOrderId, setExpandedOrderId] = useState(savedUiState?.expandedOrderId ?? null);
   const [syncModalOpen, setSyncModalOpen] = useState(false);
   const [printingLabels, setPrintingLabels] = useState(false);
@@ -677,6 +678,29 @@ export function OrdersPage() {
   const deltaCursorRef = useRef(null);
   const suppressDeltaUntilRef = useRef(0);
   const isSyncRunningFlag = syncRunning || syncStatus?.sync?.last_sync_status === 'running';
+
+  const itemFeedbackKey = useCallback((sku, orderId) => {
+    const normalizedSku = String(sku || '').trim().toUpperCase();
+    const normalizedOrderId = String(orderId || '').trim();
+    return `${normalizedOrderId}::${normalizedSku}`;
+  }, []);
+
+  const setItemFeedback = useCallback((sku, orderId, feedback) => {
+    const key = itemFeedbackKey(sku, orderId);
+    setStatusFeedbackByItem((prev) => ({ ...prev, [key]: feedback }));
+  }, [itemFeedbackKey]);
+
+  const clearItemFeedbackLater = useCallback((sku, orderId, delayMs = 1500) => {
+    const key = itemFeedbackKey(sku, orderId);
+    window.setTimeout(() => {
+      setStatusFeedbackByItem((prev) => {
+        if (!prev[key]) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    }, delayMs);
+  }, [itemFeedbackKey]);
 
   const statusFilterOptions = useMemo(
     () => aggregateStatusOptions(availableStatuses),
@@ -727,17 +751,23 @@ export function OrdersPage() {
   const handleProductionStatusChange = useCallback(async (sku, currentStatus, nextStatus, blingOrderId) => {
     if (nextStatus === currentStatus) return;
     try {
-      await fetch(`${API_BASE}/orders/items/${encodeURIComponent(sku)}/production`, {
+      setItemFeedback(sku, blingOrderId, 'saving');
+      const resp = await fetch(`${API_BASE}/orders/items/${encodeURIComponent(sku)}/production`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ production_status: nextStatus, ...(blingOrderId ? { bling_order_id: blingOrderId } : {}) }),
       });
+      if (!resp.ok) throw new Error('Falha ao salvar status de produção');
       markLocalMutation();
       handleProductionSaved(sku, nextStatus, undefined);
+      setItemFeedback(sku, blingOrderId, 'success');
+      clearItemFeedbackLater(sku, blingOrderId);
     } catch (err) {
       console.error('Failed to save production status', err);
+      setItemFeedback(sku, blingOrderId, 'error');
+      clearItemFeedbackLater(sku, blingOrderId, 2500);
     }
-  }, [handleProductionSaved, markLocalMutation]);
+  }, [clearItemFeedbackLater, handleProductionSaved, markLocalMutation, setItemFeedback]);
 
   const handleProductionNotesChange = useCallback((sku, productionStatus, notes, blingOrderId) => {
     fetch(`${API_BASE}/orders/items/${encodeURIComponent(sku)}/production`, {
@@ -1388,6 +1418,7 @@ export function OrdersPage() {
                                   <div style={{ marginBottom: 8 }}>
                                     <ProductionStatusBadge
                                       status={item.production_status}
+                                      statusFeedback={statusFeedbackByItem[itemFeedbackKey(item.sku, order.id)] || 'idle'}
                                       onChangeStatus={(nextStatus) => handleProductionStatusChange(item.sku, item.production_status, nextStatus, order.id)}
                                     />
                                   </div>
@@ -1493,6 +1524,7 @@ export function OrdersPage() {
                                         <td style={{ padding: '7px 8px' }}>
                                           <ProductionStatusBadge
                                             status={item.production_status}
+                                            statusFeedback={statusFeedbackByItem[itemFeedbackKey(item.sku, order.id)] || 'idle'}
                                             onChangeStatus={(nextStatus) => handleProductionStatusChange(item.sku, item.production_status, nextStatus, order.id)}
                                           />
                                         </td>
