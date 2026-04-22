@@ -28,6 +28,8 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/orders", tags=["orders"])
 
 DEFAULT_TENANT_ID = UUID("00000000-0000-0000-0000-000000000001")
+# Global lock to prevent concurrent order syncs within the same process.
+_sync_lock = threading.Lock()
 
 KNOWN_STATUSES = [
     {"id": 6, "nome": "Em aberto"},
@@ -135,6 +137,9 @@ def _parse_since_cursor(since: str | None) -> datetime:
 def _run_sync_in_local_background(mode: str) -> None:
     """Run order sync in a daemon thread (Windows-safe fallback when Celery is unavailable)."""
     def _worker():
+        if not _sync_lock.acquire(blocking=False):
+            logger.info("orders.local_sync_skipped mode=%s reason=already_running", mode)
+            return
         db = SessionLocal()
         client = None
         try:
@@ -157,6 +162,7 @@ def _run_sync_in_local_background(mode: str) -> None:
             )
             db.commit()
         finally:
+            _sync_lock.release()
             if client is not None:
                 try:
                     asyncio.run(client.client.aclose())
