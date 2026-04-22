@@ -20,7 +20,7 @@ from app.repositories.item_production_note_repo import ItemProductionNoteReposit
 from app.repositories.order_tag_repo import OrderTagRepository, OrderTagSchemaError
 from app.repositories.sales_event_repo import SalesEventRepository
 from app.repositories.sync_scope_version_repo import SyncScopeVersionRepository, SCOPE_ORDERS_GLOBAL, scope_event_sales
-from app.models.database import BlingOrderSnapshotModel
+from app.models.database import BlingOrderSnapshotModel, ItemProductionNoteModel
 from app.models.schemas import ItemProductionNoteUpdateRequest, ItemProductionNoteResponse, OrderStatusUpdateRequest, OrderTagAssignRequest
 from app.utils.datetime_utils import now_local
 
@@ -518,11 +518,29 @@ def _inject_production_data_orders(db: Session, orders: List[Dict[str, Any]]) ->
     """Inject production_status, notes, production_summary into order items (global scope)."""
     note_map = ItemProductionNoteRepository.get_latest_by_sku(db, DEFAULT_TENANT_ID)
     for order in orders:
-        embalado = 0
+        finalized = 0
+        normalized_statuses: List[str] = []
         items = order.get("itens") or []
+        order_id = _to_optional_int(order.get("id"))
+        order_note_rows = (
+            db.query(ItemProductionNoteModel)
+            .filter(
+                ItemProductionNoteModel.tenant_id == DEFAULT_TENANT_ID,
+                ItemProductionNoteModel.bling_order_id == order_id,
+            )
+            .order_by(ItemProductionNoteModel.updated_at.desc())
+            .all()
+            if order_id is not None
+            else []
+        )
+        order_note_map: Dict[str, ItemProductionNoteModel] = {}
+        for row in order_note_rows:
+            sku_key = (row.sku or "").strip().upper()
+            if sku_key and sku_key not in order_note_map:
+                order_note_map[sku_key] = row
         for item in items:
             sku_key = (item.get("sku") or "").strip().upper()
-            note = note_map.get(sku_key)
+            note = order_note_map.get(sku_key) or note_map.get(sku_key)
             if note:
                 item["production_status"] = note.production_status
                 item["notes"] = note.notes
@@ -531,9 +549,127 @@ def _inject_production_data_orders(db: Session, orders: List[Dict[str, Any]]) ->
                 item["production_status"] = "Pendente"
                 item["notes"] = None
                 item["event_id"] = None
-            if item["production_status"] == "Embalado":
-                embalado += 1
-        order["production_summary"] = f"{embalado}/{len(items)} Embalado" if items else None
+            normalized = _normalize_production_status(item.get("production_status"))
+            normalized_statuses.append(normalized)
+            if normalized in {"embalado", "entregue"}:
+                finalized += 1
+        order["production_summary"] = f"{finalized}/{len(items)} Finalizado" if items else None
+        if items:
+            _, target_name = _resolve_order_target_status(normalized_statuses, bool(order.get("has_frete")))
+            order["situacao"] = target_name
+
+
+def _normalize_production_status(value: Any) -> str:
+    lower = str(value or "Pendente").strip().lower()
+    if "imped" in lower:
+        return "impedimento"
+    if "entreg" in lower:
+        return "entregue"
+    if "embalad" in lower:
+        return "embalado"
+    if "produ" in lower or "andamento" in lower:
+        return "em_producao"
+    return "pendente"
+
+
+def _resolve_order_target_status(statuses: List[str], has_frete: bool) -> tuple[str, str]:
+    if not statuses:
+        return ("em_aberto", "Em aberto")
+
+    if any(status == "impedimento" for status in statuses):
+        return ("impedido", "Impedido")
+
+    if all(status == "pendente" for status in statuses):
+        return ("em_aberto", "Em aberto")
+
+    if any(status == "em_producao" for status in statuses):
+        return ("em_andamento", "Em andamento")
+
+    if all(status == "embalado" for status in statuses):
+        if has_frete:
+            return ("pronto_envio", "Pronto para envio")
+        return ("pronto_retirada", "Pronto para retirada")
+
+    if all(status == "entregue" for status in statuses):
+        return ("atendido", "Atendido")
+
+    if any(status == "entregue" for status in statuses):
+        return ("parcialmente_entregue", "Parcialmente entregue")
+
+    return ("em_aberto", "Em aberto")
+
+
+async def _sync_global_order_status_from_items(db: Session, order_id: int) -> None:
+    snapshot = (
+        db.query(BlingOrderSnapshotModel)
+        .filter(
+            BlingOrderSnapshotModel.bling_order_id == order_id,
+            BlingOrderSnapshotModel.tenant_id == DEFAULT_TENANT_ID,
+        )
+        .first()
+    )
+    if not snapshot:
+        return
+
+    raw_detail = snapshot.raw_detail if isinstance(snapshot.raw_detail, dict) else {}
+    raw_order = snapshot.raw_order if isinstance(snapshot.raw_order, dict) else {}
+    items = _extract_order_items(raw_detail) or _extract_order_items(raw_order)
+    if not items:
+        return
+
+    order_note_rows = (
+        db.query(ItemProductionNoteModel)
+        .filter(
+            ItemProductionNoteModel.tenant_id == DEFAULT_TENANT_ID,
+            ItemProductionNoteModel.bling_order_id == order_id,
+        )
+        .order_by(ItemProductionNoteModel.updated_at.desc())
+        .all()
+    )
+    order_note_map: Dict[str, ItemProductionNoteModel] = {}
+    for row in order_note_rows:
+        sku_key = (row.sku or "").strip().upper()
+        if sku_key and sku_key not in order_note_map:
+            order_note_map[sku_key] = row
+
+    fallback_notes = ItemProductionNoteRepository.get_latest_by_sku(db, DEFAULT_TENANT_ID)
+
+    normalized_statuses: List[str] = []
+    for item in items:
+        sku_key = (item.get("sku") or "").strip().upper()
+        note = order_note_map.get(sku_key) or fallback_notes.get(sku_key)
+        normalized_statuses.append(_normalize_production_status(note.production_status if note else "Pendente"))
+
+    target_key, target_name = _resolve_order_target_status(
+        normalized_statuses,
+        _has_frete(raw_detail, raw_order),
+    )
+
+    current_name = (snapshot.status_name or "").strip().lower()
+    if current_name == target_name.strip().lower():
+        return
+
+    client = _make_client(db)
+    target_id = None
+    if client:
+        sit_ids = await get_bling_status_ids(client)
+        target_id = sit_ids.get(target_key)
+
+    if client and target_id:
+        try:
+            await client.patch(f"/pedidos/vendas/{order_id}/situacoes/{target_id}", {})
+            snapshot.status_id = target_id
+        except Exception as exc:
+            logger.warning(
+                "global_order_status_patch_failed order_id=%s target=%s error=%s",
+                order_id,
+                target_name,
+                str(exc),
+            )
+
+    snapshot.status_name = target_name
+    SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
+    db.commit()
 
 
 def _inject_global_tags(db: Session, orders: List[Dict[str, Any]]) -> None:
@@ -967,8 +1103,9 @@ async def sync_orders_full(db: Session = Depends(get_db)):
     )
     db.commit()
 
-    # Windows fallback: run in-process background thread to avoid Celery worker issues.
-    if platform.system() == "Windows":
+    # Use local background thread when Celery/Redis is unavailable (or on Windows).
+    from app.infra.redis import redis_client as _redis
+    if platform.system() == "Windows" or _redis is None:
         _run_sync_in_local_background("full")
         return {
             "ok": True,
@@ -1001,7 +1138,8 @@ async def sync_orders_incremental(db: Session = Depends(get_db)):
     )
     db.commit()
 
-    if platform.system() == "Windows":
+    from app.infra.redis import redis_client as _redis
+    if platform.system() == "Windows" or _redis is None:
         _run_sync_in_local_background("incremental")
         return {
             "ok": True,
@@ -1244,6 +1382,11 @@ async def update_order_item_production(
         bling_order_id=body.bling_order_id,
         preserve_existing_notes=not _field_was_provided(body, "notes"),
     )
+
+    order_id = _to_optional_int(body.bling_order_id)
+    if order_id is not None:
+        await _sync_global_order_status_from_items(db, order_id)
+
     # Bump both scopes to notify changes in both Orders and Event Sales pages
     SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
     SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, scope_event_sales(event_id))

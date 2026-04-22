@@ -26,8 +26,6 @@ KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=30
 
-# Watchdog: reinicia se não responder em 60s
-WatchdogSec=60
 
 [Install]
 WantedBy=multi-user.target
