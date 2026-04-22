@@ -107,7 +107,7 @@ def _inject_production_data(db: Session, event_id: UUID, filtered_orders: list) 
         if n.bling_order_id is None:
             sku_fallback_map[sku_key] = n
     for order in filtered_orders:
-        embalado_count = 0
+        finalized_count = 0
         total_items = len(order.matched_items)
         order_bling_id = order.id  # bling_order_id stored as order.id
         for item in order.matched_items:
@@ -116,11 +116,81 @@ def _inject_production_data(db: Session, event_id: UUID, filtered_orders: list) 
             if note:
                 item.production_status = note.production_status
                 item.notes = note.notes
-            if item.production_status == "Embalado":
-                embalado_count += 1
+            if _normalize_production_status(item.production_status) in {"embalado", "entregue"}:
+                finalized_count += 1
         if total_items > 0:
-            order.production_summary = f"{embalado_count}/{total_items} Embalado"
+            order.production_summary = f"{finalized_count}/{total_items} Finalizado"
+            _, derived_label = _resolve_campaign_status_from_normalized(
+                [_normalize_production_status(item.production_status) for item in order.matched_items],
+                bool(order.has_frete),
+            )
+            order.situacao = derived_label
     return filtered_orders
+
+
+def _normalize_production_status(value: Any) -> str:
+    lower = str(value or "Pendente").strip().lower()
+    if "imped" in lower:
+        return "impedimento"
+    if "entreg" in lower:
+        return "entregue"
+    if "embalad" in lower:
+        return "embalado"
+    if "produz" in lower:
+        return "produzido"
+    if "produ" in lower or "andamento" in lower:
+        return "em_producao"
+    return "pendente"
+
+
+def _resolve_campaign_status_from_normalized(
+    statuses: list[str],
+    has_frete: bool,
+) -> tuple[str, str]:
+    if not statuses:
+        return ("em_aberto", "Em aberto")
+
+    if any(status == "impedimento" for status in statuses):
+        return ("impedido", "Impedido")
+
+    if all(status == "pendente" for status in statuses):
+        return ("em_aberto", "Em aberto")
+
+    if any(status == "em_producao" for status in statuses):
+        return ("em_andamento", "Em andamento")
+
+    if all(status == "embalado" for status in statuses):
+        if has_frete:
+            return ("pronto_envio", "Pronto para envio")
+        return ("pronto_retirada", "Pronto para retirada")
+
+    if all(status == "entregue" for status in statuses):
+        return ("atendido", "Atendido")
+
+    if any(status == "entregue" for status in statuses):
+        return ("parcialmente_entregue", "Parcialmente entregue")
+
+    return ("em_aberto", "Em aberto")
+
+
+def _resolve_campaign_order_target_status(
+    matched_items: list[dict[str, Any]],
+    note_map: dict[tuple[str, int | None], str],
+    sku_fallback_map: dict[str, str],
+    order_id: int | None,
+    has_frete: bool,
+) -> tuple[str, str]:
+    statuses: list[str] = []
+    for item in matched_items:
+        sku_key = (item.get("sku", "")).strip().upper()
+        if not sku_key:
+            continue
+        raw_status = note_map.get((sku_key, order_id))
+        if raw_status is None:
+            raw_status = sku_fallback_map.get(sku_key)
+        statuses.append(_normalize_production_status(raw_status))
+
+    return _resolve_campaign_status_from_normalized(statuses, has_frete)
 
 
 def _inject_event_tags(db: Session, event_id: UUID, filtered_orders: List[EventOrderResponse]) -> None:
@@ -234,6 +304,16 @@ def _normalize_status_label(text: Any) -> str:
     if not raw:
         return "Em aberto"
     lower = raw.casefold()
+    if "imped" in lower:
+        return "Impedido"
+    if "parcial" in lower and "entreg" in lower:
+        return "Parcialmente entregue"
+    if "pronto" in lower and "envio" in lower:
+        return "Pronto para envio"
+    if "pronto" in lower and "retirada" in lower:
+        return "Pronto para retirada"
+    if "andamento" in lower:
+        return "Em andamento"
     if "atendid" in lower or "conclu" in lower or "entreg" in lower:
         return "Atendido"
     if "cancel" in lower or "devolv" in lower:
@@ -262,8 +342,8 @@ def _status_to_text(raw_status: Any, fallback_status_id: Any = None) -> str:
             return STATUS_ID_NAME_MAP.get(status_id, "Em aberto")
 
     # Prefer name-based normalization when raw_status is a non-empty string,
-    # so names like "Em Andamento" are correctly mapped to "Em aberto"
-    # instead of relying on possibly stale numeric IDs.
+    # preserving custom order statuses such as "Em andamento" and "Impedido"
+    # instead of collapsing them into the base Bling categories.
     if isinstance(raw_status, str) and raw_status.strip():
         return _normalize_status_label(raw_status)
 
@@ -1388,8 +1468,8 @@ async def update_item_production(
 ):
     """Upsert production status and notes for an item in a campaign.
 
-    When all matched items of an order reach 'Embalado', automatically
-    updates the Bling order status to 'Pronto para Envio' or 'Pronto para Retirada'.
+    Re-evaluates the overall order status from all matched item statuses after
+    every change and syncs the result to Bling/local snapshot.
     """
     event = SalesEventRepository.get_by_id(db, event_id, DEFAULT_TENANT_ID)
     if not event:
@@ -1407,9 +1487,7 @@ async def update_item_production(
         preserve_existing_notes=not _field_was_provided(body, "notes"),
     )
 
-    # Auto-update Bling when all items of an order become "Embalado".
-    if body.production_status == "Embalado":
-        await _check_and_update_bling_orders(db, event, event_id)
+    await _check_and_update_bling_orders(db, event, event_id)
 
     SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, scope_event_sales(event_id))
     SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
@@ -1422,8 +1500,7 @@ async def update_item_production(
 
 
 async def _check_and_update_bling_orders(db: Session, event, event_id: UUID):
-    """For each order in the event, if ALL matched items are Embalado,
-    update Bling status to Pronto para Envio / Pronto para Retirada."""
+    """Recompute the general order status from matched-item production statuses."""
     from app.models.database import BlingOrderSnapshotModel
 
     client = _make_client(db)
@@ -1450,9 +1527,7 @@ async def _check_and_update_bling_orders(db: Session, event, event_id: UUID):
 
     # Get Bling situation IDs.
     sit_ids = await get_bling_status_ids(client)
-    pronto_envio_id = sit_ids.get("pronto_envio")
-    pronto_retirada_id = sit_ids.get("pronto_retirada")
-    can_update_bling = bool(pronto_envio_id or pronto_retirada_id)
+    can_update_bling = bool(sit_ids)
     if not can_update_bling:
         logger.warning("bling_situacoes_not_found applying local status fallback only")
 
@@ -1462,8 +1537,8 @@ async def _check_and_update_bling_orders(db: Session, event, event_id: UUID):
     snapshot_rows = OrderSnapshotRepository.list_for_period(db, DEFAULT_TENANT_ID, start_dt, end_dt)
 
     for row in snapshot_rows:
-        # Skip already-atendido or already-pronto orders.
-        if row.status_id in _ATENDIDO_IDS or row.status_id in _CANCELADO_IDS:
+        # Never rewrite canceled orders.
+        if row.status_id in _CANCELADO_IDS:
             continue
 
         detail_payload = row.raw_detail if isinstance(row.raw_detail, dict) else {}
@@ -1473,31 +1548,31 @@ async def _check_and_update_bling_orders(db: Session, event, event_id: UUID):
         if not matched:
             continue
 
-        # Check if ALL matched items are Embalado.
-        def _item_embalado(item: dict[str, Any]) -> bool:
-            sku_key = (item.get("sku", "")).strip().upper()
-            if not sku_key:
-                return False
-            status = note_map.get((sku_key, row.bling_order_id))
-            if status is None:
-                status = sku_fallback_map.get(sku_key)
-            return status == "Embalado"
-
-        all_embalado = all(_item_embalado(item) for item in matched)
-        if not all_embalado:
-            continue
-
-        # Determine envio vs retirada.
         frete = _has_frete(detail_payload, order_payload)
-        target_name = "Pronto para envio" if frete else "Pronto para retirada"
-        target_id = pronto_envio_id if frete else pronto_retirada_id
-        if not target_id:
-            target_id = pronto_retirada_id if frete else pronto_envio_id
+        target_key, target_name = _resolve_campaign_order_target_status(
+            matched,
+            note_map,
+            sku_fallback_map,
+            row.bling_order_id,
+            frete,
+        )
+        target_id = sit_ids.get(target_key)
 
         snapshot = db.query(BlingOrderSnapshotModel).filter(
             BlingOrderSnapshotModel.bling_order_id == row.bling_order_id,
             BlingOrderSnapshotModel.tenant_id == DEFAULT_TENANT_ID,
         ).first()
+
+        current_status_name = (snapshot.status_name if snapshot else None) or row.status_name
+        current_status_id = _to_optional_int(snapshot.status_id if snapshot else None)
+        target_name_normalized = target_name.strip().lower()
+
+        # If we know target_id, compare by ID so failed patch attempts are retried.
+        if target_id is not None:
+            if current_status_id == int(target_id):
+                continue
+        elif str(current_status_name or "").strip().lower() == target_name_normalized:
+            continue
 
         if not can_update_bling or not target_id:
             if snapshot:
@@ -1554,6 +1629,14 @@ async def update_order_status(
     target_id = None
     if "atendido" in target_key:
         target_id = sit_ids.get("atendido")
+    elif "parcial" in target_key and "entreg" in target_key:
+        target_id = sit_ids.get("parcialmente_entregue")
+    elif "imped" in target_key:
+        target_id = sit_ids.get("impedido")
+    elif "andamento" in target_key:
+        target_id = sit_ids.get("em_andamento")
+    elif "aberto" in target_key:
+        target_id = sit_ids.get("em_aberto")
     elif "envio" in target_key:
         target_id = sit_ids.get("pronto_envio")
     elif "retirada" in target_key:

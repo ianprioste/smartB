@@ -651,20 +651,29 @@ async def _sync_global_order_status_from_items(db: Session, order_id: int) -> No
         _has_frete(raw_detail, raw_order),
     )
 
-    current_name = (snapshot.status_name or "").strip().lower()
-    if current_name == target_name.strip().lower():
-        return
-
     client = _make_client(db)
     target_id = None
     if client:
         sit_ids = await get_bling_status_ids(client)
         target_id = sit_ids.get(target_key)
 
+    current_name = (snapshot.status_name or "").strip().lower()
+    target_name_normalized = target_name.strip().lower()
+    current_id = _to_optional_int(snapshot.status_id)
+
+    # If we know the target ID, compare by ID (not only by label) so failed
+    # patch attempts can be retried on subsequent updates.
+    if target_id is not None:
+        if current_id == int(target_id):
+            return
+    elif current_name == target_name_normalized:
+        return
+
     if client and target_id:
         try:
             await client.patch(f"/pedidos/vendas/{order_id}/situacoes/{target_id}", {})
             snapshot.status_id = target_id
+            snapshot.status_name = target_name
         except Exception as exc:
             logger.warning(
                 "global_order_status_patch_failed order_id=%s target=%s error=%s",
@@ -672,8 +681,10 @@ async def _sync_global_order_status_from_items(db: Session, order_id: int) -> No
                 target_name,
                 str(exc),
             )
-
-    snapshot.status_name = target_name
+    else:
+        # Keep local status aligned with item-production derivation when
+        # target ID is unavailable (e.g., missing Bling Situações scope).
+        snapshot.status_name = target_name
     SyncScopeVersionRepository.bump_scope(db, DEFAULT_TENANT_ID, SCOPE_ORDERS_GLOBAL)
     db.commit()
 
