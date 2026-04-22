@@ -22,8 +22,18 @@ _cached_all_statuses: Optional[List[Dict]] = None
 
 # Well-known standard Bling status IDs (work without the Situações scope).
 _FALLBACK_IDS: Dict[str, int] = {
+    "em_aberto": 6,
     "atendido": 9,
 }
+
+# When Bling does not provide detailed intermediate statuses, map them to
+# "Em aberto" so API updates still persist in Bling while the app can keep
+# richer local labels (Em andamento, Impedido, Parcialmente entregue).
+_OPEN_STATUS_ALIASES = (
+    "em_andamento",
+    "impedido",
+    "parcialmente_entregue",
+)
 
 
 def _env_status_ids() -> Dict[str, int]:
@@ -32,9 +42,14 @@ def _env_status_ids() -> Dict[str, int]:
     Useful when the token does not have Situações scope.
     """
     mapping = {
+        "em_aberto": os.getenv("BLING_STATUS_EM_ABERTO_ID", "").strip(),
+        "em_andamento": os.getenv("BLING_STATUS_EM_ANDAMENTO_ID", "").strip(),
+        "impedido": os.getenv("BLING_STATUS_IMPEDIDO_ID", "").strip(),
+        "parcialmente_entregue": os.getenv("BLING_STATUS_PARCIALMENTE_ENTREGUE_ID", "").strip(),
         "pronto_envio": os.getenv("BLING_STATUS_PRONTO_ENVIO_ID", "").strip(),
         "pronto_retirada": os.getenv("BLING_STATUS_PRONTO_RETIRADA_ID", "").strip(),
         "atendido": os.getenv("BLING_STATUS_ATENDIDO_ID", "").strip(),
+        "cancelado": os.getenv("BLING_STATUS_CANCELADO_ID", "").strip(),
     }
     resolved: Dict[str, int] = {}
     for key, raw in mapping.items():
@@ -48,16 +63,22 @@ def _env_status_ids() -> Dict[str, int]:
 
 # Names we look for (case-insensitive substring matching) when discovery works.
 _TARGETS = {
+    "em_aberto": "em aberto",
+    "em_andamento": "em andamento",
+    "impedido": "impedido",
+    "parcialmente_entregue": "parcialmente entregue",
     "pronto_envio": "pronto para envio",
     "pronto_retirada": "pronto para retirada",
     "atendido": "atendido",
+    "cancelado": "cancelado",
 }
 
 
 async def get_bling_status_ids(client) -> Dict[str, int]:
     """Return a dict mapping logical names to Bling situation IDs.
 
-    Keys: 'pronto_envio', 'pronto_retirada', 'atendido'.
+    Keys include: 'em_aberto', 'em_andamento', 'impedido',
+    'parcialmente_entregue', 'pronto_envio', 'pronto_retirada', 'atendido'.
     Values may be missing if the status doesn't exist in the account.
     Falls back to well-known IDs when the Situações scope is not available.
     """
@@ -97,10 +118,17 @@ async def get_bling_status_ids(client) -> Dict[str, int]:
     # Merge env overrides and ensure atendido always has a value.
     result.update(env_ids)
 
-    # Ensure atendido always has a value (use fallback if discovery/env missed it).
+    # Ensure base statuses always have a value (use fallback if discovery/env missed it).
     for key, fallback_id in _FALLBACK_IDS.items():
         if key not in result:
             result[key] = fallback_id
+
+    # If detailed statuses are missing in Bling, alias them to Em aberto ID.
+    open_id = result.get("em_aberto")
+    if open_id is not None:
+        for alias in _OPEN_STATUS_ALIASES:
+            if alias not in result:
+                result[alias] = int(open_id)
 
     _cached_ids = result
     logger.info("bling_situacoes_resolved ids=%s", result)

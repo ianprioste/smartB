@@ -1431,6 +1431,8 @@ async def update_order_bling_status(
     target_id = None
     if "atendido" in target_key:
         target_id = sit_ids.get("atendido")
+    elif "cancel" in target_key:
+        target_id = sit_ids.get("cancelado")
     elif "envio" in target_key:
         target_id = sit_ids.get("pronto_envio")
     elif "retirada" in target_key:

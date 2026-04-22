@@ -1629,6 +1629,8 @@ async def update_order_status(
     target_id = None
     if "atendido" in target_key:
         target_id = sit_ids.get("atendido")
+    elif "cancel" in target_key:
+        target_id = sit_ids.get("cancelado")
     elif "parcial" in target_key and "entreg" in target_key:
         target_id = sit_ids.get("parcialmente_entregue")
     elif "imped" in target_key:
